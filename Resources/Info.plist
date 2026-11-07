@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDisplayName</key><string>OpenCapture</string>
+  <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+  <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <key>NSCameraUsageDescription</key><string>Capture photos and camera metadata at your request, locally or from your paired controller.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Connect to your chosen capture controller to receive requests and transfer photos.</string>
+  <key>NSAppTransportSecurity</key><dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSExceptionDomains</key><dict>
+      <key>10.0.0.0/8</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+      <key>172.16.0.0/12</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+      <key>192.168.0.0/16</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+      <key>127.0.0.1</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+    </dict>
+  </dict>
+  <key>LSApplicationQueriesSchemes</key><array><string>altstore</string><string>altstore-classic</string></array>
+  <key>UILaunchScreen</key><dict/>
+  <key>UIFileSharingEnabled</key><true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+  <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+  <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+  <key>OpenCaptureSourceURL</key><string>https://github.com/aron7awol/OpenCapture/releases/latest/download/altstore.json</string>
+  <key>OpenCaptureOriginalBundleID</key><string>io.github.aron7awol.OpenCapture</string>
+</dict></plist>

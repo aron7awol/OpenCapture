@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "id": "5b8e389a-e590-4d60-8234-e9b08ffb702a",
+  "format": "bayerRaw",
+  "quality": "speed",
+  "frameCount": 4,
+  "exposureSeconds": 0.033333,
+  "iso": 100,
+  "focusPosition": 0.5,
+  "settleMilliseconds": 500,
+  "context": {"label": "Synthetic example; no real measurement"}
+}

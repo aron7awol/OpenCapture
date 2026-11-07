@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenCapture Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"],
+  "properties": {
+    "protocolVersion": {"const": 1, "type": "integer"},
+    "id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "format": {"enum": ["bayerRaw", "jpeg"]},
+    "quality": {"enum": ["speed", "quality"]},
+    "frameCount": {"type": "integer", "minimum": 1, "maximum": 32},
+    "exposureSeconds": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 30},
+    "iso": {"type": ["number", "null"], "minimum": 1, "maximum": 204800},
+    "focusPosition": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "whiteBalance": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["red", "green", "blue"],
+      "properties": {"red": {"type": "number", "minimum": 1, "maximum": 64}, "green": {"type": "number", "minimum": 1, "maximum": 64}, "blue": {"type": "number", "minimum": 1, "maximum": 64}}
+    },
+    "settleMilliseconds": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "context": {"type": "object", "maxProperties": 16, "propertyNames": {"maxLength": 64}, "additionalProperties": {"type": "string", "maxLength": 256}}
+  },
+  "allOf": [
+    {"if": {"properties": {"format": {"const": "bayerRaw"}}}, "then": {"properties": {"quality": {"const": "speed"}}}},
+    {"if": {"required": ["exposureSeconds"], "properties": {"exposureSeconds": {"type": "number"}}}, "then": {"required": ["iso"], "properties": {"iso": {"type": "number"}}}},
+    {"if": {"required": ["iso"], "properties": {"iso": {"type": "number"}}}, "then": {"required": ["exposureSeconds"], "properties": {"exposureSeconds": {"type": "number"}}}}
+  ]
+}
