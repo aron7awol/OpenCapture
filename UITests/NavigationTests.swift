@@ -2,6 +2,7 @@ import XCTest
 
 final class NavigationTests: XCTestCase {
     func testCameraGalleryAndConnection() throws {
+        continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
         addUIInterruptionMonitor(withDescription: "Camera permission") { alert in
@@ -24,12 +25,19 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.secureTextFields["Pairing token"].exists)
         attach("connection-portrait", app)
         XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = expectation(for: NSPredicate { _, _ in
+            let window = app.windows.firstMatch.frame
+            let navigation = app.navigationBars["Connection"].frame
+            return window.width > window.height && navigation.maxX <= window.maxX && navigation.minY >= window.minY
+        }, evaluatedWith: app)
+        wait(for: [landscape], timeout: 10)
+        XCTAssertTrue(app.secureTextFields["Pairing token"].isHittable)
         attach("connection-landscape", app)
         XCUIDevice.shared.orientation = .portrait
     }
 
     private func attach(_ name: String, _ app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

@@ -11,6 +11,11 @@
 - macOS build: Xcode device compile and unsigned IPA packaging. The packager
   refuses simulator products. Published IPA hash and permissions come from the
   actual build, not handwritten release metadata.
+- Simulator checks: select Fast JPEG, open the empty gallery and connection
+  controls, rotate to landscape, and verify the controller field remains
+  hittable within a landscape window. Full-screen screenshots are retained
+  for manual review. The script prefers iPhone 16 Pro on iOS 18.5, matching
+  the current Xcode 16.4 runner's SDK, with another available iPhone as fallback.
 
 These tests do not assert real camera quality or exposure behavior.
 
