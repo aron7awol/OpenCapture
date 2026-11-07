@@ -31,7 +31,7 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public init(id: String = UUID().uuidString.lowercased()) { self.id = id }
 
     public func validate() throws {
-        guard protocolVersion == 1, UUID(uuidString: id) != nil else {
+        guard protocolVersion == 1, UUID(uuidString: id)?.uuidString.lowercased() == id else {
             throw CaptureError.invalid("Invalid protocol version or request ID")
         }
         guard (1...32).contains(frameCount), (0...10000).contains(settleMilliseconds) else {

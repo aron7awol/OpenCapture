@@ -16,7 +16,8 @@ struct DeviceReading {
     var whiteBalance: WhiteBalance
 }
 
-final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+// Session state is queue-confined; the preview mailbox is protected by previewLock.
+final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "OpenCapture.camera")
     private let previewQueue = DispatchQueue(label: "OpenCapture.preview", qos: .utility)
@@ -153,16 +154,29 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         try await Task.sleep(nanoseconds: 500_000_000)
         var settled = false
-        for _ in 0..<100 {
+        var stableSamples = 0
+        let attempts = Int(max(10, (request.exposureSeconds ?? 0) * 2 + 2) * 10)
+        for _ in 0..<attempts {
             try Task.checkCancellation()
             settled = try await onQueue { [self] in
                 guard let d = device else { return false }
-                return !d.isAdjustingExposure && !d.isAdjustingFocus && !d.isAdjustingWhiteBalance
+                guard !d.isAdjustingExposure && !d.isAdjustingFocus && !d.isAdjustingWhiteBalance else { return false }
+                if let seconds = request.exposureSeconds, let iso = request.iso {
+                    guard abs(d.exposureDuration.seconds - seconds) <= max(0.00001, seconds * 0.02),
+                          abs(d.iso - iso) <= max(1, iso * 0.05) else { return false }
+                }
+                if let focus = request.focusPosition, abs(d.lensPosition - focus) > 0.02 { return false }
+                if let wb = request.whiteBalance {
+                    let actual = d.deviceWhiteBalanceGains
+                    if abs(actual.redGain - wb.red) > 0.1 || abs(actual.greenGain - wb.green) > 0.1 || abs(actual.blueGain - wb.blue) > 0.1 { return false }
+                }
+                return true
             }
-            if settled { break }
+            stableSamples = settled ? stableSamples + 1 : 0
+            if stableSamples >= 3 { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        guard settled else { throw CaptureError.unavailable("Camera did not settle. Use manual exposure and focus.") }
+        guard stableSamples >= 3 else { throw CaptureError.unavailable("Camera did not settle or honor the requested controls. Check the supported ranges.") }
         try await onQueue { [self] in
             guard let d = device else { throw CaptureError.unavailable("Camera disconnected") }
             try d.lockForConfiguration()

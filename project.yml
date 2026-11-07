@@ -30,4 +30,14 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     scheme:
       gatherCoverageData: false
-      testTargets: []
+      testTargets: [OpenCaptureUITests]
+  OpenCaptureUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: OpenCapture
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.aron7awol.OpenCapture.UITests
+        GENERATE_INFOPLIST_FILE: YES

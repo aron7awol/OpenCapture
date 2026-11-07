@@ -26,12 +26,21 @@ jobs:
         env:
           BUILD_NUMBER: ${{ github.run_number }}
         run: bash scripts/build-ios.sh
+      - name: Simulator navigation and screenshots
+        run: bash scripts/simulator-test.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: OpenCapture-device
           path: dist/
           retention-days: 7
           if-no-files-found: error
+      - name: Retain simulator diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: OpenCapture-test-diagnostics
+          path: build/UITests.xcresult
+          retention-days: 7
   publish:
     needs: build
     if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'

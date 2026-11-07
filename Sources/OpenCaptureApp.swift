@@ -63,7 +63,7 @@ struct CameraView: View {
                         Text("Bayer RAW").tag("raw")
                         Text("Fast JPEG burst").tag("fast")
                         Text("Quality JPEG").tag("quality")
-                    }.disabled(model.busy || model.connected)
+                    }.accessibilityIdentifier("captureMode").disabled(model.busy || model.connected)
                     Stepper("Frames: \(model.frameCount)", value: $model.frameCount, in: 1...32)
                         .disabled(model.busy || model.connected)
                     if let caps = model.capabilities {
@@ -99,20 +99,31 @@ struct CameraView: View {
                     Button { model.previewSettings() } label: { Label("Apply controls", systemImage: "slider.horizontal.3") }
                 }.disabled(model.busy || model.connected)
                 Section {
+                    Button { Task { await model.startCamera() } } label: { Label("Restart camera", systemImage: "arrow.clockwise") }
+                        .disabled(model.busy || model.connected || model.configuring)
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaInset(edge: .bottom) {
+                HStack {
                     if model.busy {
-                        Button(role: .destructive) { model.cancel() } label: { Label("Cancel", systemImage: "stop.circle") }
+                        Button(role: .destructive) { model.cancel() } label: { Label("Cancel capture", systemImage: "stop.circle") }
                     } else {
                         Button { model.captureLocal() } label: {
                             Label("Capture \(model.frameCount) frame\(model.frameCount == 1 ? "" : "s")", systemImage: "camera.shutter.button")
-                        }.disabled(model.connected || model.capabilities == nil || model.configuring)
+                                .frame(maxWidth: .infinity)
+                        }.buttonStyle(.borderedProminent).disabled(model.connected || model.capabilities == nil || model.configuring)
                     }
-                    if model.capabilities == nil {
-                        Button { Task { await model.startCamera() } } label: { Label("Retry camera", systemImage: "arrow.clockwise") }
-                    }
-                }
+                }.padding(.horizontal).padding(.vertical, 8).background(.bar)
             }
             .navigationTitle("OpenCapture")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                }
+            }
         }
     }
 }
