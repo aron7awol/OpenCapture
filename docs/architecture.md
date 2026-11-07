@@ -16,6 +16,11 @@
   rewrite the installed application's identifier.
 - `Sources/OpenCaptureApp.swift`: SwiftUI camera, history, detail/export,
   connection, and update views. SF Symbols are native UI controls.
+  Preview rotation uses the window's interface orientation: portrait 90,
+  upside-down portrait 270, landscape-left 180, landscape-right 0 degrees.
+  Interface landscape names are opposite to physical device-orientation names.
+  This only rotates the aiming layer; capture outputs retain their fixed
+  sensor-coordinate orientation and native image metadata.
 - `controller/`: independent Python stdlib reference controller and browser
   UI. It is not the existing display renderer and does not run its solver.
 - `scripts/`: deterministic icon renderer, device-IPA packager, macOS build.
@@ -45,8 +50,9 @@ timestamps are UTC wall time. Never subtract these different clock domains.
 
 ## Known limitations and next work
 
-1. Validate physical capture, ATS/local networking, AltStore installation, and
-   settings-lock behavior on an iPhone 16 Pro.
+1. Validate physical capture, ATS/local networking, landscape preview
+   orientation, and settings-lock behavior on an iPhone 16 Pro. AltStore
+   installation and access to the live preview have been reported working.
 2. Measure repeatability, clipped pixels, and known synthetic perturbations
    before using frames to propose correction.
 3. Add controlled RAW development/inspection and fractional-precision

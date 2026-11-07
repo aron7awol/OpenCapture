@@ -115,8 +115,10 @@ a successful Windows controller test is not an iOS compilation result.
 
 ## Scope and status
 
-Physical-camera behavior, frame timing, image quality, and AltStore installation
-must be validated on a real phone. Simulator and synthetic tests cannot prove
+AltStore installation and access to the live preview were reported working
+on an iPhone on 2026-11-07. Physical capture behavior, frame timing, image
+quality, and the landscape preview fix still need device validation.
+Simulator and synthetic tests cannot prove
 measurement performance. See [agent guide](AGENTS.md), [protocol](docs/protocol.md),
 [architecture](docs/architecture.md), and [test plan](docs/test-plan.md).
 

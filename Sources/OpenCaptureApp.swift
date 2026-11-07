@@ -112,7 +112,8 @@ struct CameraView: View {
                         Button { model.captureLocal() } label: {
                             Label("Capture \(model.frameCount) frame\(model.frameCount == 1 ? "" : "s")", systemImage: "camera.shutter.button")
                                 .frame(maxWidth: .infinity)
-                        }.buttonStyle(.borderedProminent).disabled(model.connected || model.capabilities == nil || model.configuring)
+                        }.buttonStyle(.borderedProminent).accessibilityIdentifier("captureButton")
+                            .disabled(model.connected || model.capabilities == nil || model.configuring)
                     }
                 }.padding(.horizontal).padding(.vertical, 8).background(.bar)
             }
@@ -156,9 +157,10 @@ final class PreviewSurface: UIView {
         super.layoutSubviews()
         guard let connection = layerView.connection else { return }
         let angle: CGFloat
+        // Interface and physical-device orientations name landscape sides oppositely.
         switch window?.windowScene?.interfaceOrientation {
-        case .landscapeLeft: angle = 0
-        case .landscapeRight: angle = 180
+        case .landscapeLeft: angle = 180
+        case .landscapeRight: angle = 0
         case .portraitUpsideDown: angle = 270
         default: angle = 90
         }

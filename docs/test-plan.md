@@ -11,13 +11,26 @@
 - macOS build: Xcode device compile and unsigned IPA packaging. The packager
   refuses simulator products. Published IPA hash and permissions come from the
   actual build, not handwritten release metadata.
-- Simulator checks: select Fast JPEG, open the empty gallery and connection
-  controls, rotate to landscape, and verify the controller field remains
-  hittable within a landscape window. Full-screen screenshots are retained
+- Simulator checks: select Fast JPEG, rotate the camera screen into both
+  landscape directions, and verify the capture button stays inside the window.
+  Open the empty gallery and connection controls, rotate to landscape, and
+  verify the controller field remains hittable. Full-screen screenshots are retained
   for manual review. The script prefers iPhone 16 Pro on iOS 18.5, matching
   the current Xcode 16.4 runner's SDK, with another available iPhone as fallback.
 
-These tests do not assert real camera quality or exposure behavior.
+These tests do not assert real camera quality, preview pixel orientation, or
+exposure behavior. The simulator has no physical camera feed.
+
+## Device observations
+
+- 2026-11-07: the user installed the published build through AltStore and
+  reached the live camera preview. They reported an upside-down live preview
+  in landscape, not a saved-photo problem. The interface-orientation mapping
+  had its landscape angles reversed; the fix uses 180 degrees for interface
+  landscape-left and 0 degrees for interface landscape-right. Portrait angles
+  and all photo/video output connections are unchanged. Confirm both
+  landscape directions on the phone after updating; layout tests alone cannot
+  validate the camera image.
 
 ## First phone test
 
@@ -40,6 +53,8 @@ These tests do not assert real camera quality or exposure behavior.
 8. Rotate phone upright/upside-down/landscape. Record native file orientation
    and EXIF; verify the preview framing separately. Calibration must align the
    saved files, not assume preview orientation matches sensor coordinates.
+   Use a subject with an obvious top (for example, printed text) and check both
+   landscape directions, including rotating directly from one to the other.
 9. Add the AltStore source, publish a higher build, check for updates, and
    install. Verify captures/settings survive. Export first as a precaution.
 
