@@ -59,5 +59,6 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           TAG=$(python3 -c 'import json; print(json.load(open("dist/release.json"))["tag"])')
-          gh release create "$TAG" dist/* --target "$SOURCE_COMMIT" --title "OpenCapture $TAG" --latest \
+          ASSETS=(dist/OpenCapture.ipa dist/altstore.json dist/release.json dist/SHA256SUMS.txt dist/icon.png dist/LICENSE dist/build-info.txt)
+          gh release create "$TAG" "${ASSETS[@]}" --target "$SOURCE_COMMIT" --title "OpenCapture $TAG" --latest \
             --notes "Experimental unsigned device IPA for AltStore Classic. GPLv3 source is the source archive attached to this tag. Real camera and AltStore installation require device testing."
