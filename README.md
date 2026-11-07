@@ -1,7 +1,6 @@
 # OpenCapture
 
-A standalone iOS camera and remote capture instrument. No display-calibration
-engine, account service, or cloud photo storage is embedded in the app.
+A standalone iOS camera and remote capture instrument.
 
 ## Capture modes
 
@@ -21,7 +20,7 @@ thumbnails are processed aiming/inspection aids, not calibrated RAW views.
 The first version uses up to 32 sequential frames and a photo configuration
 around 12 MP. This is not high-speed video or a promised frame rate. RAW
 dimensions are whatever the selected physical camera actually returns.
-No automatic RAW averaging or measurement correction is performed yet.
+No automatic RAW averaging is performed yet.
 
 ## Try it on an iPhone
 
@@ -42,15 +41,14 @@ Keep the app foregrounded. Going to the background cancels a run and stops the
 camera. Partial files remain available. Cancellation waits for an in-flight
 photo to return or hit its timeout; iOS has no general cancel-photo API.
 
-## Compare near-black modes
+## Compare capture modes
 
-Use the same tripod position, physical lens, screen stimulus, display mode,
-and room lighting. Warm up the display. First find an exposure that does not
-clip, copy the current settings to manual, and keep those settings across
-modes. Capture 4-16 frames per mode. Compare both individual frames and the
-actual exposure metadata, not just thumbnails. A quality JPEG can look
-smoother while suppressing real spatial variation. Bayer RAW can look noisier
-while preserving it. Neither is automatically the better measurement.
+Use the same camera position, physical lens, scene, and lighting. First find
+an exposure that does not clip, copy the current settings to manual, and keep
+those settings across modes. Capture 4-16 frames per mode. Compare both
+individual frames and the actual exposure metadata, not just thumbnails.
+A quality JPEG can look smoother while suppressing fine detail. Bayer RAW
+can look noisier while preserving it.
 
 The native preview is not an exposure histogram for RAW. A proper linear RAW
 inspection and averaging path is future work; originals are retained for it.
@@ -117,12 +115,6 @@ a successful Windows controller test is not an iOS compilation result.
 
 ## Scope and status
 
-OpenCapture protocol 1 is **not** the UniformityComp Android v2 protocol.
-They must not be pointed at each other's ports. A future adapter can translate
-capture requests and preserve source formats, but no DNG is currently imported
-into UniformityComp's still solver by this project. No calibration behavior is
-changed by installing OpenCapture.
-
 Physical-camera behavior, frame timing, image quality, and AltStore installation
 must be validated on a real phone. Simulator and synthetic tests cannot prove
 measurement performance. See [agent guide](AGENTS.md), [protocol](docs/protocol.md),
@@ -130,10 +122,8 @@ measurement performance. See [agent guide](AGENTS.md), [protocol](docs/protocol.
 
 ## License
 
-Copyright (C) 2026 aron7awol. This new OpenCapture source is licensed under
-**GPL-3.0-only**; see [LICENSE](LICENSE). It comes with no warranty. This choice
-does not change any other project's license. No Windows renderer, solver,
-Android source, private captures, or private Git history belongs in this repo.
+Copyright (C) 2026 aron7awol. OpenCapture is licensed under
+**GPL-3.0-only**; see [LICENSE](LICENSE). It comes with no warranty.
 
 ## Platform references
 
