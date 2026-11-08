@@ -9,6 +9,10 @@ public enum CaptureQuality: String, Codable, CaseIterable, Sendable {
     case speed, quality
 }
 
+public enum CameraOperation: String, Codable, Sendable {
+    case capture, applyControls
+}
+
 public struct WhiteBalance: Codable, Equatable, Sendable {
     public var red: Float
     public var green: Float
@@ -18,6 +22,7 @@ public struct WhiteBalance: Codable, Equatable, Sendable {
 public struct CaptureRequest: Codable, Equatable, Sendable {
     public var protocolVersion = 1
     public var id: String
+    public var operation: CameraOperation? = nil
     public var format: CaptureFormat = .bayerRAW
     public var quality: CaptureQuality = .speed
     public var frameCount = 4
@@ -36,6 +41,9 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
         }
         guard (1...32).contains(frameCount), (0...10000).contains(settleMilliseconds) else {
             throw CaptureError.invalid("Frame count must be 1...32; settle time 0...10000 ms")
+        }
+        guard operation != .applyControls || frameCount == 1 else {
+            throw CaptureError.invalid("Apply controls requires frameCount 1 and saves no photo")
         }
         guard format != .bayerRAW || quality == .speed else {
             throw CaptureError.invalid("Bayer RAW requires speed priority")
@@ -65,7 +73,7 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> CaptureRequest {
         guard data.count <= 16384,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["protocolVersion", "id", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context"]) else {
+              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context"]) else {
             throw CaptureError.invalid("Malformed request or unknown field")
         }
         if let wb = object["whiteBalance"] as? [String: Any], Set(wb.keys) != ["red", "green", "blue"] {
@@ -100,6 +108,20 @@ public struct CameraCapabilities: Codable, Sendable {
     public var maxPhotoHeight: Int
     public var osVersion: String
     public var appVersion: String
+    public var appBuild: String? = nil
+    public var deviceID: String? = nil
+    public var operations: [CameraOperation]? = nil
+}
+
+public struct CameraControlResult: Codable, Sendable {
+    public var protocolVersion = 1
+    public var request: CaptureRequest
+    public var camera: CameraCapabilities
+    public var deviceExposureSeconds: Double
+    public var deviceISO: Float
+    public var lensPosition: Float
+    public var whiteBalance: WhiteBalance
+    public var completedAt: String
 }
 
 public struct CapturedFile: Codable, Equatable, Sendable {

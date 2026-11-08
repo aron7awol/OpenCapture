@@ -40,6 +40,17 @@ class ContractTests(unittest.TestCase):
                 job[key] = value
                 server.validate_request(job)
 
+    def test_controls_contract(self):
+        job = request()
+        job["operation"] = "applyControls"
+        server.validate_request(job)
+        job["frameCount"] = 2
+        with self.assertRaises(server.Invalid):
+            server.validate_request(job)
+        job.update(frameCount=1, operation="execute")
+        with self.assertRaises(server.Invalid):
+            server.validate_request(job)
+
     def test_nonfinite_and_duplicate_json(self):
         for body in [b'{"a": NaN}', b'{"a":Infinity}', b'{"a":1,"a":2}', b'not json', b'\xff']:
             with self.subTest(body=body), self.assertRaises(server.Invalid):
@@ -191,6 +202,40 @@ class HTTPTests(unittest.TestCase):
         saved = json.loads((Path(self.temp.name) / job["id"] / "state.json").read_text())
         self.assertEqual(saved["status"], "failed")
         self.assertNotIn(lease, json.dumps(saved))
+
+    def test_apply_controls_capability_and_readback(self):
+        job = request()
+        job["operation"] = "applyControls"
+        self.assertEqual(self.call("POST", "/oc/v1/jobs", job)[0], 409)
+        self.state.capabilities = {"protocolVersion": 1, "formats": ["bayerRaw"], "operations": ["capture", "applyControls"]}
+        self.assertEqual(self.call("POST", "/oc/v1/jobs", job)[0], 200)
+        lease = self.call("GET", "/oc/v1/lease")[1]["leaseToken"]
+        self.assertEqual(self.upload(job, lease, "frame-0001.dng", b"test")[0], 409)
+        result = {"protocolVersion": 1, "request": job, "camera": self.state.capabilities,
+                  "deviceExposureSeconds": 0.05, "deviceISO": 110, "lensPosition": 0.48,
+                  "whiteBalance": {"red": 1.2, "green": 1, "blue": 1.3}, "completedAt": "2026-11-07T12:00:00Z"}
+        path = f'/oc/v1/jobs/{job["id"]}/controls-complete'
+        headers = {"X-OpenCapture-Lease": lease}
+        invalid = dict(result, lensPosition=2)
+        self.assertEqual(self.call("POST", path, invalid, headers)[0], 400)
+        self.assertEqual(self.call("POST", path, result, headers)[0], 200)
+        self.assertEqual(self.call("POST", path, result, headers)[0], 200)
+        self.assertEqual(self.call("GET", "/oc/v1/state")[1]["controls"], result)
+        self.assertEqual(self.call("POST", path, dict(result, deviceISO=120), headers)[0], 409)
+        self.assertFalse((Path(self.temp.name) / job["id"] / "manifest.json").exists())
+
+    def test_cancelled_controls_cannot_complete(self):
+        self.state.capabilities = {"operations": ["applyControls"]}
+        job = request()
+        job["operation"] = "applyControls"
+        self.state.submit(job)
+        lease = self.call("GET", "/oc/v1/lease")[1]["leaseToken"]
+        self.call("POST", f'/oc/v1/jobs/{job["id"]}/cancel', {})
+        result = {"protocolVersion": 1, "request": job, "camera": {}, "deviceExposureSeconds": 0.05,
+                  "deviceISO": 100, "lensPosition": 0.5, "whiteBalance": {"red": 1, "green": 1, "blue": 1},
+                  "completedAt": "2026-11-07T12:00:00Z"}
+        self.assertEqual(self.call("POST", f'/oc/v1/jobs/{job["id"]}/controls-complete', result,
+                                   {"X-OpenCapture-Lease": lease})[0], 409)
 
 
 class ReleaseTests(unittest.TestCase):

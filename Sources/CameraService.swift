@@ -94,6 +94,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     private func capabilities(_ device: AVCaptureDevice) -> CameraCapabilities {
         let raw = output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat)
+        let deviceID = UserDefaults.standard.string(forKey: "captureDeviceID") ?? UUID().uuidString.lowercased()
+        UserDefaults.standard.set(deviceID, forKey: "captureDeviceID")
         return CameraCapabilities(cameraID: device.uniqueID, name: device.localizedName,
             formats: raw ? [.bayerRAW, .jpeg] : [.jpeg], minISO: device.activeFormat.minISO,
             maxISO: device.activeFormat.maxISO, minExposureSeconds: device.activeFormat.minExposureDuration.seconds,
@@ -104,7 +106,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             maxWhiteBalanceGain: device.maxWhiteBalanceGain,
             maxPhotoWidth: Int(output.maxPhotoDimensions.width), maxPhotoHeight: Int(output.maxPhotoDimensions.height),
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+            appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+            deviceID: deviceID, operations: [.capture, .applyControls])
     }
 
     func reading() async throws -> DeviceReading {

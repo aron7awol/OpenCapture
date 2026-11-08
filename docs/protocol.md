@@ -17,6 +17,7 @@ Tokens are never URL parameters. Versioned JSON has `protocolVersion: 1`.
 | POST `/oc/v1/jobs/<id>/heartbeat` | Renew lease; returns `cancelled` |
 | PUT `/oc/v1/jobs/<id>/files/<name>` | Stream one content-hashed original/sidecar |
 | POST `/oc/v1/jobs/<id>/complete` | Verify all references, commit manifest |
+| POST `/oc/v1/jobs/<id>/controls-complete` | Commit device readback for apply-controls jobs |
 | POST `/oc/v1/jobs/<id>/failure` | Terminal `failed` or `cancelled` |
 | POST `/oc/v1/jobs` | Operator queues a request |
 | POST `/oc/v1/jobs/<id>/cancel` | Operator requests cancellation |
@@ -43,6 +44,22 @@ speed. 1...32 frames, 0...10000 ms additional settling. Schema and runtime
 validation bound numbers; the camera additionally enforces hardware limits.
 Context limits are measured in UTF-8 bytes by the runtime (JSON Schema string
 length alone is not sufficient for multibyte content).
+
+Optional `operation` is `capture` (also the meaning of absent/null) or
+`applyControls`. The latter requires `frameCount: 1` but takes no photo. It
+uses the same settle/manual-control rules and returns a controls result, not
+a capture manifest. Only submit it when camera capabilities advertise
+`operations: ["capture", "applyControls"]`. Old capture requests are unchanged.
+Capabilities also optionally include `appBuild` and an app-install-scoped
+`deviceID` UUID; the latter is distinct from the physical `cameraID` and may
+change after reinstalling the app.
+
+The controls-complete body contains exactly `protocolVersion`, `request`,
+`camera`, `deviceExposureSeconds`, `deviceISO`, `lensPosition`, `whiteBalance`,
+and `completedAt`. These are settled device readings, not photo EXIF. The
+request must match the leased request. Cancellation/expiry and immutable
+idempotent completion work as for captures. Control jobs cannot upload files.
+`GET /oc/v1/state` includes the latest successful result as `controls`.
 
 Idle: `{"protocolVersion":1}`. Active lease:
 `{"protocolVersion":1,"request":{...},"leaseToken":"..."}`.

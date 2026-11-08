@@ -9,6 +9,8 @@
   DNG/JPEG files, metadata sidecars, and throttled processed preview.
 - `Sources/AppModel.swift`: foreground run lifecycle, disk archives, local
   controls, remote leasing, heartbeat/cancellation, original-file upload.
+  Capability-advertised remote apply-controls jobs settle and lock the camera
+  without taking a photo; their result labels device readings separately.
 - `Sources/Transport.swift`: credentialed controller traffic, no redirects,
   ephemeral URLSession, disk-backed uploads, integrity receipts, Keychain.
 - `Sources/UpdateService.swift`: public HTTPS AltStore feed; never downloads or

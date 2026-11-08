@@ -64,7 +64,10 @@ On the phone, enter `http://<PC-LAN-IP>:8766` and that token in **Connection**.
 The phone will request Local Network permission. Click Connect.
 
 The controller has preview, capture controls, cancellation, capabilities, and
-job history. Captures are written under `captures/<request-id>/`. Nothing is
+job history. Updated clients advertise remote **Apply controls** to adjust and
+lock the preview without taking a photo; the controller reports device
+readings separately from captured-photo EXIF. Captures are written under
+`captures/<request-id>/`. Nothing is
 uploaded to GitHub. The CLI defaults to loopback; the double-click launcher
 explicitly opts into LAN binding. Do not port-forward it or use it on public
 Wi-Fi. Bearer authentication over HTTP is not encryption.

@@ -63,7 +63,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -76,6 +76,10 @@ def validate_request(request):
         raise Invalid("Bayer RAW requires speed priority")
     if type(request["frameCount"]) is not int or not 1 <= request["frameCount"] <= 32:
         raise Invalid("Frame count must be 1...32")
+    if request.get("operation") not in (None, "capture", "applyControls"):
+        raise Invalid("Unsupported camera operation")
+    if request.get("operation") == "applyControls" and request["frameCount"] != 1:
+        raise Invalid("Apply controls requires frameCount 1 and saves no photo")
     if type(request["settleMilliseconds"]) is not int or not 0 <= request["settleMilliseconds"] <= 10000:
         raise Invalid("Invalid settling interval")
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
@@ -119,6 +123,7 @@ class State:
         self.last_seen = 0
         self.preview = None
         self.preview_at = 0
+        self.controls = None
 
     def expire(self):
         for job in self.jobs.values():
@@ -135,6 +140,8 @@ class State:
         validate_request(request)
         with self.lock:
             self.expire()
+            if request.get("operation") == "applyControls" and "applyControls" not in (self.capabilities or {}).get("operations", []):
+                raise Invalid("Update the camera app: remote apply controls is not advertised", 409)
             if request["id"] in self.jobs:
                 job = self.jobs[request["id"]]
                 if canonical_request(job["request"]) == canonical_request(request):
@@ -172,9 +179,9 @@ class Controller(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, state):
+    def __init__(self, address, state, handler=None):
         self.state = state
-        super().__init__(address, Handler)
+        super().__init__(address, handler or Handler)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -270,6 +277,7 @@ class Handler(BaseHTTPRequestHandler):
             with state.lock:
                 state.expire()
                 self.reply(200, {"protocolVersion": VERSION, "capabilities": state.capabilities,
+                    "controls": state.controls,
                     "lastSeenSecondsAgo": time.time() - state.last_seen if state.last_seen else None,
                     "previewAgeSeconds": time.time() - state.preview_at if state.preview_at else None,
                     "jobs": [{"request": job["request"], "status": job["status"], "files": len(job["files"]),
@@ -332,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
         if not lease or len(lease) > 128:
             raise Invalid("Lease required", 403)
         with state.lock:
-            job = state.job(job_id, lease, allow_complete=action in ("files", "complete"))
+            job = state.job(job_id, lease, allow_complete=action in ("files", "complete", "controls-complete"))
         if action == "heartbeat" and self.command == "POST" and len(parts) == 6:
             self.json_body()
             with state.lock:
@@ -344,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
             self.upload(job_id, lease, parts[6])
         elif action == "complete" and self.command == "POST" and len(parts) == 6:
             self.complete(job_id, lease, self.json_body())
+        elif action == "controls-complete" and self.command == "POST" and len(parts) == 6:
+            self.complete_controls(job_id, lease, self.json_body())
         elif action == "failure" and self.command == "POST" and len(parts) == 6:
             failure = self.json_body()
             if not isinstance(failure, dict) or failure.get("protocolVersion") != 1 or failure.get("status") not in {"failed", "cancelled"} or not isinstance(failure.get("message"), str):
@@ -367,6 +377,8 @@ class Handler(BaseHTTPRequestHandler):
             raise Invalid("SHA-256 required")
         with state.lock:
             job = state.job(job_id, lease, allow_complete=True)
+            if job["request"].get("operation") == "applyControls":
+                raise Invalid("Control operations cannot upload photos", 409)
             if job["cancelled"]:
                 raise Invalid("Capture cancelled", 409)
             if not 1 <= int(match[1]) <= job["request"]["frameCount"]:
@@ -419,6 +431,36 @@ class Handler(BaseHTTPRequestHandler):
             with state.lock:
                 job["uploading"].discard(name)
             temporary.unlink(missing_ok=True)
+
+    def complete_controls(self, job_id, lease, result):
+        required = {"protocolVersion", "request", "camera", "deviceExposureSeconds", "deviceISO",
+                    "lensPosition", "whiteBalance", "completedAt"}
+        if not isinstance(result, dict) or set(result) != required or type(result["protocolVersion"]) is not int or result["protocolVersion"] != 1:
+            raise Invalid("Malformed controls result")
+        if not number(result["deviceExposureSeconds"], 1e-9, 30) or not number(result["deviceISO"], 1, 204800) or not number(result["lensPosition"], 0, 1):
+            raise Invalid("Invalid device readings")
+        wb = result["whiteBalance"]
+        if not isinstance(wb, dict) or set(wb) != {"red", "green", "blue"} or not all(number(v, 1, 64) for v in wb.values()):
+            raise Invalid("Invalid white balance readings")
+        if not isinstance(result["camera"], dict) or not isinstance(result["completedAt"], str) or len(result["completedAt"]) > 64:
+            raise Invalid("Invalid camera or completion time")
+        state = self.server.state
+        with state.lock:
+            job = state.job(job_id, lease, allow_complete=True)
+            if job["cancelled"] or job["request"].get("operation") != "applyControls":
+                raise Invalid("Not an active controls request", 409)
+            if canonical_request(validate_request(result["request"])) != canonical_request(job["request"]):
+                raise Invalid("Controls request mismatch", 409)
+            path = job["directory"] / "controls.json"
+            if job["status"] == "complete":
+                if parse_json(path.read_bytes()) != result:
+                    raise Invalid("Completed controls result is immutable", 409)
+            else:
+                atomic_json(path, result)
+                job["status"] = "complete"
+                state.controls = result
+                state.persist(job)
+        self.reply(200, {"protocolVersion": VERSION})
 
     def complete(self, job_id, lease, manifest):
         state = self.server.state

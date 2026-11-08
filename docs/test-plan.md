@@ -7,7 +7,9 @@
   cancellation, expiry, complete manifests, duplicate/conflicting uploads,
   failure persistence, and IPA/feed consistency.
 - Swift core tests: request roundtrip, malformed settings, unknown fields,
-  URL restrictions, numeric version comparison.
+  URL restrictions, numeric version comparison, optional apply-controls jobs.
+- Remote controls: capability gating for old apps, settled-readback validation,
+  cancellation, no photo uploads, and idempotent/immutable completion.
 - macOS build: Xcode device compile and unsigned IPA packaging. The packager
   refuses simulator products. Published IPA hash and permissions come from the
   actual build, not handwritten release metadata.
@@ -50,6 +52,8 @@ exposure behavior. The simulator has no physical camera feed.
    survive, and no overlapping captures occur on reconnect.
 7. Connect to the reference controller on port 8766. Confirm preview, capture,
    cancellation, manifest, hashes, and desktop originals. Test a stale lease.
+   Apply controls remotely, confirm the preview changes without a new photo,
+   and compare the reported device readings with a subsequent photo's EXIF.
 8. Rotate phone upright/upside-down/landscape. Record native file orientation
    and EXIF; verify the preview framing separately. Calibration must align the
    saved files, not assume preview orientation matches sensor coordinates.

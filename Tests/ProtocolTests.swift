@@ -41,4 +41,18 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(ReleaseVersion.newer(version: "0.1.0", build: "12", than: "0.1.0", build: "9"))
         XCTAssertFalse(ReleaseVersion.newer(version: "0.1.0", build: "1", than: "0.2.0", build: "1"))
     }
+
+    func testApplyControlsAndOldRequests() throws {
+        var request = CaptureRequest()
+        XCTAssertNil(try CaptureRequest.decode(JSONEncoder().encode(request)).operation)
+        request.operation = .applyControls
+        XCTAssertThrowsError(try request.validate())
+        request.frameCount = 1
+        request.exposureSeconds = 0.05
+        request.iso = 100
+        XCTAssertEqual(try CaptureRequest.decode(JSONEncoder().encode(request)), request)
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as! [String: Any]
+        object["operation"] = "arbitraryCommand"
+        XCTAssertThrowsError(try CaptureRequest.decode(JSONSerialization.data(withJSONObject: object)))
+    }
 }

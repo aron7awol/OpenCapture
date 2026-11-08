@@ -209,6 +209,20 @@ struct CaptureArchive: Identifiable {
         }
         defer { heartbeat.cancel() }
         do {
+            if job.operation == .applyControls {
+                status = "Applying remote controls"
+                try await camera.prepare(job)
+                let reading = try await camera.reading()
+                guard let capabilities else { throw CaptureError.unavailable("Camera disconnected") }
+                try Task.checkCancellation()
+                let result = CameraControlResult(request: job, camera: capabilities,
+                    deviceExposureSeconds: reading.exposure, deviceISO: reading.iso,
+                    lensPosition: reading.focus, whiteBalance: reading.whiteBalance,
+                    completedAt: ISO8601DateFormatter().string(from: Date()))
+                try await client.post(result, to: "oc/v1/jobs/\(job.id)/controls-complete", lease: secret)
+                status = "Remote controls locked"
+                return
+            }
             let archive = try await capture(job)
             guard let manifest = archive.manifest else { throw CaptureError.unavailable("Capture manifest is missing") }
             status = "Uploading originals"
