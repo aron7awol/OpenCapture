@@ -171,16 +171,29 @@ public enum CaptureError: LocalizedError {
 
 public enum EndpointPolicy {
     public static func controllerURL(_ text: String) throws -> URL {
-        guard let parts = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let address = trimmed.contains("://") ? trimmed : "http://" + trimmed
+        guard var parts = URLComponents(string: address),
               let host = parts.host?.lowercased(), !host.isEmpty,
               parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
               parts.path.isEmpty || parts.path == "/",
-              parts.port == nil || (1...65535).contains(parts.port!),
-              let url = parts.url else { throw CaptureError.invalid("Enter a server URL without a path or credentials") }
+              parts.port == nil || (1...65535).contains(parts.port!) else {
+            throw CaptureError.invalid("Enter a controller IP or URL without a path or credentials")
+        }
         guard parts.scheme == "https" || (parts.scheme == "http" && isLocalHost(host)) else {
             throw CaptureError.invalid("HTTP is restricted to private IPv4 addresses or .local names; otherwise use HTTPS")
         }
+        if parts.scheme == "http", isLocalHost(host), parts.port == nil { parts.port = 8765 }
+        guard let url = parts.url else { throw CaptureError.invalid("Invalid controller address") }
         return url
+    }
+
+    public static func validatePairingToken(_ token: String, for controller: URL) throws {
+        if token.isEmpty, let host = controller.host, isLocalHost(host.lowercased()) { return }
+        guard token.utf8.count >= 24, token.utf8.count <= 256,
+              !token.contains(where: { $0.isWhitespace || $0.isNewline }) else {
+            throw CaptureError.invalid("This controller needs a pairing token. Token-free connections are available only on the local network.")
+        }
     }
 
     public static func isLocalHost(_ host: String) -> Bool {

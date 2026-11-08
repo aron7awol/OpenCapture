@@ -11,7 +11,10 @@
   controls, remote leasing, heartbeat/cancellation, original-file upload.
   Capability-advertised remote apply-controls jobs settle and lock the camera
   without taking a photo; their result labels device readings separately.
-- `Sources/Transport.swift`: credentialed controller traffic, no redirects,
+- `Sources/ControllerDiscovery.swift`: foreground Bonjour browsing for
+  `_opencapture._tcp`, protocol/auth TXT parsing, and private IPv4 resolution.
+  Discovery lists controllers; the user selects which one to connect to.
+- `Sources/Transport.swift`: optional trusted-LAN pairing credentials, no redirects,
   ephemeral URLSession, disk-backed uploads, integrity receipts, Keychain.
 - `Sources/UpdateService.swift`: public HTTPS AltStore feed; never downloads or
   executes code itself. Uses the original bundle ID because AltStore may

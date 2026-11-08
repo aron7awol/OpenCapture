@@ -7,7 +7,9 @@
   cancellation, expiry, complete manifests, duplicate/conflicting uploads,
   failure persistence, and IPA/feed consistency.
 - Swift core tests: request roundtrip, malformed settings, unknown fields,
-  URL restrictions, numeric version comparison, optional apply-controls jobs.
+  URL restrictions, bare-IP/default-port normalization, optional local-network
+  tokens, required public-host tokens, numeric version comparison, and optional
+  apply-controls jobs.
 - Remote controls: capability gating for old apps, settled-readback validation,
   cancellation, no photo uploads, and idempotent/immutable completion.
 - macOS build: Xcode device compile and unsigned IPA packaging. The packager
@@ -16,7 +18,8 @@
 - Simulator checks: select Fast JPEG, rotate the camera screen into both
   landscape directions, and verify the capture button stays inside the window.
   Open the empty gallery and connection controls, rotate to landscape, and
-  verify the controller field remains hittable. Full-screen screenshots are retained
+  verify the controller field remains hittable and the optional token field is
+  collapsed initially. Full-screen screenshots are retained
   for manual review. The script prefers iPhone 16 Pro on iOS 18.5, matching
   the current Xcode 16.4 runner's SDK, with another available iPhone as fallback.
 
@@ -35,6 +38,12 @@ exposure behavior. The simulator has no physical camera feed.
   validate the camera image.
 
 ## First phone test
+
+For IP-only pairing, allow Local Network access, select an advertised controller,
+and confirm capabilities/preview arrive with no token entered. Also test a bare
+IP, an explicit alternate port, denied discovery permission, and a controller
+that still requires a token. Validate discovery on the actual Wi-Fi network;
+simulator layout and URL-policy tests do not prove multicast reachability.
 
 1. Install with AltStore Classic. Confirm app launches, permissions are clear,
    and denied camera permission can be recovered through iOS Settings.

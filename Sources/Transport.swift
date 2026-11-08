@@ -17,9 +17,7 @@ final class CaptureTransport {
     private let session: URLSession
     init(url: String, token: String) throws {
         base = try EndpointPolicy.controllerURL(url)
-        guard token.utf8.count >= 24, token.utf8.count <= 256, !token.contains(where: { $0.isWhitespace || $0.isNewline }) else {
-            throw CaptureError.invalid("Pairing token must contain 24...256 non-whitespace characters")
-        }
+        try EndpointPolicy.validatePairingToken(token, for: base)
         self.token = token
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
@@ -33,7 +31,7 @@ final class CaptureTransport {
     private func request(_ path: String, method: String = "GET", lease: String? = nil) -> URLRequest {
         var request = URLRequest(url: base.appendingPathComponent(path))
         request.httpMethod = method
-        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if !token.isEmpty { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         if let lease { request.setValue(lease, forHTTPHeaderField: "X-OpenCapture-Lease") }
         return request
     }
@@ -41,6 +39,7 @@ final class CaptureTransport {
     private func check(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 401 { throw CaptureError.transport("This controller requires a pairing token. Enter it under Advanced connection, or enable IP-only pairing on the controller.") }
             throw CaptureError.transport("Controller HTTP \(status). Check pairing, job state, and network.")
         }
         guard data.count <= 1_048_576 else { throw CaptureError.transport("Controller response is too large") }

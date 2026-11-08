@@ -42,6 +42,27 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(ReleaseVersion.newer(version: "0.1.0", build: "1", than: "0.2.0", build: "1"))
     }
 
+    func testIPOnlyPairingAndExplicitPorts() throws {
+        XCTAssertEqual(try EndpointPolicy.controllerURL(" 10.0.0.210 ").absoluteString, "http://10.0.0.210:8765")
+        XCTAssertEqual(try EndpointPolicy.controllerURL("192.168.1.2:8877").port, 8877)
+        XCTAssertEqual(try EndpointPolicy.controllerURL("http://capture.local").port, 8765)
+        XCTAssertEqual(try EndpointPolicy.controllerURL("http://10.0.0.2:8766").port, 8766)
+        XCTAssertNil(try EndpointPolicy.controllerURL("https://example.com").port)
+        XCTAssertThrowsError(try EndpointPolicy.controllerURL("8.8.8.8"))
+        XCTAssertThrowsError(try EndpointPolicy.controllerURL("192.168.1.2:70000"))
+        XCTAssertThrowsError(try EndpointPolicy.controllerURL("192.168.1.2/control"))
+    }
+
+    func testOptionalPairingTokenIsRestrictedToLocalControllers() throws {
+        let local = try EndpointPolicy.controllerURL("10.0.0.2")
+        let remote = try EndpointPolicy.controllerURL("https://example.com")
+        XCTAssertNoThrow(try EndpointPolicy.validatePairingToken("", for: local))
+        XCTAssertThrowsError(try EndpointPolicy.validatePairingToken("", for: remote))
+        XCTAssertThrowsError(try EndpointPolicy.validatePairingToken("short", for: local))
+        XCTAssertThrowsError(try EndpointPolicy.validatePairingToken(String(repeating: "a", count: 24) + " ", for: local))
+        XCTAssertNoThrow(try EndpointPolicy.validatePairingToken(String(repeating: "a", count: 32), for: remote))
+    }
+
     func testApplyControlsAndOldRequests() throws {
         var request = CaptureRequest()
         XCTAssertNil(try CaptureRequest.decode(JSONEncoder().encode(request)).operation)

@@ -35,11 +35,12 @@ final class NavigationTests: XCTestCase {
         attach("empty-capture-gallery", app)
         app.tabBars.buttons["Connection"].tap()
         XCTAssertTrue(app.buttons["Check for updates"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.secureTextFields["Pairing token"].exists)
+        XCTAssertTrue(app.textFields["controllerAddress"].exists)
+        XCTAssertFalse(app.secureTextFields["Pairing token (if required)"].exists)
         attach("connection-portrait", app)
         XCUIDevice.shared.orientation = .landscapeLeft
         waitForLayout(app, title: "Connection", landscape: true)
-        XCTAssertTrue(app.secureTextFields["Pairing token"].isHittable)
+        XCTAssertTrue(app.textFields["controllerAddress"].isHittable)
         attach("connection-landscape", app)
         XCUIDevice.shared.orientation = .portrait
     }

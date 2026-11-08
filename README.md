@@ -55,12 +55,24 @@ inspection and averaging path is future work; originals are retained for it.
 
 ## Remote capture from Windows
 
+In **Connection**, allow Local Network access and select a controller under
+**Nearby controllers**. Controllers advertising IP-only pairing connect without
+a token. Alternatively, enter the PC's private IP address; the default port is
+8765. An explicit port, such as `192.168.1.2:8766`, is preserved. Tokens for
+controllers that require them are under **Advanced connection**.
+
+Discovery uses Bonjour `_opencapture._tcp` on the local network. The controller
+must advertise this service; discovery does not scan arbitrary hosts or start
+capturing automatically. IP entry remains available when discovery is blocked.
+
 The included controller requires Python 3.11+. No pip dependencies are needed.
 
 Double-click `controller/start-controller.cmd` to start it on the trusted LAN
 and open its browser control page. Allow a Windows firewall exception for
 **Private networks only**, if prompted. The console shows a pairing token.
-On the phone, enter `http://<PC-LAN-IP>:8766` and that token in **Connection**.
+This reference controller retains token authentication and does not advertise
+Bonjour. On the phone, enter `<PC-LAN-IP>:8766` in **Connection** and enter its
+token under **Advanced connection**.
 The phone will request Local Network permission. Click Connect.
 
 The controller has preview, capture controls, cancellation, capabilities, and

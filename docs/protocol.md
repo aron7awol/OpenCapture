@@ -3,8 +3,27 @@
 This contract is independent of any display calibration protocol. The phone
 is the client; a user-selected controller leases capture jobs and receives
 original files. All paths below are relative to that configured origin.
-All calls except GET `/` require `Authorization: Bearer <pairing-token>`.
-Tokens are never URL parameters. Versioned JSON has `protocolVersion: 1`.
+Controllers may offer IP-only pairing on a trusted private LAN. For these,
+the client omits `Authorization`; job-scoped lease headers remain required.
+Other controllers, including the supplied reference server, require
+`Authorization: Bearer <pairing-token>` on all calls except GET `/`.
+Tokens are never URL parameters. Public controller hosts require HTTPS and a
+token. Versioned JSON has `protocolVersion: 1`.
+
+## Connection and discovery
+
+A bare private IPv4 address or `.local` name is normalized to HTTP on port
+8765. Explicit ports are preserved; an HTTPS URL without a port uses HTTPS's
+default. Credentials, paths other than `/`, query strings, and fragments are
+not accepted in controller addresses.
+
+Controllers can advertise `_opencapture._tcp.local.` using Bonjour/DNS-SD.
+The SRV port is the public controller port. TXT `protocol=1` identifies this
+contract; TXT `auth=none` enables one-tap IP-only pairing. Any other or absent
+`auth` value prompts for a token. No token or lease secret is broadcast.
+The client resolves private IPv4 addresses and lists controllers for explicit
+selection; discovering a service never initiates a capture. Local Network
+permission is required. Manual IP entry remains the fallback.
 
 ## Endpoints
 
@@ -27,7 +46,9 @@ Job-scoped phone routes also require `X-OpenCapture-Lease`. IDs are lowercase
 UUIDs, filenames are `frame-NNNN.dng`, `.jpg`, `.json`, or `.preview.jpg`.
 No path, destination URL, shell command, or display instruction is supplied by
 a capture request. Cross-origin browser requests are rejected. GET `/` serves
-the token-free UI; browser requests carry the entered token in a header.
+the reference server's token-free UI; its browser requests carry the entered
+token in a header. A controller offering IP-only pairing must restrict that
+mode to its intended local interface and reject foreign browser origins.
 
 ## Request
 

@@ -241,6 +241,7 @@ struct ShareFiles: UIViewControllerRepresentable {
 
 struct ConnectionView: View {
     @ObservedObject var model: AppModel
+    @StateObject private var discovery = ControllerDiscovery()
     @Environment(\.openURL) private var openURL
     private var sourceLink: URL? {
         guard let text = Bundle.main.object(forInfoDictionaryKey: "OpenCaptureSourceURL") as? String else { return nil }
@@ -251,10 +252,29 @@ struct ConnectionView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if !model.connected {
+                    Section("Nearby controllers") {
+                        if discovery.controllers.isEmpty { Text(discovery.message).font(.caption).foregroundStyle(.secondary) }
+                        ForEach(discovery.controllers) { controller in
+                            Button {
+                                model.host = controller.url
+                                if !controller.requiresToken { model.token = ""; model.connect() }
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(controller.name)
+                                    Text(controller.url).font(.caption).foregroundStyle(.secondary)
+                                    if controller.requiresToken { Text("Pairing token required").font(.caption) }
+                                }
+                            }.disabled(model.busy || model.capabilities == nil || model.configuring)
+                        }
+                    }
+                }
                 Section("Controller") {
-                    TextField("Server URL", text: $model.host).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    SecureField("Pairing token", text: $model.token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    if model.host.lowercased().hasPrefix("http:") { Label("Unencrypted trusted-LAN connection", systemImage: "lock.open").foregroundStyle(.orange).font(.caption) }
+                    TextField("Controller IP or URL", text: $model.host).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).accessibilityIdentifier("controllerAddress")
+                    Text("Enter an IP address, or select a nearby controller. An address without a port uses 8765.").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Advanced connection") {
+                        SecureField("Pairing token (if required)", text: $model.token).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
                 }.disabled(model.connected)
                 Section {
                     if model.connected {
@@ -280,6 +300,8 @@ struct ConnectionView: View {
                     }
                 }
             }.navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+                .onAppear { discovery.start() }
+                .onDisappear { discovery.stop() }
         }
     }
     private func launch(_ url: URL) {

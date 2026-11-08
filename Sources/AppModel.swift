@@ -28,7 +28,7 @@ struct CaptureArchive: Identifiable {
     @Published var wbRed = "1.0"
     @Published var wbGreen = "1.0"
     @Published var wbBlue = "1.0"
-    @Published var host = UserDefaults.standard.string(forKey: "controllerURL") ?? "http://"
+    @Published var host = UserDefaults.standard.string(forKey: "controllerURL") ?? ""
     @Published var token = TokenStore.load()
     @Published var status = "Starting camera"
     @Published var errorMessage: String?
@@ -169,6 +169,7 @@ struct CaptureArchive: Identifiable {
         do {
             let client = try CaptureTransport(url: host, token: token)
             try TokenStore.save(token)
+            host = client.base.absoluteString
             UserDefaults.standard.set(host, forKey: "controllerURL")
             transport = client
             connected = true
