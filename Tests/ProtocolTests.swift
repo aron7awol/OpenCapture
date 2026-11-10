@@ -6,6 +6,19 @@ final class ProtocolTests: XCTestCase {
         let request = CaptureRequest()
         XCTAssertEqual(try CaptureRequest.decode(JSONEncoder().encode(request)), request)
     }
+    func testProRAWHasDistinctFormatAndQualityContract() throws {
+        var request = CaptureRequest()
+        request.format = .appleProRAW
+        XCTAssertThrowsError(try request.validate())
+        request.quality = .quality
+        let data = try JSONEncoder().encode(request)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("appleProRaw"))
+        XCTAssertEqual(try CaptureRequest.decode(data).format, .appleProRAW)
+        request.format = .bayerRAW
+        XCTAssertThrowsError(try request.validate())
+        request.quality = .speed
+        XCTAssertNoThrow(try request.validate())
+    }
     func testRejectsInvalidSettings() {
         var request = CaptureRequest()
         request.frameCount = 0

@@ -29,6 +29,14 @@ class ContractTests(unittest.TestCase):
                    whiteBalance={"red": 1.1, "green": 1.0, "blue": 1.4})
         server.validate_request(job)
 
+    def test_proraw_is_explicit_and_quality_prioritized(self):
+        job = request()
+        job.update(format="appleProRaw", quality="quality")
+        server.validate_request(job)
+        job["quality"] = "speed"
+        with self.assertRaises(server.Invalid):
+            server.validate_request(job)
+
     def test_rejects_invalid_fields(self):
         for key, value in [("frameCount", 0), ("frameCount", 33), ("frameCount", True),
                            ("protocolVersion", True), ("protocolVersion", 2), ("id", "../outside"),
@@ -147,6 +155,22 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.upload(job, lease, "frame-0001.json", b"changed")[0], 409)
         manifest["processing"] = "different"
         self.assertEqual(self.call("POST", path, manifest, headers)[0], 409)
+
+    def test_proraw_dng_upload_requires_distinct_frame_identity(self):
+        job = request()
+        job.update(format="appleProRaw", quality="quality")
+        self.assertEqual(self.call("POST", "/oc/v1/jobs", job)[0], 200)
+        lease = self.call("GET", "/oc/v1/lease")[1]["leaseToken"]
+        manifest = self.manifest(job, lease)
+        path = f'/oc/v1/jobs/{job["id"]}/complete'
+        headers = {"X-OpenCapture-Lease": lease}
+        self.assertEqual(self.call("POST", path, manifest, headers)[0], 400)
+        manifest["frames"][0]["isBayerRAW"] = False
+        self.assertEqual(self.call("POST", path, manifest, headers)[0], 400)
+        manifest["frames"][0]["isAppleProRAW"] = True
+        self.assertEqual(self.call("POST", path, manifest, headers)[0], 200)
+        self.assertEqual((Path(self.temp.name) / job["id"] / "frame-0001.dng").read_bytes(), b"II*\x00synthetic-not-a-real-photo")
+        self.assertEqual(self.upload(job, lease, "frame-0001.jpg", b"not a DNG")[0], 400)
 
     def test_rejects_missing_and_mismatched_files(self):
         job, lease = self.leased()

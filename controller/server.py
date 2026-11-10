@@ -70,10 +70,12 @@ def validate_request(request):
         raise Invalid("Unsupported protocol version")
     if not isinstance(request["id"], str) or not JOB_RE.fullmatch(request["id"]):
         raise Invalid("Request ID must be a lowercase UUID")
-    if request["format"] not in ("bayerRaw", "jpeg") or request["quality"] not in ("speed", "quality"):
+    if request["format"] not in ("bayerRaw", "appleProRaw", "jpeg") or request["quality"] not in ("speed", "quality"):
         raise Invalid("Unsupported format or priority")
     if request["format"] == "bayerRaw" and request["quality"] != "speed":
         raise Invalid("Bayer RAW requires speed priority")
+    if request["format"] == "appleProRaw" and request["quality"] != "quality":
+        raise Invalid("Apple ProRAW requires quality priority")
     if type(request["frameCount"]) is not int or not 1 <= request["frameCount"] <= 32:
         raise Invalid("Frame count must be 1...32")
     if request.get("operation") not in (None, "capture", "applyControls"):
@@ -383,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise Invalid("Capture cancelled", 409)
             if not 1 <= int(match[1]) <= job["request"]["frameCount"]:
                 raise Invalid("Invalid frame index")
-            expected_image = ".dng" if job["request"]["format"] == "bayerRaw" else ".jpg"
+            expected_image = ".dng" if job["request"]["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
             if match[2] not in {expected_image, ".json", ".preview.jpg"}:
                 raise Invalid("File does not match requested format")
             previous = job["files"].get(name)
@@ -480,6 +482,8 @@ class Handler(BaseHTTPRequestHandler):
             for index, frame in enumerate(frames, 1):
                 if not isinstance(frame, dict) or frame.get("index") != index or frame.get("isBayerRAW") is not (job["request"]["format"] == "bayerRaw"):
                     raise Invalid("Frame identity mismatch")
+                if frame.get("isAppleProRAW", False) is not (job["request"]["format"] == "appleProRaw"):
+                    raise Invalid("Apple ProRAW identity mismatch")
                 if not all(type(frame.get(key)) is int and 1 <= frame[key] <= 20000 for key in ("width", "height")):
                     raise Invalid("Invalid frame dimensions")
                 if not all(number(frame.get(key), 0, 1e12) for key in ("timestampSeconds", "deviceExposureSeconds", "deviceISO", "lensPosition")):
@@ -487,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
                 for key in ("actualExposureSeconds", "actualISO"):
                     if frame.get(key) is not None and not number(frame[key], 0, 1e12):
                         raise Invalid("Invalid EXIF metadata")
-                suffix = ".dng" if frame["isBayerRAW"] else ".jpg"
+                suffix = ".dng" if job["request"]["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
                 expected = {"file": f"frame-{index:04d}{suffix}", "metadataFile": f"frame-{index:04d}.json"}
                 if frame.get("previewFile") is not None:
                     expected["previewFile"] = f"frame-{index:04d}.preview.jpg"

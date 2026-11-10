@@ -14,14 +14,19 @@ final class NavigationTests: XCTestCase {
         }
         if app.alerts["OpenCapture"].waitForExistence(timeout: 10) { app.alerts["OpenCapture"].buttons["OK"].tap() }
         XCTAssertTrue(app.navigationBars["OpenCapture"].waitForExistence(timeout: 5))
+        assertPreviewFits(app)
         let mode = app.buttons["captureMode"]
         XCTAssertTrue(mode.exists)
+        if !mode.isHittable { app.swipeUp() }
         mode.tap()
         app.buttons["Fast JPEG burst"].tap()
+        app.swipeDown()
         attach("camera-portrait", app)
         for (orientation, name) in [(UIDeviceOrientation.landscapeLeft, "camera-landscape-left"), (.landscapeRight, "camera-landscape-right")] {
             XCUIDevice.shared.orientation = orientation
             waitForLayout(app, title: "OpenCapture", landscape: true)
+            app.swipeDown()
+            assertPreviewFits(app)
             let capture = app.buttons["captureButton"]
             XCTAssertTrue(capture.exists)
             XCTAssertTrue(app.windows.firstMatch.frame.contains(capture.frame))
@@ -43,6 +48,20 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.textFields["controllerAddress"].isHittable)
         attach("connection-landscape", app)
         XCUIDevice.shared.orientation = .portrait
+    }
+
+    private func assertPreviewFits(_ app: XCUIApplication) {
+        let preview = app.descendants(matching: .any)["cameraPreview"].firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        let visible = expectation(for: NSPredicate { _, _ in
+            let bounds = app.windows.firstMatch.frame
+            let frame = preview.frame
+            let capture = app.buttons["captureButton"].frame
+            return frame.width > 0 && frame.height > 0 && bounds.contains(frame)
+                && frame.minY >= app.navigationBars["OpenCapture"].frame.maxY
+                && frame.maxY <= capture.minY
+        }, evaluatedWith: app)
+        wait(for: [visible], timeout: 5)
     }
 
     private func waitForLayout(_ app: XCUIApplication, title: String, landscape: Bool) {

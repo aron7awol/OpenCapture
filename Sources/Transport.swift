@@ -78,6 +78,9 @@ final class CaptureTransport {
     }
 
     func upload(_ file: CapturedFile, from directory: URL, id: String, lease: String) async throws {
+        guard (1...(128 * 1024 * 1024)).contains(file.bytes) else {
+            throw CaptureError.transport("Original exceeds the controller's 128 MiB file limit; the local original is retained for export.")
+        }
         var req = request("oc/v1/jobs/\(id)/files/\(file.name)", method: "PUT", lease: lease)
         req.setValue(file.mediaType, forHTTPHeaderField: "Content-Type")
         req.setValue(file.sha256, forHTTPHeaderField: "X-Content-SHA256")

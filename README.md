@@ -5,7 +5,12 @@ A standalone iOS camera and remote capture instrument.
 ## Capture modes
 
 - **Bayer RAW:** standard sensor-mosaic DNG from a physical rear camera.
-  ProRAW is disabled. Unsupported RAW fails explicitly, never falls back.
+  Uses an explicit Bayer pixel format. Unsupported RAW fails explicitly, never falls back.
+- **Apple ProRAW / highest resolution:** a separate, quality-prioritized DNG
+  mode on supported cameras. Requests the largest dimensions advertised by the
+  active camera configuration; actual dimensions are recorded per frame.
+  Apple demosaics and processes these RGB files and may fuse multiple
+  exposures. They are not Bayer sensor originals.
 - **Fast JPEG burst:** sequential stills with AVFoundation speed priority.
   This is not a claim to reproduce Apple's Camera app burst pipeline or to
   disable all sharpening, denoising, or tone mapping.
@@ -17,10 +22,13 @@ exposure/ISO when present, observed lens position and white-balance gains,
 dimensions, photo timestamps, and a capture manifest. Live preview and saved
 thumbnails are processed aiming/inspection aids, not calibrated RAW views.
 
-The first version uses up to 32 sequential frames and a photo configuration
-around 12 MP. This is not high-speed video or a promised frame rate. RAW
+The app uses up to 32 sequential frames. Bayer RAW and JPEG retain the photo
+configuration around 12 MP; ProRAW requests the largest supported size.
+This is not high-speed video or a promised frame rate. RAW
 dimensions are whatever the selected physical camera actually returns.
 No automatic RAW averaging is performed yet.
+The live preview preserves the full stream's aspect ratio and fits within the
+visible camera page in portrait and landscape. It scrolls with the controls.
 
 ## Try it on an iPhone
 
@@ -47,6 +55,11 @@ Use the same camera position, physical lens, scene, and lighting. First find
 an exposure that does not clip, copy the current settings to manual, and keep
 those settings across modes. Capture 4-16 frames per mode. Compare both
 individual frames and the actual exposure metadata, not just thumbnails.
+Start with one ProRAW frame before longer bursts; high-resolution DNGs are
+large. Confirm `isAppleProRAW: true`, `isBayerRAW: false` and actual dimensions
+in the manifest. Compare repeated individual Bayer and ProRAW originals at
+matched geometry and controls. Apple's fusion is not a known arithmetic
+average, and a smoother result does not establish measurement accuracy.
 A quality JPEG can look smoother while suppressing fine detail. Bayer RAW
 can look noisier while preserving it.
 

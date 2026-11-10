@@ -12,11 +12,14 @@
   apply-controls jobs.
 - Remote controls: capability gating for old apps, settled-readback validation,
   cancellation, no photo uploads, and idempotent/immutable completion.
+- ProRAW: separate quality-priority request contract; original DNG upload,
+  manifest identity rejection, backward-compatible Bayer/JPEG completion.
 - macOS build: Xcode device compile and unsigned IPA packaging. The packager
   refuses simulator products. Published IPA hash and permissions come from the
   actual build, not handwritten release metadata.
 - Simulator checks: select Fast JPEG, rotate the camera screen into both
-  landscape directions, and verify the capture button stays inside the window.
+  landscape directions, and verify the full preview row and capture button
+  fit inside the visible window. The preview scrolls with the camera form.
   Open the empty gallery and connection controls, rotate to landscape, and
   verify the controller field remains hittable and the optional token field is
   collapsed initially. Full-screen screenshots are retained
@@ -52,6 +55,13 @@ simulator layout and URL-policy tests do not prove multicast reachability.
 3. Capture fast JPEG and quality JPEG at matched manual controls. Inspect
    reported exposure for overrides. Compare native noise and spatial detail,
    not the processed preview or embedded RAW thumbnail.
+   Also select **Apple ProRAW / highest resolution** on a supported camera.
+   Check the advertised dimensions, then actual DNG dimensions and ProRAW
+   identity flags. Test one frame, then four, and compare with individual Bayer
+   originals. Verify that switching back still produces Bayer mosaic files.
+   Test an unsupported lens/device: it must fail without changing formats.
+   ProRAW fusion, high-resolution delivery and real storage/transfer costs
+   require physical-phone evidence; neither simulator nor protocol tests prove them.
 4. On a tripod, capture 4, 16, and 32 sequential frames. Confirm originals,
    metadata, disk use, memory stability, and no control changes within a burst.
 5. Apply controls and copy current readings into manual fields; confirm focus

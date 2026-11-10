@@ -33,12 +33,19 @@
 ## Capture decisions
 
 One physical lens is selected, defaulting to the main wide camera. Virtual
-multi-camera devices and automatic lens switching are not used. ProRAW is
-disabled. Photo dimensions are selected at or below 13 million pixels when
+multi-camera devices and automatic lens switching are not used. Standard
+Bayer/JPEG photo dimensions are selected at or below 13 million pixels when
 the active format advertises such a size; otherwise the smallest advertised
 size is used. Actual RAW dimensions are taken from resolved photo settings.
+Apple ProRAW is enabled before session startup when supported, and selected
+only by its explicit pixel format. It requests the active configuration's
+largest advertised dimensions, while Bayer/JPEG settings retain their former
+limit. Both RAW formats are checked against the returned RAW pixel buffer.
+ProRAW is labeled separately in requests, capabilities, manifests and history.
+Its original lossless DNG contains demosaiced RGB with Apple processing and
+possible image fusion; it must never be labeled as Bayer RAW.
 
-RAW and fast JPEG use `.speed`; quality JPEG uses `.quality` deliberately so
+Bayer RAW and fast JPEG use `.speed`; ProRAW and quality JPEG use `.quality` so
 the user can evaluate its processing. This may cause the system to override
 requested exposure; EXIF is retained and displayed. Exposure/focus/WB lock
 is not proof of radiometric linearity or the absence of sensor processing.

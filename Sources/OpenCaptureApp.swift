@@ -36,14 +36,22 @@ struct CameraView: View {
     @ObservedObject var model: AppModel
     var body: some View {
         NavigationStack {
+            GeometryReader { viewport in
             Form {
                 Section {
                     CameraPreview(session: model.camera.session)
-                        .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                        // Bound the scrolling row by the visible page, including in landscape.
+                        // The preview layer aspect-fits the actual, rotated camera stream inside it.
+                        .frame(height: max(1, min(
+                            max(1, viewport.size.width - 40) * (viewport.size.width > viewport.size.height ? 0.75 : 4.0 / 3.0),
+                            viewport.size.height - 100)))
                         .background(.black)
                         .overlay(alignment: .bottomLeading) {
                             Text("Processed live preview").font(.caption).padding(6).foregroundStyle(.white).background(.black.opacity(0.65))
                         }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Full camera preview")
+                        .accessibilityIdentifier("cameraPreview")
                         .listRowInsets(EdgeInsets())
                     HStack {
                         Text(model.status).font(.subheadline)
@@ -61,6 +69,7 @@ struct CameraView: View {
                         }
                     Picker("Mode", selection: $model.mode) {
                         Text("Bayer RAW").tag("raw")
+                        Text("Apple ProRAW / highest resolution").tag("proraw")
                         Text("Fast JPEG burst").tag("fast")
                         Text("Quality JPEG").tag("quality")
                     }.accessibilityIdentifier("captureMode").disabled(model.busy || model.connected)
@@ -69,6 +78,14 @@ struct CameraView: View {
                     if let caps = model.capabilities {
                         LabeledContent("Bayer RAW", value: caps.formats.contains(.bayerRAW) ? "Available" : "Unavailable")
                         LabeledContent("Photo limit", value: "\(caps.maxPhotoWidth) x \(caps.maxPhotoHeight)")
+                        if model.mode == "proraw" {
+                            LabeledContent("Apple ProRAW", value: caps.formats.contains(.appleProRAW) ? "Available" : "Unavailable on this camera")
+                            if let width = caps.proRAWMaxPhotoWidth, let height = caps.proRAWMaxPhotoHeight {
+                                LabeledContent("ProRAW requested size", value: "\(width) x \(height)")
+                            }
+                            Text("Processed RGB DNG; may combine multiple exposures. Actual dimensions are saved with each frame. Compare originals with Bayer RAW before using them for measurements.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Section("Exposure") {
@@ -104,6 +121,7 @@ struct CameraView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
+            }
             .safeAreaInset(edge: .bottom) {
                 HStack {
                     if model.busy {
@@ -180,7 +198,7 @@ struct ArchiveList: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             if let manifest = archive.manifest {
-                                Text(manifest.request.format == .bayerRAW ? "Bayer RAW" : "JPEG / \(manifest.request.quality.rawValue)")
+                                Text(manifest.request.format.title)
                                 Text("\(manifest.frames.count) frames - \(manifest.startedAt)").font(.caption).foregroundStyle(.secondary)
                             } else { Text("Partial capture").foregroundStyle(.orange) }
                             Text(String(archive.id.prefix(8))).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -204,9 +222,10 @@ struct ArchiveDetail: View {
             if let manifest = archive.manifest {
                 Section("Capture") {
                     LabeledContent("Camera", value: manifest.camera.name)
-                    LabeledContent("Format", value: manifest.request.format.rawValue)
+                    LabeledContent("Format", value: manifest.request.format.title)
                     LabeledContent("Priority", value: manifest.request.quality.rawValue)
                     LabeledContent("Frames", value: String(manifest.frames.count))
+                    if manifest.request.format == .appleProRAW { Text("Apple-processed RGB DNG; not Bayer RAW.").font(.caption) }
                 }
                 ForEach(manifest.frames, id: \.index) { frame in
                     Section("Frame \(frame.index)") {

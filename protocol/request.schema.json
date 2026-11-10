@@ -8,7 +8,7 @@
     "protocolVersion": {"const": 1, "type": "integer"},
     "id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
     "operation": {"enum": [null, "capture", "applyControls"]},
-    "format": {"enum": ["bayerRaw", "jpeg"]},
+    "format": {"enum": ["bayerRaw", "appleProRaw", "jpeg"]},
     "quality": {"enum": ["speed", "quality"]},
     "frameCount": {"type": "integer", "minimum": 1, "maximum": 32},
     "exposureSeconds": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 30},
@@ -24,6 +24,7 @@
   "allOf": [
     {"if": {"required": ["operation"], "properties": {"operation": {"const": "applyControls"}}}, "then": {"properties": {"frameCount": {"const": 1}}}},
     {"if": {"properties": {"format": {"const": "bayerRaw"}}}, "then": {"properties": {"quality": {"const": "speed"}}}},
+    {"if": {"properties": {"format": {"const": "appleProRaw"}}}, "then": {"properties": {"quality": {"const": "quality"}}}},
     {"if": {"required": ["exposureSeconds"], "properties": {"exposureSeconds": {"type": "number"}}}, "then": {"required": ["iso"], "properties": {"iso": {"type": "number"}}}},
     {"if": {"required": ["iso"], "properties": {"iso": {"type": "number"}}}, "then": {"required": ["exposureSeconds"], "properties": {"exposureSeconds": {"type": "number"}}}}
   ]

@@ -64,8 +64,8 @@ struct CaptureArchive: Identifiable {
 
     func request() throws -> CaptureRequest {
         var request = CaptureRequest()
-        request.format = mode == "raw" ? .bayerRAW : .jpeg
-        request.quality = mode == "quality" ? .quality : .speed
+        request.format = mode == "raw" ? .bayerRAW : mode == "proraw" ? .appleProRAW : .jpeg
+        request.quality = mode == "quality" || mode == "proraw" ? .quality : .speed
         request.frameCount = frameCount
         if manualExposure {
             guard let seconds = Double(exposureMS), let value = Float(iso) else { throw CaptureError.invalid("Enter numeric shutter time and ISO") }
@@ -130,7 +130,8 @@ struct CaptureArchive: Identifiable {
             throw CaptureError.invalid("Capture ID already exists locally; refusing to overwrite originals")
         }
         let available = try captureRoot.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
-        guard available > Int64(request.frameCount) * 100_000_000 + 200_000_000 else {
+        let reservePerFrame: Int64 = request.format == .appleProRAW ? 160_000_000 : 100_000_000
+        guard available > Int64(request.frameCount) * reservePerFrame + 200_000_000 else {
             throw CaptureError.unavailable("Not enough free storage for this burst")
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -154,7 +155,9 @@ struct CaptureArchive: Identifiable {
             }
             let manifest = CaptureManifest(request: request, camera: capabilities, frames: frames,
                 startedAt: started, completedAt: ISO8601DateFormatter().string(from: Date()),
-                processing: request.format == .bayerRAW ? "AVFoundation Bayer RAW DNG, ProRAW disabled; originals unchanged" : "AVFoundation JPEG, \(request.quality.rawValue) priority; processed, not calibrated or guaranteed unsharpened")
+                processing: request.format == .bayerRAW ? "AVFoundation Bayer RAW pixel format; original DNG bytes unchanged" :
+                    request.format == .appleProRAW ? "AVFoundation Apple ProRAW, maximum advertised dimensions requested; demosaiced RGB, computational processing and possible multi-frame fusion; original lossless DNG unchanged; not a Bayer measurement" :
+                    "AVFoundation JPEG, \(request.quality.rawValue) priority; processed, not calibrated or guaranteed unsharpened")
             try encoder.encode(manifest).write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
             return CaptureArchive(directory: directory, manifest: manifest)
         } catch {
