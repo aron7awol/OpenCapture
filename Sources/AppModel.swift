@@ -59,12 +59,20 @@ struct CaptureArchive: Identifiable {
 
     func foreground() async {
         isForeground = true; screenActive = true; updateScreenMode()
+        refreshArchives()
         guard !busy, !configuring, !remoteRunning else { return }
         if capabilities == nil { await startCamera() }
         else if remoteReadyEnabled { connect() }
     }
 
     func inactive() { screenActive = false; updateScreenMode() }
+
+    private func resumeAfterWork() {
+        // Foreground entry can precede completion of a cancelled camera task.
+        if isForeground, capabilities == nil || remoteReadyEnabled {
+            Task { await foreground() }
+        }
+    }
 
     var captureRoot: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Captures", isDirectory: true)
@@ -129,7 +137,7 @@ struct CaptureArchive: Identifiable {
             let settings = try request()
             busy = true
             captureTask = Task {
-                defer { busy = false; captureTask = nil }
+                defer { busy = false; captureTask = nil; resumeAfterWork() }
                 do { try await camera.prepare(settings); status = "Controls locked" }
                 catch { report(error) }
             }
@@ -142,7 +150,7 @@ struct CaptureArchive: Identifiable {
             let settings = try request()
             busy = true
             captureTask = Task {
-                defer { busy = false; captureTask = nil }
+                defer { busy = false; captureTask = nil; resumeAfterWork() }
                 do { _ = try await capture(settings); status = "Capture saved" }
                 catch { report(error) }
             }
@@ -206,7 +214,7 @@ struct CaptureArchive: Identifiable {
                     updateScreenMode()
                     // A foreground return may have happened while the cancelled job was
                     // draining. Reopen only after that task has relinquished the camera.
-                    if isForeground, remoteReadyEnabled { Task { await foreground() } }
+                    resumeAfterWork()
                 }
                 do {
                     var failures = 0
@@ -361,7 +369,7 @@ struct CaptureArchive: Identifiable {
     @discardableResult func deleteArchives(_ ids: [String]) async -> Bool {
         guard canDeleteArchives else { errorMessage = "End Remote ready and disconnect before deleting captures."; return false }
         deletingArchives = true
-        defer { deletingArchives = false; refreshArchives() }
+        defer { deletingArchives = false; refreshArchives(); resumeAfterWork() }
         let root = captureRoot
         do {
             try await Task.detached(priority: .userInitiated) {
