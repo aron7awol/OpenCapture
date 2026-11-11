@@ -10,19 +10,14 @@ Other controllers, including the supplied reference server, require
 Tokens are never URL parameters. Public controller hosts require HTTPS and a
 token. Versioned JSON has `protocolVersion: 1`.
 
-Both phone platforms use these endpoints. Android currently advertises only
-`bayerRaw`. Its optional `platform: "android"`, `actualControlsSource`,
-`focusModel`, `whiteBalanceModel`, `rawSizes` and native camera characteristics
-describe the device without changing the job or upload contract.
-Android's `lensPosition` is normalized diopters (zero = infinity), unlike
-AVFoundation lens position; never transfer focus values between platforms.
-Its displayed green WB gain is the mean of the two native green gains.
-Android sidecars retain all four gains, focus distance, requested versus actual
-Camera2 controls, and sensor/image timestamps. DNG bytes come from DngCreator
-with a timestamp-matched RAW image/result. They are not averaged or demosaiced.
-Actual exposure/ISO fields come from Camera2 results rather than iOS EXIF.
-
 ## Connection and discovery
+
+Remote ready changes client lifecycle only: the phone still connects outward
+to its explicitly selected controller. Temporary network/408/425/429/5xx
+failures retry at 1, 2, 4, 8 then 15 seconds; successful registration resets
+the delay. Authentication, redirects, certificate and malformed-protocol
+errors stop automatic retry. Backgrounding cancels active work and closes
+requests; foreground return may re-register but never replay an old job.
 
 A bare private IPv4 address or `.local` name is normalized to HTTP on port
 8765. Explicit ports are preserved; an HTTPS URL without a port uses HTTPS's
@@ -66,14 +61,18 @@ mode to its intended local interface and reject foreign browser origins.
 
 See `protocol/request.schema.json` and `protocol/request.example.json`.
 `exposureSeconds` and `iso` are either both omitted/null (auto then lock) or
-both provided. Focus position is AVFoundation's normalized 0...1 lens
-position, **not meters or diopters**. WB values are device gains, not Kelvin.
+both provided. Focus position is normalized 0...1. For existing iOS clients it
+is AVFoundation lens position, **not meters or diopters**. A client declaring
+`focusModel: androidNormalizedDiopters` uses actual focus diopters divided by
+its advertised `maximumFocusDiopters`: 0 is infinity and 1 is nearest focus
+(fixed-focus cameras report 0). WB values are device gains, not Kelvin.
 Omitted focus/WB means auto then lock where supported. Explicit unsupported
 manual controls fail. `context` is opaque string-to-string data; its values
 must not influence paths, commands, or camera settings.
 
-Formats: `bayerRaw` or `jpeg`. Quality: `speed` or `quality`; Bayer RAW requires
-speed. 1...32 frames, 0...10000 ms additional settling. Schema and runtime
+Formats: `bayerRaw`, `appleProRaw` or `jpeg`. Only request formats in the
+camera's capabilities. Quality: `speed` or `quality`; Bayer RAW requires
+speed, Apple ProRAW requires quality. 1...32 frames, 0...10000 ms additional settling. Schema and runtime
 validation bound numbers; the camera additionally enforces hardware limits.
 Context limits are measured in UTF-8 bytes by the runtime (JSON Schema string
 length alone is not sufficient for multibyte content).
@@ -86,6 +85,22 @@ a capture manifest. Only submit it when camera capabilities advertise
 Capabilities also optionally include `appBuild` and an app-install-scoped
 `deviceID` UUID; the latter is distinct from the physical `cameraID` and may
 change after reinstalling the app.
+
+Supported iOS cameras advertise `appleProRaw` plus optional
+`proRAWMaxPhotoWidth`/`proRAWMaxPhotoHeight`. ProRAW requests those maximum
+dimensions; these are a limit, not proof of the dimensions delivered.
+`maxPhotoWidth`/`maxPhotoHeight` retain the standard Bayer/JPEG configuration.
+No resolution is hard-coded as 48 MP. Older controllers that do not recognize
+`appleProRaw` must be updated; Bayer/JPEG requests remain compatible.
+
+Android clients additionally declare `platform: android`,
+`actualControlsSource: camera2CaptureResult`, the focus fields above and
+`whiteBalanceModel: rggbGreenMean`. The generic three-channel WB reading uses
+the mean of the two native greens; both greens remain in the sidecar.
+`rawSizes` optionally lists advertised normal RAW dimensions as `WxH` strings.
+`rawLensShadingApplied` optionally records the camera's declaration that some
+lens shading correction is already applied to RAW pixels by the device.
+None of these additions change the numeric request schema or iOS behavior.
 
 The controls-complete body contains exactly `protocolVersion`, `request`,
 `camera`, `deviceExposureSeconds`, `deviceISO`, `lensPosition`, `whiteBalance`,
@@ -102,8 +117,10 @@ Leases are not automatically retried: use a new ID after expiry/failure.
 
 ## Files and metadata
 
-Every original DNG/JPEG is saved unchanged using `fileDataRepresentation()`.
-The corresponding JSON contains the native photo metadata, converted to JSON;
+On iOS every original DNG/JPEG is saved unchanged using
+`fileDataRepresentation()`. Android writes each RAW image using `DngCreator`
+with its timestamp-matched `TotalCaptureResult`, without averaging or
+demosaicing. The corresponding JSON contains native photo metadata, converted to JSON;
 binary fields become base64. A processed thumbnail may be saved separately.
 
 Upload headers: `Content-Length`, `Content-Type`, `X-Content-SHA256`. Max file:
@@ -118,8 +135,25 @@ receipts, dimensions, timestamps, actual EXIF exposure/ISO if present, device
 readings, start/end UTC timestamps, and processing description. Every image
 and metadata sidecar must exist, and every uploaded file must be referenced.
 Missing EXIF is null/omitted and must never be replaced by requested values.
+ProRAW originals use `.dng`/`image/dng`, with `isBayerRAW: false` and the
+required `isAppleProRAW: true`. For older Bayer/JPEG manifests, an absent
+`isAppleProRAW` means false. Mismatched flags are rejected. The processing
+description identifies Apple's demosaicing, computational processing and
+possible multi-frame fusion. Original lossless file bytes are retained.
+For an Android client declaring `actualControlsSource: camera2CaptureResult`,
+actual exposure/ISO and timestamps come from that frame's matched Camera2
+result instead of EXIF; native result fields remain in the hashed sidecar.
 Completion is idempotent only for an identical manifest. Completed captures
 are immutable. Error/cancel/expiry never erases already written originals.
+
+Successful `/complete` replies contain `protocolVersion:1`, `id:<job-id>` and
+`status:"complete"`. Both phone clients validate this matching acknowledgement
+before default-on automatic removal of remote originals. A missing/lost/invalid
+reply retains the phone archive. Local captures are never automatically removed.
+Manual deletion and confirmed-upload cleanup retain tiny used-ID records to
+prevent recapturing an ID whose image archive was deleted. There is no endpoint
+for a controller to enumerate or fetch older phone archives; manual export is
+the recovery path. Windows originals are unaffected by phone deletion.
 
 ## Security limits
 

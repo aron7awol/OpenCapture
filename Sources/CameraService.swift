@@ -30,6 +30,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let previewLock = NSLock()
     private var previewData: Data?
     private var previewPaused = false
+    private var standardDimensions = CMVideoDimensions(width: 0, height: 0)
+    private var proRAWDimensions: CMVideoDimensions?
 
     static var cameras: [CameraChoice] {
         AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera, .builtInTelephotoCamera], mediaType: .video, position: .back).devices.map {
@@ -67,12 +69,17 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 session.addOutput(output)
                 device = chosen
                 output.maxPhotoQualityPrioritization = .quality
-                if output.isAppleProRAWSupported { output.isAppleProRAWEnabled = false }
+                // Enable before starting the session; selecting a Bayer pixel format still
+                // requests Bayer RAW. ProRAW is a separate, explicit format, never a fallback.
+                output.isAppleProRAWEnabled = output.isAppleProRAWSupported
                 if output.isContentAwareDistortionCorrectionSupported { output.isContentAwareDistortionCorrectionEnabled = false }
-                // Bound the initial experiment to about 12 MP; actual RAW dimensions are recorded per frame.
+                // Keep standard Bayer/JPEG captures at the existing size. ProRAW requests
+                // the largest dimensions advertised by the selected camera configuration.
                 let sizes = chosen.activeFormat.supportedMaxPhotoDimensions.sorted { Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height) }
                 if let size = sizes.last(where: { Int64($0.width) * Int64($0.height) <= 13_000_000 }) ?? sizes.first {
-                    output.maxPhotoDimensions = size
+                    standardDimensions = size
+                    proRAWDimensions = output.isAppleProRAWEnabled ? sizes.last : nil
+                    output.maxPhotoDimensions = proRAWDimensions ?? size
                 }
                 video.alwaysDiscardsLateVideoFrames = true
                 video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
@@ -94,21 +101,24 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     private func capabilities(_ device: AVCaptureDevice) -> CameraCapabilities {
         let raw = output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat)
+        let proRAW = output.isAppleProRAWEnabled && output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)
         let deviceID = UserDefaults.standard.string(forKey: "captureDeviceID") ?? UUID().uuidString.lowercased()
         UserDefaults.standard.set(deviceID, forKey: "captureDeviceID")
         return CameraCapabilities(cameraID: device.uniqueID, name: device.localizedName,
-            formats: raw ? [.bayerRAW, .jpeg] : [.jpeg], minISO: device.activeFormat.minISO,
+            formats: (raw ? [.bayerRAW] : []) + (proRAW ? [.appleProRAW] : []) + [.jpeg], minISO: device.activeFormat.minISO,
             maxISO: device.activeFormat.maxISO, minExposureSeconds: device.activeFormat.minExposureDuration.seconds,
             maxExposureSeconds: device.activeFormat.maxExposureDuration.seconds,
             manualExposure: device.isExposureModeSupported(.custom),
             manualFocus: device.isLockingFocusWithCustomLensPositionSupported,
             manualWhiteBalance: device.isLockingWhiteBalanceWithCustomDeviceGainsSupported,
             maxWhiteBalanceGain: device.maxWhiteBalanceGain,
-            maxPhotoWidth: Int(output.maxPhotoDimensions.width), maxPhotoHeight: Int(output.maxPhotoDimensions.height),
+            maxPhotoWidth: Int(standardDimensions.width), maxPhotoHeight: Int(standardDimensions.height),
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-            deviceID: deviceID, operations: [.capture, .applyControls])
+            deviceID: deviceID, operations: [.capture, .applyControls],
+            proRAWMaxPhotoWidth: proRAW ? proRAWDimensions.map { Int($0.width) } : nil,
+            proRAWMaxPhotoHeight: proRAW ? proRAWDimensions.map { Int($0.height) } : nil)
     }
 
     func reading() async throws -> DeviceReading {
@@ -130,6 +140,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard let d = device, session.isRunning else { throw CaptureError.unavailable("Camera is not running") }
             if request.format == .bayerRAW && !output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) {
                 throw CaptureError.unavailable("This camera configuration does not support Bayer RAW")
+            }
+            if request.format == .appleProRAW && (!output.isAppleProRAWEnabled || proRAWDimensions == nil ||
+                !output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)) {
+                throw CaptureError.unavailable("Apple ProRAW is unavailable on this camera. Select a supported Pro camera.")
             }
             try d.lockForConfiguration()
             defer { d.unlockForConfiguration() }
@@ -202,20 +216,22 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 do {
                     guard let d = device, session.isRunning, delegate == nil else { throw CaptureError.unavailable("Camera is busy or stopped") }
                     let settings: AVCapturePhotoSettings
-                    if request.format == .bayerRAW {
-                        guard let raw = output.availableRawPhotoPixelFormatTypes.first(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) else {
-                            throw CaptureError.unavailable("Bayer RAW is unavailable")
+                    if request.format != .jpeg {
+                        let query: (OSType) -> Bool = request.format == .appleProRAW
+                            ? AVCapturePhotoOutput.isAppleProRAWPixelFormat : AVCapturePhotoOutput.isBayerRAWPixelFormat
+                        guard let raw = output.availableRawPhotoPixelFormatTypes.first(where: query) else {
+                            throw CaptureError.unavailable("\(request.format.title) is unavailable")
                         }
                         settings = AVCapturePhotoSettings(rawPixelFormatType: raw)
                     } else { settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg]) }
-                    settings.maxPhotoDimensions = output.maxPhotoDimensions
+                    settings.maxPhotoDimensions = request.format == .appleProRAW ? (proRAWDimensions ?? standardDimensions) : standardDimensions
                     settings.photoQualityPrioritization = request.quality == .speed ? .speed : .quality
                     if output.supportedFlashModes.contains(.off) { settings.flashMode = .off }
                     if let previewType = settings.availablePreviewPhotoPixelFormatTypes.first {
                         settings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: previewType,
                             kCVPixelBufferWidthKey as String: 640, kCVPixelBufferHeightKey as String: 480]
                     }
-                    let capture = StillDelegate(directory: directory, index: index, expectedRAW: request.format == .bayerRAW,
+                    let capture = StillDelegate(directory: directory, index: index, format: request.format,
                         reading: { Self.read(d) }) { [weak self] result in
                         self?.queue.async { self?.delegate = nil }
                         continuation.resume(with: result)
@@ -258,16 +274,16 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private let directory: URL
     private let index: Int
-    private let expectedRAW: Bool
+    private let format: CaptureFormat
     private let reading: () -> DeviceReading
     private var atShutter: DeviceReading?
     private let lock = NSLock()
     private var completion: ((Result<FrameRecord, Error>) -> Void)?
     private var outcome: Result<FrameRecord, Error>?
 
-    init(directory: URL, index: Int, expectedRAW: Bool, reading: @escaping () -> DeviceReading,
+    init(directory: URL, index: Int, format: CaptureFormat, reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<FrameRecord, Error>) -> Void) {
-        self.directory = directory; self.index = index; self.expectedRAW = expectedRAW
+        self.directory = directory; self.index = index; self.format = format
         self.reading = reading; self.completion = completion
     }
 
@@ -276,8 +292,16 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         do {
             if let error { throw error }
+            let expectedRAW = format != .jpeg
             guard photo.isRawPhoto == expectedRAW, let data = photo.fileDataRepresentation() else {
                 throw CaptureError.unavailable("Camera returned an unexpected photo format")
+            }
+            if expectedRAW {
+                guard let buffer = photo.pixelBuffer else { throw CaptureError.unavailable("Camera omitted the RAW pixel buffer") }
+                let pixelFormat = CVPixelBufferGetPixelFormatType(buffer)
+                let matches = format == .appleProRAW ? AVCapturePhotoOutput.isAppleProRAWPixelFormat(pixelFormat)
+                    : AVCapturePhotoOutput.isBayerRAWPixelFormat(pixelFormat)
+                guard matches else { throw CaptureError.unavailable("Camera returned the wrong RAW format") }
             }
             let base = String(format: "frame-%04d", index)
             let file = try write(data, name: base + (expectedRAW ? ".dng" : ".jpg"), mediaType: expectedRAW ? "image/dng" : "image/jpeg")
@@ -299,7 +323,8 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             outcome = .success(FrameRecord(index: index, file: file, metadataFile: metadataFile, previewFile: previewFile,
                 width: Int(size.width), height: Int(size.height), timestampSeconds: photo.timestamp.seconds,
                 actualExposureSeconds: exposure, actualISO: iso, deviceExposureSeconds: observed.exposure,
-                deviceISO: observed.iso, lensPosition: observed.focus, whiteBalance: observed.whiteBalance, isBayerRAW: expectedRAW))
+                deviceISO: observed.iso, lensPosition: observed.focus, whiteBalance: observed.whiteBalance,
+                isBayerRAW: format == .bayerRAW, isAppleProRAW: format == .appleProRAW))
         } catch { outcome = .failure(error) }
     }
 

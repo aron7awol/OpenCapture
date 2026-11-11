@@ -17,12 +17,16 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
         fun capture(); fun apply(); fun useCurrent(); fun restart()
         fun connect(); fun discover(); fun selectController(address: String)
         fun refreshCaptures(); fun exportCapabilities(); fun checkUpdate(); fun installUpdate()
+        fun remoteReady(); fun dimRemote(); fun showControls()
+        fun deleteAllCaptures(); fun autoDeleteChanged(enabled: Boolean)
     }
     private val ink = Color.rgb(28, 36, 40)
     private val muted = Color.rgb(98, 109, 115)
     private val teal = Color.rgb(0, 122, 116)
     private val background = Color.rgb(243, 245, 247)
     private val root = column()
+    private val remoteOverlay = FrameLayout(activity).apply { setBackgroundColor(Color.BLACK); isClickable = true; visibility = View.GONE }
+    private val remoteDetail = text("Waiting for the PC", 16f, Color.LTGRAY)
     private val pages = FrameLayout(activity)
     private val tabs = mutableListOf<LinearLayout>()
     private val tabLabels = mutableListOf<TextView>()
@@ -57,6 +61,7 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
     val address = EditText(activity)
     val token = EditText(activity)
     val captures = column()
+    val autoDelete = Switch(activity).apply { text = "Auto-delete uploaded remote captures" }
     val nearby = column()
     val updateStatus = text("Updates come from GitHub. No PC connection is needed.", 13f, muted)
     val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply { visibility = View.GONE; max = 100 }
@@ -65,6 +70,8 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
     lateinit var applyButton: Button; private set
     lateinit var updateCheck: Button; private set
     lateinit var updateInstall: Button; private set
+    lateinit var remoteReadyButton: Button; private set
+    lateinit var remoteDimButton: Button; private set
 
     init {
         root.setBackgroundColor(background)
@@ -93,7 +100,21 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
             tabs.add(tab); tabLabels.add(label); tabIcons.add(icon)
         }
         root.addView(navigation)
-        activity.setContentView(root)
+        val remoteContent = column().apply { setPadding(dp(24), dp(24), dp(24), dp(24)); gravity = Gravity.CENTER_HORIZONTAL }
+        remoteContent.addView(text("Remote ready", 26f, Color.WHITE))
+        remoteContent.addView(remoteDetail)
+        remoteContent.addView(text("Control captures from Windows.\nKeep OpenCapture open and unlocked.", 14f, Color.LTGRAY))
+        button(remoteContent, "Show controls") { actions.showControls() }.setTextColor(Color.WHITE)
+        button(remoteContent, "End Remote ready") { actions.remoteReady() }.setTextColor(Color.WHITE)
+        remoteOverlay.addView(ScrollView(activity).apply { isFillViewport = true; addView(remoteContent) }, FrameLayout.LayoutParams(-1, -1))
+        remoteOverlay.setOnApplyWindowInsetsListener { view, insets ->
+            view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+            insets
+        }
+        activity.setContentView(FrameLayout(activity).apply {
+            addView(root, FrameLayout.LayoutParams(-1, -1))
+            addView(remoteOverlay, FrameLayout.LayoutParams(-1, -1))
+        })
         pages.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> sizePreview() }
         selectTab(0)
     }
@@ -153,6 +174,10 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
     }
 
     private fun buildCaptures() {
+        capturePage.second.addView(autoDelete)
+        autoDelete.setOnCheckedChangeListener { _, enabled -> actions.autoDeleteChanged(enabled) }
+        capturePage.second.addView(text("After Windows confirms the complete upload, remove the phone copy. Local captures and failed uploads are kept.", 13f, muted))
+        button(capturePage.second, "Delete all captures…") { actions.deleteAllCaptures() }
         button(capturePage.second, "Refresh captures") { actions.refreshCaptures() }
         capturePage.second.addView(captures)
     }
@@ -169,11 +194,16 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
         val advanced = column().apply { visibility = View.GONE }
         field(advanced, "Pairing token", token, "", numeric = false, cameraControl = false)
         token.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-        advanced.addView(text("Only needed when the PC requires a token. Kept in memory.", 12f, muted))
+        advanced.addView(text("Only needed when the PC requires a token. Remote ready saves it encrypted on this phone.", 12f, muted))
         button(server, "Advanced connection") { advanced.visibility = if (advanced.visibility == View.GONE) View.VISIBLE else View.GONE }
         server.addView(advanced)
         connectButton = button(server, "Connect", primary = true) { actions.connect() }
         server.addView(connectionStatus)
+        val remote = section(form, "Tripod use")
+        remote.addView(text("Remote ready remembers this PC, reconnects automatically and keeps the phone awake while OpenCapture is open. End the mode before changing PCs.", 13f, muted))
+        remoteReadyButton = button(remote, "Remote ready", primary = true) { actions.remoteReady() }
+        remoteDimButton = button(remote, "Dim screen") { actions.dimRemote() }
+        remoteDimButton.visibility = View.GONE
         val updates = section(form, "Updates")
         updates.addView(text("Version " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")"))
         updateCheck = button(updates, "Check for updates") { actions.checkUpdate() }
@@ -202,16 +232,28 @@ class OpenCaptureScreens(private val activity: Activity, private val actions: Ac
         if (index == 0) sizePreview()
     }
 
-    fun setState(busy: Boolean, remote: Boolean, updating: Boolean, hasUpdate: Boolean) {
-        cameraControls.forEach { it.isEnabled = !busy && !updating }
-        address.isEnabled = !busy && !updating; token.isEnabled = !busy && !updating
+    fun setState(busy: Boolean, remote: Boolean, updating: Boolean, hasUpdate: Boolean, remoteReady: Boolean = false) {
+        cameraControls.forEach { it.isEnabled = !busy && !updating && !remoteReady }
+        address.isEnabled = !busy && !updating && !remoteReady; token.isEnabled = address.isEnabled
         connectButton.text = if (remote) "Disconnect" else "Connect"
         connectButton.isEnabled = remote || (!updating && !busy)
-        captureButton.isEnabled = busy || !updating
+        connectButton.visibility = visible(!remoteReady)
+        remoteReadyButton.text = if (remoteReady) "End Remote ready" else "Remote ready"
+        remoteReadyButton.isEnabled = remoteReady || (!updating && (!busy || remote))
+        remoteDimButton.visibility = visible(remoteReady)
+        captureButton.isEnabled = busy || (!updating && !remoteReady)
         captureButton.text = when { remote -> "Cancel current job"; busy -> "Cancel capture"; else -> captureLabel() }
         updateCheck.isEnabled = !updating && (!busy || remote)
         updateInstall.visibility = visible(hasUpdate)
-        updateInstall.isEnabled = !busy && !updating
+        updateInstall.isEnabled = !busy && !updating && !remoteReady
+    }
+
+    fun remoteStatus(detail: String) { remoteDetail.text = detail }
+    fun showRemoteScreen(show: Boolean) {
+        remoteOverlay.visibility = visible(show)
+        root.importantForAccessibility = if (show) View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS else View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        activity.currentFocus?.clearFocus()
+        (activity.getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
     }
 
     private fun captureLabel() = "Capture " + frames.text + if (frames.text.toString() == "1") " frame" else " frames"

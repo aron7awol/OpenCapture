@@ -39,8 +39,7 @@ final class CaptureTransport {
     private func check(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 401 { throw CaptureError.transport("This controller requires a pairing token. Enter it under Advanced connection, or enable IP-only pairing on the controller.") }
-            throw CaptureError.transport("Controller HTTP \(status). Check pairing, job state, and network.")
+            throw ControllerHTTPError(status: status)
         }
         guard data.count <= 1_048_576 else { throw CaptureError.transport("Controller response is too large") }
     }
@@ -78,6 +77,9 @@ final class CaptureTransport {
     }
 
     func upload(_ file: CapturedFile, from directory: URL, id: String, lease: String) async throws {
+        guard (1...(128 * 1024 * 1024)).contains(file.bytes) else {
+            throw CaptureError.transport("Original exceeds the controller's 128 MiB file limit; the local original is retained for export.")
+        }
         var req = request("oc/v1/jobs/\(id)/files/\(file.name)", method: "PUT", lease: lease)
         req.setValue(file.mediaType, forHTTPHeaderField: "Content-Type")
         req.setValue(file.sha256, forHTTPHeaderField: "X-Content-SHA256")

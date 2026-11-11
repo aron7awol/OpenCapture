@@ -1,20 +1,24 @@
 # Verification and Device Test Plan
 
-## Android
+## Remote ready and deletion (0.3.0)
 
-Run the standalone Gradle build, lint and both unit-test variants described
-in `android/README.md`. Tests cover protocol bounds, transport cancellation
-and upload integrity, complete-frame preview geometry, GitHub feed/redirect
-policy, download hashes/limits and installed signing-key continuity.
+Core/Android tests cover transient reconnect/backoff, stopping pending retries,
+authentication/certificate rejection, archive path bounds, used-ID protection
+after deletion, and keeping unconfirmed/opted-out originals. Confirmed cleanup
+removes images and Android cached export ZIPs. iOS simulator navigation checks
+the default retention setting and entering/showing/exiting the dim screen.
 
-Physical Camera2 behavior remains unverified. First planned device: Pixel 10
-Pro. Start with one local DNG, then four at locked controls; inspect dimensions,
-sensor/image timestamp matching, actual exposure/focus/WB and retained files.
-Check the whole preview fits in portrait and both landscape directions.
-Pair with a controller, capture/upload, cancel and background the app.
-Check for updates with no PC address configured; install a higher signed build
-through Android's system installer and confirm settings/captures survive.
-Software tests do not establish camera quality or full-frame sensor coverage.
+On each real phone, enable Remote ready with the selected PC, mount it and
+operate existing Windows capture controls. Test a PC restart/Wi-Fi interruption,
+End Remote ready during backoff, Home/lock during capture, foreground return,
+and remembered mode after restarting the app. Confirm that no interrupted job
+replays and no capture continues while backgrounded. Compare brightness before,
+during and after the mode, including a Control Center/notification interruption.
+Check complete uploads remove only the phone copy by default; local captures,
+failed uploads and lost acknowledgements stay. Disable auto-delete and verify
+retention, then test individual/bulk deletion and cancellation of confirmation.
+Existing archives must remain after updating the app. These behaviors still
+require physical iPhone/Pixel testing.
 
 ## Automated
 
@@ -28,11 +32,14 @@ Software tests do not establish camera quality or full-frame sensor coverage.
   apply-controls jobs.
 - Remote controls: capability gating for old apps, settled-readback validation,
   cancellation, no photo uploads, and idempotent/immutable completion.
+- ProRAW: separate quality-priority request contract; original DNG upload,
+  manifest identity rejection, backward-compatible Bayer/JPEG completion.
 - macOS build: Xcode device compile and unsigned IPA packaging. The packager
   refuses simulator products. Published IPA hash and permissions come from the
   actual build, not handwritten release metadata.
 - Simulator checks: select Fast JPEG, rotate the camera screen into both
-  landscape directions, and verify the capture button stays inside the window.
+  landscape directions, and verify the full preview row and capture button
+  fit inside the visible window. The preview scrolls with the camera form.
   Open the empty gallery and connection controls, rotate to landscape, and
   verify the controller field remains hittable and the optional token field is
   collapsed initially. Full-screen screenshots are retained
@@ -43,6 +50,15 @@ These tests do not assert real camera quality, preview pixel orientation, or
 exposure behavior. The simulator has no physical camera feed.
 
 ## Device observations
+
+2026-11-11 source adds explicit Apple ProRAW. Python protocol/import fixtures
+are software evidence only; Swift/Xcode compilation and real ProRAW delivery
+remain pending. On the first device test, check advertised support, the actual
+RAW pixel format, returned dimensions, per-frame declarations, native EXIF,
+file size and sequential-burst stability. Compare identical manual controls
+against Bayer and verify that neither mode silently falls back. Inspect both
+the native originals and thumbnails separately. Test an unsupported lens and
+confirm a clear error. High resolution does not establish measurement quality.
 
 - 2026-11-07: the user installed the published build through AltStore and
   reached the live camera preview. They reported an upside-down live preview
@@ -68,6 +84,13 @@ simulator layout and URL-policy tests do not prove multicast reachability.
 3. Capture fast JPEG and quality JPEG at matched manual controls. Inspect
    reported exposure for overrides. Compare native noise and spatial detail,
    not the processed preview or embedded RAW thumbnail.
+   Also select **Apple ProRAW / highest resolution** on a supported camera.
+   Check the advertised dimensions, then actual DNG dimensions and ProRAW
+   identity flags. Test one frame, then four, and compare with individual Bayer
+   originals. Verify that switching back still produces Bayer mosaic files.
+   Test an unsupported lens/device: it must fail without changing formats.
+   ProRAW fusion, high-resolution delivery and real storage/transfer costs
+   require physical-phone evidence; neither simulator nor protocol tests prove them.
 4. On a tripod, capture 4, 16, and 32 sequential frames. Confirm originals,
    metadata, disk use, memory stability, and no control changes within a burst.
 5. Apply controls and copy current readings into manual fields; confirm focus

@@ -2,7 +2,16 @@ import Foundation
 
 public enum CaptureFormat: String, Codable, CaseIterable, Sendable {
     case bayerRAW = "bayerRaw"
+    case appleProRAW = "appleProRaw"
     case jpeg
+
+    public var title: String {
+        switch self {
+        case .bayerRAW: return "Bayer RAW"
+        case .appleProRAW: return "Apple ProRAW"
+        case .jpeg: return "JPEG"
+        }
+    }
 }
 
 public enum CaptureQuality: String, Codable, CaseIterable, Sendable {
@@ -47,6 +56,9 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
         }
         guard format != .bayerRAW || quality == .speed else {
             throw CaptureError.invalid("Bayer RAW requires speed priority")
+        }
+        guard format != .appleProRAW || quality == .quality else {
+            throw CaptureError.invalid("Apple ProRAW requires quality priority")
         }
         guard (exposureSeconds == nil) == (iso == nil) else {
             throw CaptureError.invalid("Manual exposure requires both shutter time and ISO")
@@ -111,6 +123,8 @@ public struct CameraCapabilities: Codable, Sendable {
     public var appBuild: String? = nil
     public var deviceID: String? = nil
     public var operations: [CameraOperation]? = nil
+    public var proRAWMaxPhotoWidth: Int? = nil
+    public var proRAWMaxPhotoHeight: Int? = nil
 }
 
 public struct CameraControlResult: Codable, Sendable {
@@ -146,6 +160,7 @@ public struct FrameRecord: Codable, Sendable {
     public var lensPosition: Float
     public var whiteBalance: WhiteBalance
     public var isBayerRAW: Bool
+    public var isAppleProRAW: Bool? = nil
 }
 
 public struct CaptureManifest: Codable, Sendable {

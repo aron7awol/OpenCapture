@@ -2,6 +2,7 @@ package com.uniformitycomp.opencapture
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -47,6 +48,10 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private var localCancel = AtomicBoolean(false)
     private var updateCancel = AtomicBoolean(false)
     @Volatile private var connection: OpenCaptureConnection? = null
+    @Volatile private var activeTransport: OpenCaptureTransport? = null
+    @Volatile private var remoteReadyEnabled = false
+    private var remoteDimmed = false
+    private var previousBrightness: Float? = null
     @Volatile private var updater: OpenCaptureUpdates? = null
     @Volatile private var previewBytes: ByteArray? = null
     private var update: OpenCaptureUpdates.Release? = null
@@ -59,6 +64,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private val previewTick = object : Runnable {
         override fun run() {
             if (!resumed) return
+            maybeStartRemoteReady()
             if (texture.isAvailable && camera.previewReady && !stop.get()) {
                 val height = (640.0 * texture.height / texture.width.coerceAtLeast(1)).toInt().coerceIn(1, 960)
                 texture.getBitmap(640, height)?.let { bitmap ->
@@ -75,7 +81,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         camera = CameraController(this)
-        camera.onConnectionLost = { localCancel.set(true); stop.set(true); message("Camera disconnected") }
+        camera.onConnectionLost = { runOnUiThread { disconnect(); camera.close(); opening = false; message("Camera disconnected. Reopen the camera before enabling Remote ready.") } }
         val prefs = getSharedPreferences("opencapture", MODE_PRIVATE)
         val deviceId = prefs.getString("deviceID", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceID", it).apply() }
         capture = OpenCaptureCamera(camera, deviceId, File(filesDir, "captures"))
@@ -88,28 +94,41 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
                 catch (error: Exception) { message(error.message ?: "No current camera settings") }
             }
             override fun restart() {
-                if (busy.get() || updating.get()) return
+                if (busy.get() || updating.get() || remoteReadyEnabled) return
                 camera.close(); opening = false; previewBytes = null; openCamera()
             }
             override fun connect() { if (!stop.get()) disconnect() else startConnection() }
             override fun discover() = discoverControllers()
             override fun selectController(address: String) {
-                if (busy.get() || updating.get()) return
+                if (busy.get() || updating.get() || remoteReadyEnabled) return
                 screen.address.setText(address); screen.connectionStatus.text = "Controller selected. Tap Connect."
             }
             override fun refreshCaptures() = history()
             override fun exportCapabilities() = this@OpenCaptureActivity.exportCapabilities()
             override fun checkUpdate() = this@OpenCaptureActivity.checkUpdate()
             override fun installUpdate() = this@OpenCaptureActivity.installUpdate()
+            override fun remoteReady() { if (remoteReadyEnabled) disconnect() else enterRemoteReady() }
+            override fun dimRemote() { remoteDimmed = true; applyRemoteScreen() }
+            override fun showControls() { remoteDimmed = false; applyRemoteScreen() }
+            override fun deleteAllCaptures() { confirmDelete(captureDirectories()) }
+            override fun autoDeleteChanged(enabled: Boolean) { prefs.edit().putBoolean("autoDeleteRemote", enabled).apply() }
         })
         texture.surfaceTextureListener = this
         screen.address.setText(prefs.getString("address", ""))
+        screen.autoDelete.isChecked = prefs.getBoolean("autoDeleteRemote", true)
+        remoteReadyEnabled = prefs.getBoolean("remoteReady", false)
+        remoteDimmed = remoteReadyEnabled
+        try { screen.token.setText(ControllerTokenStore(this).load(screen.address.text.toString())) }
+        catch (_: Exception) {
+            remoteReadyEnabled = false; prefs.edit().putBoolean("remoteReady", false).apply()
+            message("Saved pairing token is unavailable. Enter it again before enabling Remote ready.")
+        }
         val choices = camera.rawCameraChoices()
         screen.lenses.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, choices.map { it.second })
         screen.lenses.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (busy.get() || updating.get()) return
+                if (busy.get() || updating.get() || remoteReadyEnabled) return
                 camera.close(); opening = false; previewBytes = null
                 camera.selectRawCamera(choices[position].first); openCamera()
             }
@@ -121,6 +140,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun message(text: String) = runOnUiThread {
         screen.status.text = text
         screen.connectionStatus.text = text
+        screen.remoteStatus(text)
     }
     private fun controls(value: JSONObject) = runOnUiThread {
         screen.exposure.setText((value.getDouble("deviceExposureSeconds") * 1000).toString())
@@ -133,7 +153,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         screen.manualExposure.isChecked = true; screen.manualFocus.isChecked = true; screen.manualWB.isChecked = true
     }
     private fun buttons() = runOnUiThread {
-        screen.setState(busy.get(), !stop.get(), updating.get(), update != null)
+        screen.setState(busy.get(), !stop.get(), updating.get(), update != null, remoteReadyEnabled)
     }
     private fun awaitPreview(cancel: AtomicBoolean) {
         val deadline = System.nanoTime() + 10_000_000_000L
@@ -146,7 +166,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         localCancel.set(true); connection?.cancel(); message("Cancelling; originals are retained")
     }
     private fun local(controlOnly: Boolean) {
-        if (updating.get()) return
+        if (updating.get() || remoteReadyEnabled) return
         val request = try {
             OpenCaptureProtocol.localRequest(if (controlOnly) 1 else screen.frames.text.toString().toInt(),
                 if (screen.manualExposure.isChecked) screen.exposure.text.toString().toDouble() else null,
@@ -173,31 +193,92 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         }
     }
     private fun startConnection() {
-        if (updating.get()) return
-        val transport = try { OpenCaptureTransport(screen.address.text.toString(), screen.token.text.toString()) }
-            catch (error: Exception) { message(error.message ?: "Invalid PC address"); return }
-        if (!busy.compareAndSet(false, true)) { transport.close(); return }
-        getSharedPreferences("opencapture", MODE_PRIVATE).edit().putString("address", screen.address.text.toString()).apply()
-        stop = AtomicBoolean(false); buttons()
+        if (updating.get() || !resumed) return
+        val address = screen.address.text.toString()
+        val token = screen.token.text.toString()
+        val origin = try { OpenCaptureProtocol.origin(address, token) }
+            catch (error: Exception) { if (remoteReadyEnabled) disconnect(); message(error.message ?: "Invalid PC address"); return }
+        if (!busy.compareAndSet(false, true)) return
+        getSharedPreferences("opencapture", MODE_PRIVATE).edit().putString("address", origin.toString()).apply()
+        val sessionStop = AtomicBoolean(false)
+        stop = sessionStop; buttons()
         worker.execute {
+            var failure: Exception? = null
             try {
-                awaitPreview(stop)
-                connection = OpenCaptureConnection(transport, capture, stop, { previewBytes }, ::message, ::controls)
-                connection!!.run()
-            } catch (error: Exception) { message(error.message ?: "Connection failed") }
-            finally { transport.close(); stop.set(true); connection = null; busy.set(false); buttons() }
+                RemoteReadyLoop(sessionStop, { remoteReadyEnabled }).run({ delay ->
+                    message("PC unavailable. Reconnecting in $delay seconds…")
+                }) { registered ->
+                    val transport = OpenCaptureTransport(origin.toString(), token)
+                    activeTransport = transport
+                    try {
+                        if (sessionStop.get()) return@run
+                        message("Connecting to the remembered PC…")
+                        awaitPreview(sessionStop)
+                        connection = OpenCaptureConnection(transport, capture, sessionStop, { previewBytes }, ::message, ::controls, registered,
+                            autoDelete = { getSharedPreferences("opencapture", MODE_PRIVATE).getBoolean("autoDeleteRemote", true) },
+                            archivesChanged = { runOnUiThread { if (screen.selectedTab == 1) history() } },
+                            finishUpload = { directory, confirmation, remove -> CaptureArchives(directory.parentFile!!, File(cacheDir, "exports")).completeUpload(directory.name, confirmation, remove) })
+                        connection!!.run()
+                    } finally { transport.close(); activeTransport = null; connection = null }
+                }
+            } catch (error: Exception) { if (!sessionStop.get()) failure = error }
+            finally { runOnUiThread {
+                sessionStop.set(true); busy.set(false)
+                if (failure != null) {
+                    if (remoteReadyEnabled) disconnect()
+                    message(failure?.message ?: "Connection failed")
+                }
+                buttons()
+                maybeStartRemoteReady()
+            } }
         }
     }
     private fun disconnect() {
+        remoteReadyEnabled = false; remoteDimmed = false
+        getSharedPreferences("opencapture", MODE_PRIVATE).edit().putBoolean("remoteReady", false).apply()
+        applyRemoteScreen()
+        stopConnection()
+    }
+    private fun stopConnection() {
         val wasActive = !stop.get() || busy.get()
         stop.set(true); connection?.cancel(); localCancel.set(true)
+        activeTransport?.close()
         if (wasActive) message("Disconnecting…")
         buttons()
     }
 
-    override fun onResume() { super.onResume(); resumed = true; openCamera(); ui.post(previewTick); buttons() }
+    private fun enterRemoteReady() {
+        if (updating.get() || (busy.get() && stop.get())) return
+        try {
+            val origin = OpenCaptureProtocol.origin(screen.address.text.toString(), screen.token.text.toString()).toString()
+            ControllerTokenStore(this).save(origin, screen.token.text.toString())
+            check(getSharedPreferences("opencapture", MODE_PRIVATE).edit().putString("address", origin).putBoolean("remoteReady", true).commit()) { "Cannot save Remote ready settings" }
+            screen.address.setText(origin)
+            remoteReadyEnabled = true; remoteDimmed = true
+            if (stop.get()) message("Waiting for camera and PC…")
+            stopDiscovery(); applyRemoteScreen(); buttons(); maybeStartRemoteReady()
+        } catch (error: Exception) { message(error.message ?: "Cannot enable Remote ready") }
+    }
+    private fun maybeStartRemoteReady() {
+        if (remoteReadyEnabled && resumed && camera.previewReady && !busy.get() && !updating.get()) startConnection()
+    }
+    private fun applyRemoteScreen() {
+        val dim = remoteReadyEnabled && remoteDimmed && resumed
+        screen.showRemoteScreen(dim)
+        if (dim && previousBrightness == null) {
+            val attributes = window.attributes
+            previousBrightness = attributes.screenBrightness
+            attributes.screenBrightness = if (attributes.screenBrightness < 0) 0.08f else minOf(attributes.screenBrightness, 0.08f)
+            window.attributes = attributes
+        } else if (!dim && previousBrightness != null) {
+            window.attributes = window.attributes.apply { screenBrightness = previousBrightness!! }
+            previousBrightness = null
+        }
+    }
+
+    override fun onResume() { super.onResume(); resumed = true; openCamera(); ui.post(previewTick); applyRemoteScreen(); buttons() }
     override fun onStop() {
-        resumed = false; disconnect(); updateCancel.set(true); updater?.close()
+        resumed = false; stopConnection(); updateCancel.set(true); updater?.close(); applyRemoteScreen()
         ui.removeCallbacks(previewTick); stopDiscovery(); camera.close(); opening = false; previewBytes = null
         super.onStop()
     }
@@ -225,7 +306,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) { openCamera() }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) { transformPreview() }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { disconnect(); camera.close(); opening = false; return true }
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { stopConnection(); camera.close(); opening = false; return true }
     override fun onConfigurationChanged(configuration: Configuration) { super.onConfigurationChanged(configuration); texture.post { transformPreview() } }
     private fun transformPreview() {
         val size = camera.previewDimensions() ?: return
@@ -239,7 +320,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
 
     private fun discoverControllers() {
-        if (busy.get() || updating.get()) { message("Disconnect before changing controllers"); return }
+        if (busy.get() || updating.get() || remoteReadyEnabled) { message("End Remote ready and disconnect before changing controllers"); return }
         if (discovery != null) return
         discovered.clear(); screen.showControllers(discovered)
         val nsd = getSystemService(NSD_SERVICE) as NsdManager
@@ -282,6 +363,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         screen.button(screen.captures, "Back to captures") { history() }
         val summary = screen.section(screen.captures, "Capture ${directory.name.take(8)}")
         screen.button(summary, "Export originals and metadata") { exportArchive(directory) }
+        screen.button(summary, "Delete capture…") { confirmDelete(listOf(directory)) }
+        if (File(directory, "uploaded.json").isFile) summary.addView(screen.text("Upload confirmed by Windows", 13f))
         val manifest = runCatching { JSONObject(File(directory, "manifest.json").readText()) }.getOrNull()
         if (manifest == null) summary.addView(screen.text("Partial capture; original files retained."))
         else {
@@ -305,6 +388,26 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             }
         }
     }
+    private fun captureDirectories(): List<File> = File(filesDir, "captures").listFiles().orEmpty()
+        .filter { it.isDirectory && OpenCaptureProtocol.jobId.matches(it.name) }
+    private fun confirmDelete(directories: List<File>) {
+        if (busy.get() || updating.get() || remoteReadyEnabled) { message("End Remote ready and disconnect before deleting captures."); return }
+        if (directories.isEmpty()) { message("No captures to delete"); return }
+        AlertDialog.Builder(this).setTitle("Delete ${directories.size} capture${if (directories.size == 1) "" else "s"}?")
+            .setMessage("Permanently delete these originals, metadata and cached exports from OpenCapture on this phone? Files already uploaded to Windows are unaffected.")
+            .setNegativeButton("Keep", null).setPositiveButton("Delete") { _, _ ->
+                if (remoteReadyEnabled || updating.get() || !busy.compareAndSet(false, true)) { message("Finish or disconnect before deleting captures"); return@setPositiveButton }
+                buttons()
+                worker.execute {
+                    try {
+                        val store = CaptureArchives(File(filesDir, "captures"), File(cacheDir, "exports"))
+                        directories.forEach { store.delete(it.name) }
+                        message("Deleted ${directories.size} capture${if (directories.size == 1) "" else "s"} from this phone")
+                    } catch (error: Exception) { message(error.message ?: "Could not delete every capture") }
+                    finally { runOnUiThread { busy.set(false); buttons(); history() } }
+                }
+            }.show()
+    }
     private fun exportArchive(directory: File) {
         if (updating.get() || !busy.compareAndSet(false, true)) { message("Finish or disconnect before exporting captures"); return }
         buttons()
@@ -312,7 +415,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             try {
                 val archive = File(File(cacheDir, "exports").apply { mkdirs() }, "${directory.name}.zip")
                 ZipOutputStream(archive.outputStream()).use { zip ->
-                    directory.listFiles().orEmpty().filter { it.isFile && (OpenCaptureProtocol.fileName.matches(it.name) || it.name in setOf("manifest.json", "failure.json")) }.forEach { file ->
+                    directory.listFiles().orEmpty().filter { it.isFile && (OpenCaptureProtocol.fileName.matches(it.name) || it.name in setOf("manifest.json", "failure.json", "uploaded.json")) }.forEach { file ->
                         zip.putNextEntry(ZipEntry(file.name)); file.inputStream().use { it.copyTo(zip) }; zip.closeEntry()
                     }
                 }
@@ -360,7 +463,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun installUpdate() {
         val release = update ?: return
         val manifest = release.apk
-        if (busy.get() || updating.get()) return
+        if (busy.get() || updating.get() || remoteReadyEnabled) return
         val ready = downloadedUpdate
         if (ready != null && ready.isFile) { launchInstaller(ready, manifest); return }
         val client = OpenCaptureUpdates()

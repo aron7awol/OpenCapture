@@ -2,12 +2,12 @@
 
 ## Boundaries
 
-- `android/`: standalone Camera2 app using the same generic controller
-  protocol. Its camera controller only owns preview and sequential DNG capture.
-  `DngCapture.kt` pairs RAW images with actual Camera2 results by timestamp;
-  `PreviewGeometry.kt` fits the complete rotated preview. The GitHub updater
-  is independent of controller pairing and delegates installation to Android.
-  See `android/README.md` for build, update and device-support details.
+- `Core/RemoteReconnect.swift`: transient-network retry policy and bounded backoff.
+- `Core/CaptureArchiveStore.swift`: archive creation/deletion, upload-acknowledgement
+  checks and persistent ID replay protection after deletion.
+- `android/` in the public repository: standalone Camera2 DNG client with the
+  same foreground Remote ready mode and confirmed-upload retention behavior.
+  Its camera lifecycle contains no private measurement logic.
 
 - `Core/Protocol.swift`: Codable contract, bounded setting validation,
   controller URL policy, numeric release-version comparison. Foundation only.
@@ -39,13 +39,34 @@
 
 ## Capture decisions
 
+Remote ready retains the existing outbound control protocol. Only the exact
+explicitly selected origin is retried, and its credentials never follow
+redirects. Backgrounding closes active requests and cancels capture; foreground
+return waits for the old task to relinquish the camera before reconnecting.
+The dim overlay leaves the camera preview attached for remote preview output.
+Brightness changes are restored when showing controls or leaving the app.
+
+Remote capture auto-delete defaults on. Every file upload is verified first;
+`/complete` must acknowledge protocol 1, the exact job ID and status `complete`.
+Only then is `uploaded.json` recorded and optional cleanup attempted. A cleanup
+failure does not report an already completed Windows job as failed. Phone-side
+archive deletion preserves a small used-ID marker outside the image directories.
+Manual deletion is unavailable during remote operation, capture or file work.
+
 One physical lens is selected, defaulting to the main wide camera. Virtual
-multi-camera devices and automatic lens switching are not used. ProRAW is
-disabled. Photo dimensions are selected at or below 13 million pixels when
+multi-camera devices and automatic lens switching are not used. Standard
+Bayer/JPEG photo dimensions are selected at or below 13 million pixels when
 the active format advertises such a size; otherwise the smallest advertised
 size is used. Actual RAW dimensions are taken from resolved photo settings.
+Apple ProRAW is enabled before session startup when supported, and selected
+only by its explicit pixel format. It requests the active configuration's
+largest advertised dimensions, while Bayer/JPEG settings retain their former
+limit. Both RAW formats are checked against the returned RAW pixel buffer.
+ProRAW is labeled separately in requests, capabilities, manifests and history.
+Its original lossless DNG contains demosaiced RGB with Apple processing and
+possible image fusion; it must never be labeled as Bayer RAW.
 
-RAW and fast JPEG use `.speed`; quality JPEG uses `.quality` deliberately so
+Bayer RAW and fast JPEG use `.speed`; ProRAW and quality JPEG use `.quality` so
 the user can evaluate its processing. This may cause the system to override
 requested exposure; EXIF is retained and displayed. Exposure/focus/WB lock
 is not proof of radiometric linearity or the absence of sensor processing.
@@ -83,14 +104,13 @@ timestamps are UTC wall time. Never subtract these different clock domains.
 
 ## Ownership and provenance
 
-The iOS app and controller were independently authored for OpenCapture.
-Android includes only the explicitly selected generic Camera2 DNG, preview
-and APK-verification code reused from the owner's development project.
-No dogegen, Windows renderer, measurement engine, calibration solver,
-runtime capture or private project history is included.
-The owner selected GPL-3.0-only for iOS on 2026-11-07 and Android on 2026-11-11.
-See `android/THIRD_PARTY_NOTICES.md` for Android dependency notices.
-The full license text is the
+The iOS app/controller were independently authored for OpenCapture. Android
+reuses explicitly selected generic DNG, preview and APK-verification helpers.
+No dogegen, private Windows renderer, measurement engine, calibration solver,
+captures or private project history are included. The owner selected
+GPL-3.0-only for iOS on 2026-11-07 and Android on 2026-11-11.
+Android dependency notices are in `android/THIRD_PARTY_NOTICES.md` in the public
+repository. The full license text is the
 SPDX GPL-3.0-only text. Runtime dependencies are Apple platform frameworks;
 the Python controller uses the standard library. XcodeGen 2.46.0 is downloaded
 only as a checksummed build tool. No analytics or third-party camera SDK.

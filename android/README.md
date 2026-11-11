@@ -36,6 +36,22 @@ completed originals survive cancellation. Uninstalling removes local archives.
 
 ## GitHub updates
 
+Version 0.3.0 / build 4 adds **Connection > Remote ready**. Enter/select the PC
+and optional token, then enable it before mounting the phone. It remembers
+that exact controller, reconnects after temporary network failures and uses a
+dim black stay-awake screen. **Show controls** restores brightness without
+disconnecting; **End Remote ready** stops reconnecting. Camera/network work
+stops when the app is backgrounded or the phone is locked, and resumes when
+you return to the open app. Credentials are encrypted with Android Keystore.
+
+**Captures** supports individual and bulk deletion with confirmation. End
+Remote ready/disconnect first. **Auto-delete uploaded remote captures** is on
+by default: only a matching complete-upload acknowledgement allows removal.
+Local captures, failed/unconfirmed uploads and existing archives are kept.
+Turn the option off to retain future remote captures. Tiny used-ID markers
+remain so a deleted job cannot be recaptured. Windows cannot browse old phone
+archives; retained originals can still be exported manually.
+
 Build 3 / version 0.2.1 checks the dedicated
 [Android feed](https://github.com/aron7awol/OpenCapture/releases/download/android-updates/android.json).
 No PC address, pairing token or PC connection is needed to check or download

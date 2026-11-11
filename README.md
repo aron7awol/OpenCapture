@@ -2,16 +2,49 @@
 
 A standalone iOS and Android camera and remote capture instrument.
 
-The [Android app and build instructions](android/README.md) are in `android/`.
-It captures individual Bayer DNG originals through Camera2 and uses the same
-controller protocol. Android updates come directly from the dedicated GitHub
-release feed. Both apps are GPL-3.0-only; hardware capabilities differ.
-The iPhone instructions and capture modes follow below.
+The standalone [Android source and build instructions](https://github.com/aron7awol/OpenCapture/tree/main/android)
+live in `android/` in the public repository. It captures individual Camera2
+Bayer DNG originals and uses the same controller protocol. Both apps use
+GPL-3.0-only. The iPhone capture modes and build instructions follow below.
+
+## Remote ready and phone storage
+
+Version 0.3.0 adds **Connection > Remote ready** on both phones. Select or
+enter your PC and its optional pairing token once, then enable the mode before
+mounting the phone. It remembers that exact controller, connects automatically
+when the camera is ready and retries temporary connection failures with a
+1/2/4/8/15-second backoff. Authentication, certificate and protocol errors
+require attention. Interrupted captures are never replayed.
+
+The dim black screen shows connection/capture progress. **Show controls**
+restores normal brightness while keeping Remote ready enabled; **Dim screen**
+returns to the tripod display. **End Remote ready** disconnects and disables
+automatic reconnect. Brightness is restored when leaving the app. The mode is
+remembered across launches, but camera/network work stops on backgrounding or
+locking; return to the open, unlocked app to resume. No background capture or
+phone server is used. Windows uses its existing capture controls. Pairing
+tokens stay in iOS Keychain or Android Keystore-backed encrypted preferences.
+
+**Captures** offers individual deletion and **Delete all captures**, with
+confirmation. End Remote ready/disconnect before manually deleting archives.
+At the owner's request, **Auto-delete uploaded remote captures** defaults on:
+the phone removes the capture only after all original uploads and the matching
+complete-job acknowledgement from Windows. Local captures, failed/incomplete
+uploads and lost/invalid acknowledgements retain their files. Turn the switch
+off to keep future remote captures. Existing archives are not purged on update.
+Tiny used-ID records remain to prevent a deleted job being captured again.
+Windows cannot browse/download old phone archives; retained files can be
+exported manually. Deleting a phone copy does not delete Windows originals.
 
 ## Capture modes
 
 - **Bayer RAW:** standard sensor-mosaic DNG from a physical rear camera.
-  ProRAW is disabled. Unsupported RAW fails explicitly, never falls back.
+  Uses an explicit Bayer pixel format. Unsupported RAW fails explicitly, never falls back.
+- **Apple ProRAW / highest resolution:** a separate, quality-prioritized DNG
+  mode on supported cameras. Requests the largest dimensions advertised by the
+  active camera configuration; actual dimensions are recorded per frame.
+  Apple demosaics and processes these RGB files and may fuse multiple
+  exposures. They are not Bayer sensor originals.
 - **Fast JPEG burst:** sequential stills with AVFoundation speed priority.
   This is not a claim to reproduce Apple's Camera app burst pipeline or to
   disable all sharpening, denoising, or tone mapping.
@@ -23,10 +56,13 @@ exposure/ISO when present, observed lens position and white-balance gains,
 dimensions, photo timestamps, and a capture manifest. Live preview and saved
 thumbnails are processed aiming/inspection aids, not calibrated RAW views.
 
-The first version uses up to 32 sequential frames and a photo configuration
-around 12 MP. This is not high-speed video or a promised frame rate. RAW
+The app uses up to 32 sequential frames. Bayer RAW and JPEG retain the photo
+configuration around 12 MP; ProRAW requests the largest supported size.
+This is not high-speed video or a promised frame rate. RAW
 dimensions are whatever the selected physical camera actually returns.
 No automatic RAW averaging is performed yet.
+The live preview preserves the full stream's aspect ratio and fits within the
+visible camera page in portrait and landscape. It scrolls with the controls.
 
 ## Try it on an iPhone
 
@@ -53,6 +89,11 @@ Use the same camera position, physical lens, scene, and lighting. First find
 an exposure that does not clip, copy the current settings to manual, and keep
 those settings across modes. Capture 4-16 frames per mode. Compare both
 individual frames and the actual exposure metadata, not just thumbnails.
+Start with one ProRAW frame before longer bursts; high-resolution DNGs are
+large. Confirm `isAppleProRAW: true`, `isBayerRAW: false` and actual dimensions
+in the manifest. Compare repeated individual Bayer and ProRAW originals at
+matched geometry and controls. Apple's fusion is not a known arithmetic
+average, and a smoother result does not establish measurement accuracy.
 A quality JPEG can look smoother while suppressing fine detail. Bayer RAW
 can look noisier while preserving it.
 

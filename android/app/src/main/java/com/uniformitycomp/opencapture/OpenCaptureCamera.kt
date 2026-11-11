@@ -59,10 +59,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         require(settings.exposureNs == null || exposureRange.contains(settings.exposureNs)) { "Exposure is outside this camera's range" }
         val controlOnly = request.optString("operation") == "applyControls"
         val count = if (controlOnly) 0 else request.getInt("frameCount")
-        val directory = if (controlOnly) null else File(root, request.getString("id"))
+        val directory = if (controlOnly) null else CaptureArchives(root).create(request.getString("id"))
         if (directory != null) {
-            require(!directory.exists()) { "Capture ID already exists; originals are immutable" }
-            check(directory.mkdirs()) { "Cannot create capture directory" }
             val needed = count * cap.getInt("maxPhotoWidth").toLong() * cap.getInt("maxPhotoHeight") * 2 + 64L * 1024 * 1024
             check(directory.usableSpace >= needed) { "Not enough free space for individual DNG originals" }
         }

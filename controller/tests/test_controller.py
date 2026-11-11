@@ -22,12 +22,27 @@ def request():
 
 
 class ContractTests(unittest.TestCase):
+    def test_proraw_requires_explicit_quality_request(self):
+        job = dict(request(), format='appleProRaw')
+        with self.assertRaises(server.Invalid):
+            server.validate_request(job)
+        job['quality'] = 'quality'
+        server.validate_request(job)
+
     def test_valid_auto_and_manual(self):
         job = request()
         server.validate_request(job)
         job.update(exposureSeconds=0.0333, iso=100, focusPosition=0.5,
                    whiteBalance={"red": 1.1, "green": 1.0, "blue": 1.4})
         server.validate_request(job)
+
+    def test_proraw_is_explicit_and_quality_prioritized(self):
+        job = request()
+        job.update(format="appleProRaw", quality="quality")
+        server.validate_request(job)
+        job["quality"] = "speed"
+        with self.assertRaises(server.Invalid):
+            server.validate_request(job)
 
     def test_rejects_invalid_fields(self):
         for key, value in [("frameCount", 0), ("frameCount", 33), ("frameCount", True),
@@ -62,6 +77,17 @@ class ContractTests(unittest.TestCase):
 
 
 class HTTPTests(unittest.TestCase):
+    def test_proraw_manifest_requires_distinct_declaration(self):
+        job = dict(request(), format='appleProRaw', quality='quality')
+        self.assertEqual(self.call('POST', '/oc/v1/jobs', job)[0], 200)
+        lease = self.call('GET', '/oc/v1/lease')[1]['leaseToken']
+        value = self.manifest(job, lease)
+        endpoint = f'/oc/v1/jobs/{job["id"]}/complete'
+        headers = {'X-OpenCapture-Lease': lease}
+        self.assertEqual(self.call('POST', endpoint, value, headers)[0], 400)
+        value['frames'][0].update(isBayerRAW=False, isAppleProRAW=True)
+        self.assertEqual(self.call('POST', endpoint, value, headers)[0], 200)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.state = server.State(self.temp.name, "test-token-0123456789abcdefghijk")
@@ -147,6 +173,22 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.upload(job, lease, "frame-0001.json", b"changed")[0], 409)
         manifest["processing"] = "different"
         self.assertEqual(self.call("POST", path, manifest, headers)[0], 409)
+
+    def test_proraw_dng_upload_requires_distinct_frame_identity(self):
+        job = request()
+        job.update(format="appleProRaw", quality="quality")
+        self.assertEqual(self.call("POST", "/oc/v1/jobs", job)[0], 200)
+        lease = self.call("GET", "/oc/v1/lease")[1]["leaseToken"]
+        manifest = self.manifest(job, lease)
+        path = f'/oc/v1/jobs/{job["id"]}/complete'
+        headers = {"X-OpenCapture-Lease": lease}
+        self.assertEqual(self.call("POST", path, manifest, headers)[0], 400)
+        manifest["frames"][0]["isBayerRAW"] = False
+        self.assertEqual(self.call("POST", path, manifest, headers)[0], 400)
+        manifest["frames"][0]["isAppleProRAW"] = True
+        self.assertEqual(self.call("POST", path, manifest, headers)[0], 200)
+        self.assertEqual((Path(self.temp.name) / job["id"] / "frame-0001.dng").read_bytes(), b"II*\x00synthetic-not-a-real-photo")
+        self.assertEqual(self.upload(job, lease, "frame-0001.jpg", b"not a DNG")[0], 400)
 
     def test_rejects_missing_and_mismatched_files(self):
         job, lease = self.leased()

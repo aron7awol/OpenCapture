@@ -2,7 +2,6 @@ package com.uniformitycomp.opencapture
 
 import org.json.JSONObject
 import java.io.File
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -64,7 +63,7 @@ class OpenCaptureTransport(address: String, private val token: String) {
                 }
             }
             val status = connection.responseCode
-            if (status !in 200..299) throw IOException("Controller HTTP $status${if (status in 300..399) "; redirects are disabled" else ""}")
+            if (status !in 200..299) throw ControllerHttpException(status)
             return connection.inputStream.use { input ->
                 val buffer = ByteArray(8192)
                 val output = java.io.ByteArrayOutputStream()

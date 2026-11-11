@@ -51,6 +51,12 @@ verified APK hashes/package/version and installed signing-key continuity.
 Do not send controller credentials to update hosts. Android requires system
 installer confirmation. CI's temporary debug keys must never sign feed releases.
 
+Remote ready is foreground-only and reconnects solely to the remembered
+user-selected controller. Backgrounding cancels jobs; reconnection never
+replays one. Auto-delete remote originals only after validating the complete
+acknowledgement for that exact ID. Failed/unconfirmed/local captures stay.
+Manual deletion requires confirmation and must preserve the used-ID ledger.
+
 The owner chose GPL-3.0-only for iOS and the explicitly exported Android
 OpenCapture sources. Android reuses selected generic camera, preview and APK
 verification code. Do not copy additional private parent-project code/history

@@ -13,7 +13,13 @@ class OpenCaptureConnection(
     private val stopped: AtomicBoolean,
     private val preview: () -> ByteArray?,
     private val status: (String) -> Unit,
-    private val readback: (JSONObject) -> Unit
+    private val readback: (JSONObject) -> Unit,
+    private val ready: () -> Unit = {},
+    private val autoDelete: () -> Boolean = { true },
+    private val archivesChanged: () -> Unit = {},
+    private val finishUpload: (File, JSONObject, Boolean) -> Unit = { directory, confirmation, remove ->
+        CaptureArchives(directory.parentFile!!).completeUpload(directory.name, confirmation, remove)
+    }
 ) {
     @Volatile private var currentCancel: AtomicBoolean? = null
     fun cancel() { currentCancel?.set(true) }
@@ -21,6 +27,7 @@ class OpenCaptureConnection(
     fun run() {
         try {
             transport.json("POST", "/oc/v1/capabilities", camera.capabilities())
+            ready()
             status("Connected. Use the PC's OpenCapture controls.")
             while (!stopped.get()) {
                 preview()?.let { transport.preview(it) }
@@ -65,8 +72,18 @@ class OpenCaptureConnection(
                                 }
                             }
                         }
-                        transport.json("POST", "/oc/v1/jobs/$id/complete", manifest, secret, cancel)
-                        status("Uploaded ${frames.length()} DNG originals; local archive retained.")
+                        val confirmation = transport.json("POST", "/oc/v1/jobs/$id/complete", manifest, secret, cancel)
+                        CaptureArchives.confirmUpload(id, confirmation)
+                        // Cleanup failure must not turn an acknowledged Windows capture into
+                        // a failed job. Lost/invalid acknowledgements retain the phone files.
+                        try {
+                            val remove = autoDelete()
+                            finishUpload(directory, confirmation, remove)
+                            if (remove) {
+                                status("Uploaded ${frames.length()} DNG originals. Phone copy deleted.")
+                            } else status("Uploaded ${frames.length()} DNG originals; phone copy retained.")
+                        } catch (_: Exception) { status("Upload confirmed. Phone cleanup failed; check Captures.") }
+                        archivesChanged()
                     }
                 } catch (error: Exception) {
                     val message = error.message ?: "Capture failed"
