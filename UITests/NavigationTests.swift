@@ -78,9 +78,14 @@ final class NavigationTests: XCTestCase {
             let window = app.windows.firstMatch.frame
             let navigation = app.navigationBars[title].frame
             let rotated = landscape ? window.width > window.height : window.height > window.width
-            return rotated && navigation.maxX <= window.maxX && navigation.minY >= window.minY
+            return rotated && abs(navigation.width - window.width) <= 1 &&
+                navigation.maxX <= window.maxX && navigation.minY >= window.minY
         }, evaluatedWith: app)
         wait(for: [layout], timeout: 10)
+        // Accessibility reports destination frames before the rotation's
+        // compositor animation finishes. Let it settle before swiping or
+        // capturing the screen, especially between opposite landscape sides.
+        Thread.sleep(forTimeInterval: 1)
     }
 
     private func attach(_ name: String, _ app: XCUIApplication) {
