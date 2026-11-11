@@ -6,20 +6,26 @@ final class NavigationTests: XCTestCase {
         continueAfterFailure = false
         defer { XCUIDevice.shared.orientation = .portrait }
         let app = XCUIApplication()
-        app.launch()
         addUIInterruptionMonitor(withDescription: "Camera permission") { alert in
             if alert.buttons["Allow"].exists { alert.buttons["Allow"].tap(); return true }
             if alert.buttons["OK"].exists { alert.buttons["OK"].tap(); return true }
             return false
         }
+        app.launch()
+        // Interruption monitors run on interaction, not on existence queries.
+        app.tap()
         if app.alerts["OpenCapture"].waitForExistence(timeout: 10) { app.alerts["OpenCapture"].buttons["OK"].tap() }
         XCTAssertTrue(app.navigationBars["OpenCapture"].waitForExistence(timeout: 5))
         assertPreviewFits(app)
         let mode = app.buttons["captureMode"]
         XCTAssertTrue(mode.exists)
-        if !mode.isHittable { app.swipeUp() }
+        // A row underneath the capture inset can still report isHittable.
+        // Bring the entire picker above that inset before opening its menu.
+        if !mode.isHittable || mode.frame.maxY > app.buttons["captureButton"].frame.minY { app.swipeUp() }
         mode.tap()
-        app.buttons["Fast JPEG burst"].tap()
+        let fastJPEG = app.buttons["Fast JPEG burst"]
+        XCTAssertTrue(fastJPEG.waitForExistence(timeout: 5))
+        fastJPEG.tap()
         app.swipeDown()
         attach("camera-portrait", app)
         for (orientation, name) in [(UIDeviceOrientation.landscapeLeft, "camera-landscape-left"), (.landscapeRight, "camera-landscape-right")] {
