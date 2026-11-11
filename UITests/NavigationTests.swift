@@ -51,17 +51,20 @@ final class NavigationTests: XCTestCase {
     }
 
     private func assertPreviewFits(_ app: XCUIApplication) {
-        let preview = app.descendants(matching: .any)["cameraPreview"].firstMatch
+        let preview = app.otherElements.matching(identifier: "cameraPreview").firstMatch
         XCTAssertTrue(preview.waitForExistence(timeout: 5))
-        let visible = expectation(for: NSPredicate { _, _ in
-            let bounds = app.windows.firstMatch.frame
-            let frame = preview.frame
-            let capture = app.buttons["captureButton"].frame
-            return frame.width > 0 && frame.height > 0 && bounds.contains(frame)
-                && frame.minY >= app.navigationBars["OpenCapture"].frame.maxY
-                && frame.maxY <= capture.minY
-        }, evaluatedWith: app)
-        wait(for: [visible], timeout: 5)
+        // Query concrete elements after XCTest's layout/gesture idle wait. Broad
+        // descendant queries inside a five-second predicate can exhaust its
+        // timeout while resolving SwiftUI's accessibility tree on a cold runner.
+        let bounds = app.windows.firstMatch.frame
+        let frame = preview.frame
+        let capture = app.buttons["captureButton"].frame
+        let navigation = app.navigationBars["OpenCapture"].frame
+        XCTAssertGreaterThan(frame.width, 0)
+        XCTAssertGreaterThan(frame.height, 0)
+        XCTAssertTrue(bounds.contains(frame), "Preview \(frame) exceeds window \(bounds)")
+        XCTAssertGreaterThanOrEqual(frame.minY, navigation.maxY - 1)
+        XCTAssertLessThanOrEqual(frame.maxY, capture.minY + 1)
     }
 
     private func waitForLayout(_ app: XCUIApplication, title: String, landscape: Bool) {
