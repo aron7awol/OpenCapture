@@ -10,6 +10,18 @@ Other controllers, including the supplied reference server, require
 Tokens are never URL parameters. Public controller hosts require HTTPS and a
 token. Versioned JSON has `protocolVersion: 1`.
 
+Both phone platforms use these endpoints. Android currently advertises only
+`bayerRaw`. Its optional `platform: "android"`, `actualControlsSource`,
+`focusModel`, `whiteBalanceModel`, `rawSizes` and native camera characteristics
+describe the device without changing the job or upload contract.
+Android's `lensPosition` is normalized diopters (zero = infinity), unlike
+AVFoundation lens position; never transfer focus values between platforms.
+Its displayed green WB gain is the mean of the two native green gains.
+Android sidecars retain all four gains, focus distance, requested versus actual
+Camera2 controls, and sensor/image timestamps. DNG bytes come from DngCreator
+with a timestamp-matched RAW image/result. They are not averaged or demosaiced.
+Actual exposure/ISO fields come from Camera2 results rather than iOS EXIF.
+
 ## Connection and discovery
 
 A bare private IPv4 address or `.local` name is normalized to HTTP on port

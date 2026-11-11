@@ -1,0 +1,5 @@
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="captures" path="captures/" />
+    <cache-path name="exports" path="exports/" />
+    <cache-path name="updates" path="updates/" />
+</paths>

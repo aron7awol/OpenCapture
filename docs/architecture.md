@@ -2,6 +2,13 @@
 
 ## Boundaries
 
+- `android/`: standalone Camera2 app using the same generic controller
+  protocol. Its camera controller only owns preview and sequential DNG capture.
+  `DngCapture.kt` pairs RAW images with actual Camera2 results by timestamp;
+  `PreviewGeometry.kt` fits the complete rotated preview. The GitHub updater
+  is independent of controller pairing and delegates installation to Android.
+  See `android/README.md` for build, update and device-support details.
+
 - `Core/Protocol.swift`: Codable contract, bounded setting validation,
   controller URL policy, numeric release-version comparison. Foundation only.
 - `Sources/CameraService.swift`: physical rear-camera discovery, AVFoundation
@@ -76,9 +83,14 @@ timestamps are UTC wall time. Never subtract these different clock domains.
 
 ## Ownership and provenance
 
-New OpenCapture files were independently authored for this app. No dogegen,
-Windows/Android app, calibration solver, or capture files are included.
-The owner selected GPL-3.0-only on 2026-11-07. The full license text is the
+The iOS app and controller were independently authored for OpenCapture.
+Android includes only the explicitly selected generic Camera2 DNG, preview
+and APK-verification code reused from the owner's development project.
+No dogegen, Windows renderer, measurement engine, calibration solver,
+runtime capture or private project history is included.
+The owner selected GPL-3.0-only for iOS on 2026-11-07 and Android on 2026-11-11.
+See `android/THIRD_PARTY_NOTICES.md` for Android dependency notices.
+The full license text is the
 SPDX GPL-3.0-only text. Runtime dependencies are Apple platform frameworks;
 the Python controller uses the standard library. XcodeGen 2.46.0 is downloaded
 only as a checksummed build tool. No analytics or third-party camera SDK.

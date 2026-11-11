@@ -16,3 +16,11 @@ controller-settings.json
 *.pem
 *.key
 Resources/Assets.xcassets/
+.gradle/
+.kotlin/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+android/*.log

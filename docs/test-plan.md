@@ -1,5 +1,21 @@
 # Verification and Device Test Plan
 
+## Android
+
+Run the standalone Gradle build, lint and both unit-test variants described
+in `android/README.md`. Tests cover protocol bounds, transport cancellation
+and upload integrity, complete-frame preview geometry, GitHub feed/redirect
+policy, download hashes/limits and installed signing-key continuity.
+
+Physical Camera2 behavior remains unverified. First planned device: Pixel 10
+Pro. Start with one local DNG, then four at locked controls; inspect dimensions,
+sensor/image timestamp matching, actual exposure/focus/WB and retained files.
+Check the whole preview fits in portrait and both landscape directions.
+Pair with a controller, capture/upload, cancel and background the app.
+Check for updates with no PC address configured; install a higher signed build
+through Android's system installer and confirm settings/captures survive.
+Software tests do not establish camera quality or full-frame sensor coverage.
+
 ## Automated
 
 - Python tests: validation, malformed/non-finite/duplicate JSON, authentication,

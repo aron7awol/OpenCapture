@@ -1,6 +1,12 @@
 # OpenCapture
 
-A standalone iOS camera and remote capture instrument.
+A standalone iOS and Android camera and remote capture instrument.
+
+The [Android app and build instructions](android/README.md) are in `android/`.
+It captures individual Bayer DNG originals through Camera2 and uses the same
+controller protocol. Android updates come directly from the dedicated GitHub
+release feed. Both apps are GPL-3.0-only; hardware capabilities differ.
+The iPhone instructions and capture modes follow below.
 
 ## Capture modes
 

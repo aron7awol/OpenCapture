@@ -1,0 +1,11 @@
+<!-- Vector rendition of the existing OpenCapture geometric lens mark. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp"
+    android:viewportWidth="100" android:viewportHeight="100">
+    <path android:fillColor="#191F22" android:pathData="M0,0H100V100H0Z" />
+    <path android:fillColor="#ECF6F4" android:fillType="evenOdd"
+        android:pathData="M83.5,50A33.5,33.5 0,1 1,16.5,50A33.5,33.5 0,1 1,83.5,50ZM76.5,50A26.5,26.5 0,1 1,23.5,50A26.5,26.5 0,1 1,76.5,50Z" />
+    <path android:fillColor="#21B59E" android:fillType="evenOdd"
+        android:pathData="M72,50A22,22 0,1 1,28,50A22,22 0,1 1,72,50ZM65,50A15,15 0,1 1,35,50A15,15 0,1 1,65,50Z" />
+    <path android:fillColor="#ECF6F4" android:pathData="M60.5,50A10.5,10.5 0,1 1,39.5,50A10.5,10.5 0,1 1,60.5,50Z" />
+    <path android:fillColor="#F5A146" android:pathData="M82.5,22A4.5,4.5 0,1 1,73.5,22A4.5,4.5 0,1 1,82.5,22Z" />
+</vector>
