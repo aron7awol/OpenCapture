@@ -49,6 +49,7 @@ struct CameraView: View {
                         .overlay(alignment: .bottomLeading) {
                             Text("Processed live preview").font(.caption).padding(6).foregroundStyle(.white).background(.black.opacity(0.65))
                         }
+                        .clipped()
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("Full camera preview")
                         .accessibilityIdentifier("cameraPreview")
@@ -166,13 +167,29 @@ struct CameraPreview: UIViewRepresentable {
         return view
     }
     func updateUIView(_ uiView: PreviewSurface, context: Context) { uiView.setNeedsLayout() }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PreviewSurface, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        return CGSize(width: width, height: height)
+    }
 }
 
 final class PreviewSurface: UIView {
-    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-    var layerView: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    let layerView = AVCaptureVideoPreviewLayer()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        layer.addSublayer(layerView)
+    }
+    required init?(coder: NSCoder) { fatalError("PreviewSurface is created programmatically") }
     override func layoutSubviews() {
         super.layoutSubviews()
+        // SwiftUI can repropose the row's size during rotation. Resize the
+        // video layer explicitly, including when the simulator has no camera,
+        // instead of letting its previous backing-layer bounds overflow the row.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layerView.frame = bounds
+        CATransaction.commit()
         guard let connection = layerView.connection else { return }
         let angle: CGFloat
         // Interface and physical-device orientations name landscape sides oppositely.
