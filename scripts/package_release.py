@@ -34,12 +34,12 @@ def package(app, output, repository):
     base = f"https://github.com/{repository}/releases/download/{tag}"
     app_entry = {"name": "OpenCapture", "bundleIdentifier": info["CFBundleIdentifier"],
         "developerName": "aron7awol", "subtitle": "Controlled still capture",
-        "localizedDescription": "Bayer RAW, fast JPEG bursts, and quality JPEG captures. Manual camera controls, original files and metadata, local export, and paired remote capture. Experimental: real-device measurement accuracy is not established.",
+        "localizedDescription": "A remote-controlled camera for iPhone. Open the app on a trusted private LAN, then select the lens and capture settings from a compatible desktop controller. Supports Bayer RAW, Apple ProRAW and JPEG where available. Original files and metadata are kept temporarily for verified transfer to the computer. Experimental: real-device measurement accuracy is not established.",
         "iconURL": base + "/icon.png", "tintColor": "007F75", "category": "photo-video",
         "versions": [{"version": version, "buildVersion": build,
                       "date": datetime.now(timezone.utc).isoformat(), "downloadURL": base + "/OpenCapture.ipa",
                       "size": ipa.stat().st_size, "sha256": digest, "minOSVersion": info.get("MinimumOSVersion", "17.0"),
-                      "localizedDescription": "Experimental capture build. Preserve originals and verify actual exposure metadata before using measurements."}],
+                      "localizedDescription": "Foreground camera server, remote lens and capture controls, fitted portrait/landscape preview with center guides, and About with updates. No phone-side pairing or gallery. Requires an updated desktop controller; captures are temporary for the active transfer session."}],
         "appPermissions": {"entitlements": [], "privacy": {key: value for key, value in info.items() if key.startswith("NS") and key.endswith("UsageDescription")}}}
     source = {"name": "OpenCapture", "website": f"https://github.com/{repository}", "apps": [app_entry], "news": []}
     (output / "altstore.json").write_text(json.dumps(source, indent=2) + "\n", encoding="utf-8")

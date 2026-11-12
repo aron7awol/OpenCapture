@@ -303,6 +303,9 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(version["size"], ipa.stat().st_size)
             self.assertEqual(version["sha256"], hashlib.sha256(ipa.read_bytes()).hexdigest())
             self.assertEqual(source["apps"][0]["appPermissions"]["privacy"], {"NSCameraUsageDescription": "Test camera use"})
+            self.assertIn("trusted private LAN", source["apps"][0]["localizedDescription"])
+            self.assertIn("updated desktop controller", version["localizedDescription"])
+            self.assertNotIn("paired remote capture", source["apps"][0]["localizedDescription"])
 
 
 if __name__ == "__main__":
