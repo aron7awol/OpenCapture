@@ -37,10 +37,11 @@ Software evidence on 2026-11-12:
   emulator capture transferred one DNG plus sidecar with exact hashes, repeated
   ACK and empty staging afterward. The final APK repeated this after background/
   resume. Repeated lifecycle cleanup after shutdown has a regression test.
-- iOS runs `43258525053` and `43261828840` passed unsigned device compilation,
-  16 Swift core tests and portrait/both-landscapes/About/Stop navigation tests.
-  The simulator has no physical camera. Full-screen screenshot export replaces
-  element-only landscape attachments, which were incorrectly cropped.
+- Final iOS run `43262707339` passed unsigned device compilation, 16 Swift core
+  tests and portrait/both-landscapes/About/Stop navigation. Full-screen screenshots
+  were inspected in both orientations, respecting their EXIF rotation. The
+  simulator has no physical camera. Earlier runs `43258525053` and `43261828840`
+  also passed, but their element-only landscape attachments were cropped.
 - The merged generic Python controller suite passed 28 tests locally, including
   the Windows atomic-write sharing retry regression.
 
