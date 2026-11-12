@@ -2,11 +2,15 @@
 
 ## Boundaries
 
-- `Core/RemoteReconnect.swift`: transient-network retry policy and bounded backoff.
+- `Core/CameraServerSession.swift`: automatic single-PC reservation, bounded
+  session/job state, replay protection, result-hash ACK and temporary-file cleanup.
+- `Sources/LANHTTPServer.swift`: SwiftNIO HTTP/1 server bound to the private
+  Wi-Fi IPv4 interface. Bounded requests/connections; file-region streaming.
+- `Core/RemoteReconnect.swift`: legacy outbound retry policy, retained as a fixture.
 - `Core/CaptureArchiveStore.swift`: archive creation/deletion, upload-acknowledgement
   checks and persistent ID replay protection after deletion.
-- `android/` in the public repository: standalone Camera2 DNG client with the
-  same foreground Remote ready mode and confirmed-upload retention behavior.
+- `android/` in the public repository: standalone Camera2 DNG server with the
+  same foreground session/file contract, using NanoHTTPD 2.3.1 for HTTP.
   Its camera lifecycle contains no private measurement logic.
 
 - `Core/Protocol.swift`: Codable contract, bounded setting validation,
@@ -14,44 +18,45 @@
 - `Sources/CameraService.swift`: physical rear-camera discovery, AVFoundation
   session, once-per-run control locking, sequential still delegates, exact
   DNG/JPEG files, metadata sidecars, and throttled processed preview.
-- `Sources/AppModel.swift`: foreground run lifecycle, disk archives, local
-  controls, remote leasing, heartbeat/cancellation, original-file upload.
+- `Sources/AppModel.swift`: foreground server lifecycle, Bonjour advertisement,
+  remote lens/control routing, capture and cancellation into temporary storage.
   Capability-advertised remote apply-controls jobs settle and lock the camera
   without taking a photo; their result labels device readings separately.
-- `Sources/ControllerDiscovery.swift`: foreground Bonjour browsing for
+- `Sources/ControllerDiscovery.swift`: legacy Bonjour browsing for
   `_opencapture._tcp`, protocol/auth TXT parsing, and private IPv4 resolution.
   Discovery lists controllers; the user selects which one to connect to.
-- `Sources/Transport.swift`: optional trusted-LAN pairing credentials, no redirects,
+- `Sources/Transport.swift`: legacy outbound pairing credentials, no redirects,
   ephemeral URLSession, disk-backed uploads, integrity receipts, Keychain.
 - `Sources/UpdateService.swift`: public HTTPS AltStore feed; never downloads or
   executes code itself. Uses the original bundle ID because AltStore may
   rewrite the installed application's identifier.
-- `Sources/OpenCaptureApp.swift`: SwiftUI camera, history, detail/export,
-  connection, and update views. SF Symbols are native UI controls.
+- `Sources/OpenCaptureApp.swift`: bounded SwiftUI preview with one-pixel border
+  and bisecting guides, portrait bottom/landscape side toolbar, Stop/Resume,
+  and About/version/licenses/update. SF Symbols are native UI controls.
   Preview rotation uses the window's interface orientation: portrait 90,
   upside-down portrait 270, landscape-left 180, landscape-right 0 degrees.
   Interface landscape names are opposite to physical device-orientation names.
   This only rotates the aiming layer; capture outputs retain their fixed
   sensor-coordinate orientation and native image metadata.
-- `controller/`: independent Python stdlib reference controller and browser
-  UI. It is not the existing display renderer and does not run its solver.
+- `controller/`: legacy Python stdlib push controller and contract fixtures.
+  New desktop consumers need the pull transport in `docs/camera-server.md`.
 - `scripts/`: deterministic icon renderer, device-IPA packager, macOS build.
 
 ## Capture decisions
 
-Remote ready retains the existing outbound control protocol. Only the exact
-explicitly selected origin is retried, and its credentials never follow
-redirects. Backgrounding closes active requests and cancels capture; foreground
-return waits for the old task to relinquish the camera before reconnecting.
-The dim overlay leaves the camera preview attached for remote preview output.
-Brightness changes are restored when showing controls or leaving the app.
+Version 0.4.0 reverses the transport: the phone advertises `_oc-camera._tcp`,
+the desktop selects it and reserves a foreground session, then pulls exact
+result/original bytes. Exposure and image-domain contracts are unchanged.
+There is no phone-side pairing or local gallery. The automatic ownership UUID
+is not authentication; this is explicitly a trusted-LAN-only server.
 
-Remote capture auto-delete defaults on. Every file upload is verified first;
-`/complete` must acknowledge protocol 1, the exact job ID and status `complete`.
-Only then is `uploaded.json` recorded and optional cleanup attempted. A cleanup
-failure does not report an already completed Windows job as failed. Phone-side
-archive deletion preserves a small used-ID marker outside the image directories.
-Manual deletion is unavailable during remote operation, capture or file work.
+The PC verifies original hashes, durably completes its local result, then ACKs
+the exact result hash. Interrupted transfer retries reuse that ID and those
+bytes. The phone deletes staging on ACK or after cancellation/session-end/
+expiry stops the writer. Startup removes abandoned transient job directories,
+but not legacy Documents archives. Used-ID markers remain outside staging.
+Backgrounding closes the listener and waits for active work before cleanup.
+Foreground restart does not revive an interrupted session or replay a photo.
 
 One physical lens is selected, defaulting to the main wide camera. Virtual
 multi-camera devices and automatic lens switching are not used. Standard
@@ -94,13 +99,13 @@ timestamps are UTC wall time. Never subtract these different clock domains.
    Android RAW plane stream or averaged-YUV payload.
 5. The controller keeps active leases in memory. Restarted controllers retain
    original files but do not resume leases. Use a new request ID after restart.
-6. One controller/phone at a time. Heartbeats expire after 120 seconds without
-   renewal. Upload retries reuse the same lease and content hashes; originals
-   remain exportable locally after an unrecoverable upload failure.
+6. One controller/phone at a time. Session expiry is 120 seconds without
+   renewal. Downloads retry the same original receipts within that session;
+   there is no persistent recovery gallery after it ends.
 7. The desktop HTTP service is for a trusted LAN, not internet deployment.
    For broader use, add TLS pairing and a hardened production server.
 8. No raw histogram, clipping mask, stitched captures, or correction-map UI is
-   claimed in this version. Quick Look may render DNGs with its own processing.
+   claimed. Aiming guides never alter captured originals or remote preview JPEGs.
 
 ## Ownership and provenance
 
@@ -111,6 +116,8 @@ captures or private project history are included. The owner selected
 GPL-3.0-only for iOS on 2026-11-07 and Android on 2026-11-11.
 Android dependency notices are in `android/THIRD_PARTY_NOTICES.md` in the public
 repository. The full license text is the
-SPDX GPL-3.0-only text. Runtime dependencies are Apple platform frameworks;
-the Python controller uses the standard library. XcodeGen 2.46.0 is downloaded
+SPDX GPL-3.0-only text. iOS runtime dependencies are Apple platform frameworks
+and SwiftNIO 2.105.0 with its Swift dependencies. Licenses/notices ship in
+`Resources/ThirdPartyNotices.txt` and About. The legacy Python controller uses
+the standard library. XcodeGen 2.46.0 is downloaded
 only as a checksummed build tool. No analytics or third-party camera SDK.

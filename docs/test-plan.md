@@ -1,5 +1,42 @@
 # Verification and Device Test Plan
 
+## Foreground Server And Minimal UI (0.4.0)
+
+The following replaces the old tab/Remote ready workflow. Older sections are
+historical regression coverage for the retained outbound transport only.
+
+1. Open the app and grant permissions. Check portrait, both landscape sides,
+   and direct 180-degree rotation: no scrolling/cropping/stretch, toolbar below
+   in portrait and on the right in wide landscape. Border and bisectors stay
+   one physical pixel and follow the actual fitted image, not letterboxing.
+2. Open About: current version/build, licenses and update action are visible.
+   Dismiss it and confirm the camera remains live and the app stays awake.
+3. Discover `_oc-camera._tcp` from the desktop, connect without pairing, and
+   verify fresh capabilities/current lens. Select another available physical
+   lens; check new ranges/modes and cleared previous readback. Unknown lens IDs
+   must fail. There must be no lens switch during capture/pending transfer.
+4. Capture one frame, then four, and verify exact result/file lengths/hashes.
+   Retry a truncated download and repeat a lost ACK: same bytes, no new photo.
+   Invalid receipts never authorize deletion or mark a Windows job complete.
+5. Confirm originals disappear after matching ACK. Stop/background/disconnect/
+   idle expiry during a burst must cancel the writer before deleting staging.
+   Foreground restart cannot replay the old ID. Preserve pre-update archives.
+6. Exercise single-PC ownership, wrong Host/Origin, oversize requests, private
+   interface binding, and failed network downloads. No browser cross-origin
+   capture, arbitrary file access or public listening interface.
+7. On physical Pixel/iPhone, compare preview against a labeled scene and check
+   originals/preview JPEG have no overlay pixels. An emulator rotating its UI
+   does not physically rotate its synthetic camera and cannot prove orientation.
+
+Local evidence on 2026-11-12: Android debug/legacy APK builds and 30 tests in
+each OpenCapture debug/release variant passed. API 33 phone emulator screenshots
+cover portrait/landscape/About, and a real Camera2 emulator capture transferred
+one DNG plus sidecar with exact hashes, repeated ACK and empty staging afterward.
+This is software evidence, not physical Pixel image quality or LAN discovery.
+The iOS source-only macOS build is tracked separately; no release/feed update
+is implied by committing source. Local Android lint remains blocked by the
+installed SDK `37.0` version parser, not reported as passing.
+
 ## Android preview regression (2026-11-12)
 
 The Pixel 10 Pro user reported a quarter-turn and off-screen preview in

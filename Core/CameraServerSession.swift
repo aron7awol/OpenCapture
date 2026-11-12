@@ -119,7 +119,7 @@ public struct CameraJobState: Encodable {
                 try Task.checkCancellation()
                 guard result.data.count <= 1_048_576 else { throw CameraServerError(413, "Result too large") }
                 var total = 0
-                let directory = root.appendingPathComponent(request.id).standardizedFileURL
+                let directory = root.appendingPathComponent(request.id).resolvingSymlinksInPath().standardizedFileURL
                 for (name, file) in result.files {
                     guard name.range(of: "^frame-[0-9]{4}\\.(dng|jpg|json|preview\\.jpg)$", options: .regularExpression) != nil,
                           file.lastPathComponent == name, file.resolvingSymlinksInPath().deletingLastPathComponent().standardizedFileURL == directory else {

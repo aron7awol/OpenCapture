@@ -1,6 +1,6 @@
 # OpenCapture Agent Guide
 
-Read README.md, docs/architecture.md, docs/protocol.md, and docs/test-plan.md
+Read README.md, docs/architecture.md, docs/camera-server.md, docs/protocol.md, and docs/test-plan.md
 before changing capture behavior or the network contract.
 
 This is a generic iOS/Android camera/capture client, not a calibration engine. Keep
@@ -19,7 +19,8 @@ of this repository. `context` is opaque controller-owned string metadata.
   accuracy. Preview and thumbnails are explicitly processed.
 - Frame dimensions and support are device-dependent. Never assume 48 MP RAW.
 - One photo is in flight at a time. Keep captures on disk rather than retaining
-  all full-resolution frame buffers. Partial originals survive failures.
+  all full-resolution frame buffers. Originals are transient active-session
+  staging, not a permanent archive; preserve them only for bounded retries.
 - Cancellation is cooperative; backgrounding cancels jobs. No background
   camera entitlement, hidden recording, or private iOS APIs.
 
@@ -40,7 +41,11 @@ remain unverified until a user/device test demonstrates them.
 
 ## Security and releases
 
-Credentials stay in Keychain on iOS. No tokens in query parameters or logs.
+The foreground camera server deliberately uses unauthenticated private-LAN
+HTTP. The automatic UUID reservation is not security or one-time pairing.
+Reject browser origins, foreign Host values, non-private peers and oversized
+requests; bind only the private interface. Do not add internet exposure.
+Legacy outbound credentials stay in Keychain. No tokens in URLs or logs.
 Capture requests cannot supply arbitrary upload URLs or filesystem paths.
 Camera traffic never follows HTTP redirects. Public hosts require HTTPS;
 private IPv4/.local HTTP is a clearly identified trusted-LAN pilot only.
@@ -51,11 +56,14 @@ verified APK hashes/package/version and installed signing-key continuity.
 Do not send controller credentials to update hosts. Android requires system
 installer confirmation. CI's temporary debug keys must never sign feed releases.
 
-Remote ready is foreground-only and reconnects solely to the remembered
-user-selected controller. Backgrounding cancels jobs; reconnection never
-replays one. Auto-delete remote originals only after validating the complete
-acknowledgement for that exact ID. Failed/unconfirmed/local captures stay.
-Manual deletion requires confirmation and must preserve the used-ID ledger.
+Opening the app starts a foreground server. The desktop discovers/selects it
+and chooses the lens; there is no phone-side controller picker, local camera
+test UI, or gallery. Active-session downloads retry unchanged bytes. Delete
+staging after a matching result-hash acknowledgement, or after cancellation,
+session end or expiry has stopped the writer. Retain used-ID replay protection.
+Do not erase pre-update archives during migration. Lens changes must refresh
+capabilities and cannot overlap a capture or unacknowledged transfer.
+Preview border/centerlines are UI overlays, never pixels in measurement files.
 
 The owner chose GPL-3.0-only for iOS and the explicitly exported Android
 OpenCapture sources. Android reuses selected generic camera, preview and APK

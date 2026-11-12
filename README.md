@@ -1,228 +1,54 @@
 # OpenCapture
 
-A standalone iOS and Android camera and remote capture instrument.
+A remote-controlled camera for iPhone and Android. Aim the phone, then control
+the lens and capture settings from your computer.
 
-## Foreground Camera Server (0.4.0 Source)
+## Install
 
-Open the app, grant camera/local-network access, and leave it foregrounded on
-a trusted private LAN. A desktop client discovers `_oc-camera._tcp` and
-connects to the phone on port 8767. There is no phone-side PC selection,
-pairing prompt, local shutter, settings form, or gallery. The desktop selects
-the lens and capture settings. See [camera-server protocol](docs/camera-server.md).
+- **iPhone:** iOS 17+. Install `OpenCapture.ipa` from
+  [Releases](https://github.com/aron7awol/OpenCapture/releases) using AltStore Classic.
+- **Android:** Android 9+ with a supported rear RAW camera. Install the Android
+  APK from [Releases](https://github.com/aron7awol/OpenCapture/releases).
 
-The aspect-fit preview has a one-physical-pixel gray border and horizontal/
-vertical center guides. These are UI only, never part of originals or preview
-JPEGs. Stop/Resume and About sit below the feed in portrait and beside it in
-wide landscape. About shows version/build, licenses, and update actions.
+Development source can be newer than the published app. The workflow below
+describes version 0.4.0 and requires a compatible desktop controller.
 
-Originals are staged on disk only for the active session. The desktop retries
-the same bytes after a failed transfer, checks file hashes, commits the result,
-then acknowledges it so the phone can delete its copies. Stopping, backgrounding,
-disconnecting, or a 120-second idle expiry cancels capture before cleanup.
-Pre-update archives are not silently deleted. Windows keeps received originals.
+## Use
 
-The server is intentionally unauthenticated on the trusted LAN; the automatic
-single-client session ID is an ownership reservation, not pairing or security.
-Do not expose it to the internet or public Wi-Fi. Preview is for aiming only.
+1. Put the phone and computer on the same **trusted private LAN**.
+2. Open OpenCapture, allow camera/network access, and aim using the preview.
+3. Select the phone in your desktop controller, connect, and choose the lens.
+4. Set exposure, ISO, focus, white balance and frame count on the computer.
 
-This is source under verification, not a published 0.4.0 update. Android builds
-and JVM tests pass; iOS requires the macOS workflow. Physical-phone checks are
-still required. The older Python reference controller and outbound transport
-remain regression fixtures; they do not drive the new server without a pull
-adapter. The sections describing tabs and outbound connection below document
-0.3.x behavior, not the new interface.
+Keep the app open while capturing. Stop/Resume controls the camera server;
+About shows version and updates. The toolbar moves to the side in landscape.
+The thin border and center guides help aiming and are never recorded.
 
-The standalone [Android source and build instructions](https://github.com/aron7awol/OpenCapture/tree/main/android)
-live in `android/` in the public repository. It captures individual Camera2
-Bayer DNG originals and uses the same controller protocol. Both apps use
-GPL-3.0-only. The iPhone capture modes and build instructions follow below.
+Original files are temporarily stored on the phone until verified receipt by
+the computer. Failed transfers can retry during the session. Ending the session
+clears temporary files; the computer keeps its received captures.
 
-## Remote ready and phone storage
+The phone server is unauthenticated. Use trusted networks only, never public
+Wi-Fi or port forwarding.
 
-Version 0.3.0 adds **Connection > Remote ready** on both phones. Select or
-enter your PC and its optional pairing token once, then enable the mode before
-mounting the phone. It remembers that exact controller, connects automatically
-when the camera is ready and retries temporary connection failures with a
-1/2/4/8/15-second backoff. Authentication, certificate and protocol errors
-require attention. Interrupted captures are never replayed.
+## Formats
 
-The dim black screen shows connection/capture progress. **Show controls**
-restores normal brightness while keeping Remote ready enabled; **Dim screen**
-returns to the tripod display. **End Remote ready** disconnects and disables
-automatic reconnect. Brightness is restored when leaving the app. The mode is
-remembered across launches, but camera/network work stops on backgrounding or
-locking; return to the open, unlocked app to resume. No background capture or
-phone server is used. Windows uses its existing capture controls. Pairing
-tokens stay in iOS Keychain or Android Keystore-backed encrypted preferences.
-
-**Captures** offers individual deletion and **Delete all captures**, with
-confirmation. End Remote ready/disconnect before manually deleting archives.
-At the owner's request, **Auto-delete uploaded remote captures** defaults on:
-the phone removes the capture only after all original uploads and the matching
-complete-job acknowledgement from Windows. Local captures, failed/incomplete
-uploads and lost/invalid acknowledgements retain their files. Turn the switch
-off to keep future remote captures. Existing archives are not purged on update.
-Tiny used-ID records remain to prevent a deleted job being captured again.
-Windows cannot browse/download old phone archives; retained files can be
-exported manually. Deleting a phone copy does not delete Windows originals.
-
-## Capture modes
-
-- **Bayer RAW:** standard sensor-mosaic DNG from a physical rear camera.
-  Uses an explicit Bayer pixel format. Unsupported RAW fails explicitly, never falls back.
-- **Apple ProRAW / highest resolution:** a separate, quality-prioritized DNG
-  mode on supported cameras. Requests the largest dimensions advertised by the
-  active camera configuration; actual dimensions are recorded per frame.
-  Apple demosaics and processes these RGB files and may fuse multiple
-  exposures. They are not Bayer sensor originals.
-- **Fast JPEG burst:** sequential stills with AVFoundation speed priority.
-  This is not a claim to reproduce Apple's Camera app burst pipeline or to
-  disable all sharpening, denoising, or tone mapping.
-- **Quality JPEG:** quality-prioritized stills for comparison. The pipeline
-  may override requested exposure; inspect the recorded EXIF values.
-
-Each mode preserves every original frame, native photo metadata, actual EXIF
-exposure/ISO when present, observed lens position and white-balance gains,
-dimensions, photo timestamps, and a capture manifest. Live preview and saved
-thumbnails are processed aiming/inspection aids, not calibrated RAW views.
-
-The app uses up to 32 sequential frames. Bayer RAW and JPEG retain the photo
-configuration around 12 MP; ProRAW requests the largest supported size.
-This is not high-speed video or a promised frame rate. RAW
-dimensions are whatever the selected physical camera actually returns.
-No automatic RAW averaging is performed yet.
-The live preview preserves the full stream's aspect ratio and fits within the
-visible camera page in portrait and landscape. It scrolls with the controls.
-
-## Try it on an iPhone
-
-Requires iOS 17 or later. Intended first test device: iPhone 16 Pro.
-
-1. Download `OpenCapture.ipa` from the repository's latest release.
-2. Install through AltStore Classic, which signs the unsigned IPA for your
-   Apple account. Initial AltStore installation uses AltServer on Windows.
-3. Grant camera permission. Start in the **Camera** tab without a controller.
-4. Choose a mode and frame count. Set manual controls or allow auto exposure,
-   focus, and white balance to settle and lock for that burst.
-5. **Apply controls** previews the chosen settings; **Use current camera
-   settings** copies the device readings into manual fields for matched runs.
-6. Capture, then inspect **Captures**. Export originals and metadata with the
-   share button. Originals are also in Files > On My iPhone > OpenCapture.
-
-Keep the app foregrounded. Going to the background cancels a run and stops the
-camera. Partial files remain available. Cancellation waits for an in-flight
-photo to return or hit its timeout; iOS has no general cancel-photo API.
-
-## Compare capture modes
-
-Use the same camera position, physical lens, scene, and lighting. First find
-an exposure that does not clip, copy the current settings to manual, and keep
-those settings across modes. Capture 4-16 frames per mode. Compare both
-individual frames and the actual exposure metadata, not just thumbnails.
-Start with one ProRAW frame before longer bursts; high-resolution DNGs are
-large. Confirm `isAppleProRAW: true`, `isBayerRAW: false` and actual dimensions
-in the manifest. Compare repeated individual Bayer and ProRAW originals at
-matched geometry and controls. Apple's fusion is not a known arithmetic
-average, and a smoother result does not establish measurement accuracy.
-A quality JPEG can look smoother while suppressing fine detail. Bayer RAW
-can look noisier while preserving it.
-
-The native preview is not an exposure histogram for RAW. A proper linear RAW
-inspection and averaging path is future work; originals are retained for it.
-
-## Remote capture from Windows
-
-In **Connection**, allow Local Network access and select a controller under
-**Nearby controllers**. Controllers advertising IP-only pairing connect without
-a token. Alternatively, enter the PC's private IP address; the default port is
-8765. An explicit port, such as `192.168.1.2:8766`, is preserved. Tokens for
-controllers that require them are under **Advanced connection**.
-
-Discovery uses Bonjour `_opencapture._tcp` on the local network. The controller
-must advertise this service; discovery does not scan arbitrary hosts or start
-capturing automatically. IP entry remains available when discovery is blocked.
-
-The included controller requires Python 3.11+. No pip dependencies are needed.
-
-Double-click `controller/start-controller.cmd` to start it on the trusted LAN
-and open its browser control page. Allow a Windows firewall exception for
-**Private networks only**, if prompted. The console shows a pairing token.
-This reference controller retains token authentication and does not advertise
-Bonjour. On the phone, enter `<PC-LAN-IP>:8766` in **Connection** and enter its
-token under **Advanced connection**.
-The phone will request Local Network permission. Click Connect.
-
-The controller has preview, capture controls, cancellation, capabilities, and
-job history. Updated clients advertise remote **Apply controls** to adjust and
-lock the preview without taking a photo; the controller reports device
-readings separately from captured-photo EXIF. Captures are written under
-`captures/<request-id>/`. Nothing is
-uploaded to GitHub. The CLI defaults to loopback; the double-click launcher
-explicitly opts into LAN binding. Do not port-forward it or use it on public
-Wi-Fi. Bearer authentication over HTTP is not encryption.
-
-For developer use:
-
-```powershell
-python controller/server.py --listen 127.0.0.1 --port 8766
-python scripts/make_icon.py
-python -m unittest discover -s controller/tests -v
-```
+Android captures individual **Bayer RAW DNGs**. iPhone supports **Bayer RAW**,
+**Apple ProRAW**, and **JPEG**, depending on the lens/device. ProRAW and JPEG
+include Apple processing. Preview is for aiming, not calibrated measurement.
+Bursts preserve 1..32 original frames plus metadata; the app does not average them.
 
 ## Updates
 
-Add this source to AltStore Classic once:
+Open **About > Check for updates**. Android uses its system installer; iPhone
+updates are installed by AltStore. Add the [OpenCapture AltStore source](https://github.com/aron7awol/OpenCapture/releases/latest/download/altstore.json)
+once. Keep the same signing identity when updating either app.
 
-```text
-https://github.com/aron7awol/OpenCapture/releases/latest/download/altstore.json
-```
+## Developers
 
-The app's Connection tab offers **Add AltStore source**, **Check for updates**,
-and **Update in AltStore**. Installation is performed by AltStore, not by the
-capture app itself. No Apple ID password or signing certificate is needed by
-this repository or by GitHub Actions. Free-account signing refresh remains a
-separate seven-day requirement. Maintain the same signing account/bundle ID
-to preserve app data. Back up important captures before updating.
+[Build and release](docs/development.md) | [Android](android/README.md) |
+[Server API](docs/camera-server.md) | [Architecture](docs/architecture.md) |
+[Testing](docs/test-plan.md) | [Agent guide](AGENTS.md)
 
-## Build
-
-The GitHub **iOS** workflow runs Python and Swift core tests, then builds a real
-arm64 device application using Xcode and packages an unsigned IPA. Normal
-pushes produce an `OpenCapture-device` Actions artifact. To publish a reviewed
-build to Releases and the AltStore feed, run the workflow manually with
-`publish` selected. The feed hashes the exact IPA and reads permissions and
-version from the built plist. Source archives at the same release tag provide
-the corresponding GPLv3 source and build scripts.
-
-On a Mac with Xcode:
-
-```sh
-bash scripts/build-ios.sh
-```
-
-The script downloads XcodeGen 2.46.0 with a pinned SHA-256, generates the Xcode
-project, runs tests, and builds without signing. `BUILD_NUMBER` overrides the
-build number. Build outputs are ignored. Windows cannot compile AVFoundation;
-a successful Windows controller test is not an iOS compilation result.
-
-## Scope and status
-
-AltStore installation and access to the live preview were reported working
-on an iPhone on 2026-11-07. Physical capture behavior, frame timing, image
-quality, and the landscape preview fix still need device validation.
-Simulator and synthetic tests cannot prove
-measurement performance. See [agent guide](AGENTS.md), [protocol](docs/protocol.md),
-[architecture](docs/architecture.md), and [test plan](docs/test-plan.md).
-
-## License
-
-Copyright (C) 2026 aron7awol. OpenCapture is licensed under
-**GPL-3.0-only**; see [LICENSE](LICENSE). It comes with no warranty.
-
-## Platform references
-
-- [Apple: RAW and ProRAW](https://developer.apple.com/documentation/avfoundation/capturing-photos-in-raw-and-apple-proraw-formats)
-- [Apple: photo quality priority](https://developer.apple.com/documentation/avfoundation/avcapturephotosettings/photoqualityprioritization)
-- [AltStore: Windows setup](https://faq.altstore.io/altstore-classic/how-to-install-altstore-windows)
-- [AltStore: updates](https://faq.altstore.io/developers/updating-apps)
-- [AltStore: source format](https://faq.altstore.io/developers/make-a-source)
+Copyright (C) 2026 aron7awol. **GPL-3.0-only**, without warranty.
+See [LICENSE](LICENSE) and [third-party notices](Resources/ThirdPartyNotices.txt).

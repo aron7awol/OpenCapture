@@ -100,9 +100,16 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         texture.surfaceTextureListener = this
         camera.onConnectionLost = { runOnUiThread { stopServer(); camera.close(); opening = false; message("Camera disconnected") } }
     }
-    private fun message(text: String) = runOnUiThread { screen.status.text = text }
+    private fun message(text: String) = runOnUiThread {
+        screen.status.text = if (text == "Ready" && address != null) "Ready at $address:8767" else text
+    }
+    private fun keepAwake() {
+        if (enabled && resumed) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
     private fun toggle() {
         enabled = !enabled; screen.serving(enabled)
+        keepAwake()
         if (enabled) { openCamera(); message("Opening camera") }
         else { stopServer(); camera.close(); opening = false; message("Stopped") }
     }
@@ -162,9 +169,14 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         registration = null
     }
     override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
-    override fun onResume() { super.onResume(); resumed = true; if (enabled) openCamera(); ui.post(tick) }
+    override fun onResume() {
+        super.onResume(); resumed = true; keepAwake()
+        if (enabled) openCamera()
+        ui.removeCallbacks(tick); ui.post(tick)
+    }
     override fun onStop() {
         resumed = false; displayManager.unregisterDisplayListener(displayListener)
+        keepAwake()
         stopServer(); updateCancel.set(true); updater?.close(); ui.removeCallbacks(tick)
         camera.close(); opening = false; super.onStop()
     }
@@ -233,6 +245,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun installUpdate(release: OpenCaptureUpdates.Release) {
         if (!updating.compareAndSet(false, true)) return
         enabled = false; screen.serving(false); stopServer(); camera.close(); opening = false
+        keepAwake()
         val client = OpenCaptureUpdates(); updater = client; updateCancel = AtomicBoolean(false)
         updates.execute {
             try {
