@@ -109,9 +109,26 @@ def canonical_request(request):
 
 
 def atomic_json(path, value):
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    delays = (.01, .02, .04, .08, .16, .32, .5, .5)
+    try:
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        for attempt in range(len(delays) + 1):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as error:
+                # Windows readers/scanners can briefly omit FILE_SHARE_DELETE.
+                # Keep the previous complete JSON visible while retrying only
+                # the atomic rename; a persistent failure still propagates.
+                if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == len(delays):
+                    raise
+                time.sleep(delays[attempt])
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass  # Preserve the original failure if cleanup is also blocked.
 
 
 class State:

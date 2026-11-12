@@ -27,6 +27,11 @@ final class NavigationTests: XCTestCase {
             wait(for: [rotated], timeout: 10)
             assertFits(app, landscape: true); attach(name, app)
             XCUIDevice.shared.orientation = .portrait
+            let portrait = expectation(for: NSPredicate { _, _ in
+                let bounds = app.windows.firstMatch.frame
+                return bounds.height > bounds.width
+            }, evaluatedWith: app)
+            wait(for: [portrait], timeout: 10)
         }
         app.buttons["aboutButton"].tap()
         XCTAssertTrue(app.staticTexts["Version"].waitForExistence(timeout: 5))
@@ -50,7 +55,8 @@ final class NavigationTests: XCTestCase {
         }
     }
     private func attach(_ name: String, _ app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // Element screenshots can crop a rotated simulator in portrait coordinates.
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 }
