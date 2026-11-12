@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 package com.uniformitycomp.opencapture
 
 import android.Manifest
@@ -9,6 +10,9 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
+import android.hardware.display.DisplayManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -18,488 +22,236 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.Surface
 import android.view.TextureView
-import android.view.View
 import android.view.WindowManager
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import androidx.core.content.FileProvider
-import com.uniformitycomp.capture.ApkUpdateManifest
 import com.uniformitycomp.capture.ApkUpdateVerifier
 import com.uniformitycomp.capture.PreviewGeometry
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.Inet4Address
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private lateinit var camera: CameraController
     private lateinit var capture: OpenCaptureCamera
+    private lateinit var session: CameraServerSession
     private lateinit var screen: OpenCaptureScreens
+    private lateinit var deviceID: String
     private val texture get() = screen.texture
-    private val worker = Executors.newSingleThreadExecutor()
-    private val updateWorker = Executors.newSingleThreadExecutor()
-    private val busy = AtomicBoolean(false)
-    private val updating = AtomicBoolean(false)
-    private var stop = AtomicBoolean(true)
-    private var localCancel = AtomicBoolean(false)
-    private var updateCancel = AtomicBoolean(false)
-    @Volatile private var connection: OpenCaptureConnection? = null
-    @Volatile private var activeTransport: OpenCaptureTransport? = null
-    @Volatile private var remoteReadyEnabled = false
-    private var remoteDimmed = false
-    private var previousBrightness: Float? = null
-    @Volatile private var updater: OpenCaptureUpdates? = null
-    @Volatile private var previewBytes: ByteArray? = null
-    private var update: OpenCaptureUpdates.Release? = null
-    private var downloadedUpdate: File? = null
-    private var resumed = false
-    private var opening = false
     private val ui = Handler(Looper.getMainLooper())
-    private var discovery: NsdManager.DiscoveryListener? = null
-    private val discovered = linkedMapOf<String, String>()
-    private val previewTick = object : Runnable {
+    private val updates = Executors.newSingleThreadExecutor()
+    private val updating = AtomicBoolean(false)
+    private var updater: OpenCaptureUpdates? = null
+    private var updateCancel = AtomicBoolean(false)
+    private var server: CameraServer? = null
+    private var registration: NsdManager.RegistrationListener? = null
+    private var address: String? = null
+    @Volatile private var resumed = false
+    private var enabled = true
+    private var opening = false
+    @Volatile private var previewBytes: ByteArray? = null
+    private val displayManager by lazy { getSystemService(DISPLAY_SERVICE) as DisplayManager }
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (texture.display?.displayId == displayId) texture.post { transformPreview() }
+        }
+    }
+    private val tick = object : Runnable {
         override fun run() {
             if (!resumed) return
-            maybeStartRemoteReady()
-            if (texture.isAvailable && camera.previewReady && !stop.get()) {
-                val height = (640.0 * texture.height / texture.width.coerceAtLeast(1)).toInt().coerceIn(1, 960)
-                texture.getBitmap(640, height)?.let { bitmap ->
-                    val stream = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
-                    previewBytes = stream.toByteArray(); bitmap.recycle()
+            session.expire()
+            if (enabled) {
+                val ip = lanAddress()
+                if (ip != address) stopServer()
+                if (camera.previewReady && server == null && ip != null) startServer(ip)
+                if (camera.previewReady && texture.isAvailable) {
+                    val height = (640.0 * texture.height / texture.width.coerceAtLeast(1)).toInt().coerceIn(1, 960)
+                    texture.getBitmap(640, height)?.let { bitmap ->
+                        val stream = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                        previewBytes = stream.toByteArray(); bitmap.recycle()
+                    }
                 }
+                if (camera.previewReady && ip == null) message("Waiting for Wi-Fi")
             }
             ui.postDelayed(this, 1000)
         }
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        camera = CameraController(this)
-        camera.onConnectionLost = { runOnUiThread { disconnect(); camera.close(); opening = false; message("Camera disconnected. Reopen the camera before enabling Remote ready.") } }
+        window.statusBarColor = android.graphics.Color.BLACK
+        window.navigationBarColor = android.graphics.Color.BLACK
         val prefs = getSharedPreferences("opencapture", MODE_PRIVATE)
-        val deviceId = prefs.getString("deviceID", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceID", it).apply() }
-        capture = OpenCaptureCamera(camera, deviceId, File(filesDir, "captures"))
-        screen = OpenCaptureScreens(this, object : OpenCaptureScreens.Actions {
-            override fun capture() { if (busy.get()) cancelCapture() else local(false) }
-            override fun apply() = local(true)
-            override fun useCurrent() {
-                if (busy.get() || updating.get()) return
-                try { controls(capture.currentReading()); message("Current settings copied. Apply controls to lock them.") }
-                catch (error: Exception) { message(error.message ?: "No current camera settings") }
-            }
-            override fun restart() {
-                if (busy.get() || updating.get() || remoteReadyEnabled) return
-                camera.close(); opening = false; previewBytes = null; openCamera()
-            }
-            override fun connect() { if (!stop.get()) disconnect() else startConnection() }
-            override fun discover() = discoverControllers()
-            override fun selectController(address: String) {
-                if (busy.get() || updating.get() || remoteReadyEnabled) return
-                screen.address.setText(address); screen.connectionStatus.text = "Controller selected. Tap Connect."
-            }
-            override fun refreshCaptures() = history()
-            override fun exportCapabilities() = this@OpenCaptureActivity.exportCapabilities()
-            override fun checkUpdate() = this@OpenCaptureActivity.checkUpdate()
-            override fun installUpdate() = this@OpenCaptureActivity.installUpdate()
-            override fun remoteReady() { if (remoteReadyEnabled) disconnect() else enterRemoteReady() }
-            override fun dimRemote() { remoteDimmed = true; applyRemoteScreen() }
-            override fun showControls() { remoteDimmed = false; applyRemoteScreen() }
-            override fun deleteAllCaptures() { confirmDelete(captureDirectories()) }
-            override fun autoDeleteChanged(enabled: Boolean) { prefs.edit().putBoolean("autoDeleteRemote", enabled).apply() }
-        })
+        deviceID = prefs.getString("deviceID", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceID", it).apply() }
+        camera = CameraController(this)
+        val staging = File(filesDir, "server-transfers")
+        capture = OpenCaptureCamera(camera, deviceID, staging)
+        session = CameraServerSession(staging, capture::capture, { text -> runOnUiThread { if (server != null) message(text) } })
+        screen = OpenCaptureScreens(this, ::toggle, ::showAbout)
         texture.surfaceTextureListener = this
-        screen.address.setText(prefs.getString("address", ""))
-        screen.autoDelete.isChecked = prefs.getBoolean("autoDeleteRemote", true)
-        remoteReadyEnabled = prefs.getBoolean("remoteReady", false)
-        remoteDimmed = remoteReadyEnabled
-        try { screen.token.setText(ControllerTokenStore(this).load(screen.address.text.toString())) }
-        catch (_: Exception) {
-            remoteReadyEnabled = false; prefs.edit().putBoolean("remoteReady", false).apply()
-            message("Saved pairing token is unavailable. Enter it again before enabling Remote ready.")
+        camera.onConnectionLost = { runOnUiThread { stopServer(); camera.close(); opening = false; message("Camera disconnected") } }
+    }
+    private fun message(text: String) = runOnUiThread { screen.status.text = text }
+    private fun toggle() {
+        enabled = !enabled; screen.serving(enabled)
+        if (enabled) { openCamera(); message("Opening camera") }
+        else { stopServer(); camera.close(); opening = false; message("Stopped") }
+    }
+    private fun lanAddress(): String? {
+        val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        return manager.allNetworks.firstNotNullOfOrNull { network ->
+            val caps = manager.getNetworkCapabilities(network)
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true && caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) != true) null
+            else manager.getLinkProperties(network)?.linkAddresses?.map { it.address }
+                ?.filterIsInstance<Inet4Address>()?.firstOrNull { CameraServer.privateIPv4(it.hostAddress ?: "") }?.hostAddress
         }
-        val choices = camera.rawCameraChoices()
-        screen.lenses.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, choices.map { it.second })
-        screen.lenses.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (busy.get() || updating.get() || remoteReadyEnabled) return
-                camera.close(); opening = false; previewBytes = null
-                camera.selectRawCamera(choices[position].first); openCamera()
-            }
+    }
+    private fun info(): JSONObject = JSONObject().put("protocolVersion", 1).put("role", "camera")
+        .put("deviceID", deviceID).put("name", android.os.Build.MODEL).put("capabilities", capture.capabilities())
+        .put("cameras", JSONArray(camera.rawCameraChoices().map { JSONObject().put("id", it.first).put("name", it.second) }))
+    private fun selectCamera(id: String): JSONObject {
+        require(camera.rawCameraChoices().any { it.first == id }) { "Unavailable camera" }
+        val ready = CountDownLatch(1)
+        var failure: Exception? = null
+        runOnUiThread {
+            try {
+                check(resumed && enabled) { "Camera server stopped" }
+                camera.close(); opening = false; previewBytes = null; camera.selectRawCamera(id); openCamera()
+            } catch (error: Exception) { failure = error }
+            finally { ready.countDown() }
         }
-        if (choices.isEmpty()) message("No rear camera advertises RAW support on this phone")
-        buttons()
-    }
-
-    private fun message(text: String) = runOnUiThread {
-        screen.status.text = text
-        screen.connectionStatus.text = text
-        screen.remoteStatus(text)
-    }
-    private fun controls(value: JSONObject) = runOnUiThread {
-        screen.exposure.setText((value.getDouble("deviceExposureSeconds") * 1000).toString())
-        screen.iso.setText(value.getDouble("deviceISO").toString())
-        screen.focus.setText(value.getDouble("lensPosition").toString())
-        val wb = value.getJSONObject("whiteBalance")
-        screen.wbRed.setText(wb.getDouble("red").toString())
-        screen.wbGreen.setText(wb.getDouble("green").toString())
-        screen.wbBlue.setText(wb.getDouble("blue").toString())
-        screen.manualExposure.isChecked = true; screen.manualFocus.isChecked = true; screen.manualWB.isChecked = true
-    }
-    private fun buttons() = runOnUiThread {
-        screen.setState(busy.get(), !stop.get(), updating.get(), update != null, remoteReadyEnabled)
-    }
-    private fun awaitPreview(cancel: AtomicBoolean) {
+        check(ready.await(5, TimeUnit.SECONDS)) { "Camera selection timed out" }
+        failure?.let { throw it }
         val deadline = System.nanoTime() + 10_000_000_000L
         while (!camera.previewReady) {
-            check(!cancel.get() && System.nanoTime() < deadline) { "Camera preview is not ready" }
-            Thread.sleep(50)
+            check(resumed && System.nanoTime() < deadline) { "Camera is not ready" }; Thread.sleep(50)
         }
+        return info()
     }
-    private fun cancelCapture() {
-        localCancel.set(true); connection?.cancel(); message("Cancelling; originals are retained")
-    }
-    private fun local(controlOnly: Boolean) {
-        if (updating.get() || remoteReadyEnabled) return
-        val request = try {
-            OpenCaptureProtocol.localRequest(if (controlOnly) 1 else screen.frames.text.toString().toInt(),
-                if (screen.manualExposure.isChecked) screen.exposure.text.toString().toDouble() else null,
-                if (screen.manualExposure.isChecked) screen.iso.text.toString().toDouble() else null,
-                if (screen.manualFocus.isChecked) screen.focus.text.toString().toDouble() else null).also {
-                if (screen.manualWB.isChecked) it.put("whiteBalance", JSONObject()
-                    .put("red", screen.wbRed.text.toString().toDouble()).put("green", screen.wbGreen.text.toString().toDouble())
-                    .put("blue", screen.wbBlue.text.toString().toDouble()))
-                it.put("settleMilliseconds", screen.settle.text.toString().toInt())
-                if (controlOnly) it.put("operation", "applyControls")
-                OpenCaptureProtocol.request(it)
-            }
-        } catch (error: Exception) { message(error.message ?: "Invalid capture settings"); return }
-        if (!busy.compareAndSet(false, true)) return
-        localCancel = AtomicBoolean(false); buttons()
-        worker.execute {
-            try {
-                awaitPreview(localCancel)
-                val (result, directory) = capture.capture(request, localCancel, ::message)
-                if (directory == null) { controls(result); message("Controls locked") }
-                else message("Saved ${request.getInt("frameCount")} DNG originals. Open Captures to export.")
-            } catch (error: Exception) { message(error.message ?: "Capture failed") }
-            finally { busy.set(false); buttons(); runOnUiThread { if (screen.selectedTab == 1) history() } }
-        }
-    }
-    private fun startConnection() {
-        if (updating.get() || !resumed) return
-        val address = screen.address.text.toString()
-        val token = screen.token.text.toString()
-        val origin = try { OpenCaptureProtocol.origin(address, token) }
-            catch (error: Exception) { if (remoteReadyEnabled) disconnect(); message(error.message ?: "Invalid PC address"); return }
-        if (!busy.compareAndSet(false, true)) return
-        getSharedPreferences("opencapture", MODE_PRIVATE).edit().putString("address", origin.toString()).apply()
-        val sessionStop = AtomicBoolean(false)
-        stop = sessionStop; buttons()
-        worker.execute {
-            var failure: Exception? = null
-            try {
-                RemoteReadyLoop(sessionStop, { remoteReadyEnabled }).run({ delay ->
-                    message("PC unavailable. Reconnecting in $delay seconds…")
-                }) { registered ->
-                    val transport = OpenCaptureTransport(origin.toString(), token)
-                    activeTransport = transport
-                    try {
-                        if (sessionStop.get()) return@run
-                        message("Connecting to the remembered PC…")
-                        awaitPreview(sessionStop)
-                        connection = OpenCaptureConnection(transport, capture, sessionStop, { previewBytes }, ::message, ::controls, registered,
-                            autoDelete = { getSharedPreferences("opencapture", MODE_PRIVATE).getBoolean("autoDeleteRemote", true) },
-                            archivesChanged = { runOnUiThread { if (screen.selectedTab == 1) history() } },
-                            finishUpload = { directory, confirmation, remove -> CaptureArchives(directory.parentFile!!, File(cacheDir, "exports")).completeUpload(directory.name, confirmation, remove) })
-                        connection!!.run()
-                    } finally { transport.close(); activeTransport = null; connection = null }
-                }
-            } catch (error: Exception) { if (!sessionStop.get()) failure = error }
-            finally { runOnUiThread {
-                sessionStop.set(true); busy.set(false)
-                if (failure != null) {
-                    if (remoteReadyEnabled) disconnect()
-                    message(failure?.message ?: "Connection failed")
-                }
-                buttons()
-                maybeStartRemoteReady()
-            } }
-        }
-    }
-    private fun disconnect() {
-        remoteReadyEnabled = false; remoteDimmed = false
-        getSharedPreferences("opencapture", MODE_PRIVATE).edit().putBoolean("remoteReady", false).apply()
-        applyRemoteScreen()
-        stopConnection()
-    }
-    private fun stopConnection() {
-        val wasActive = !stop.get() || busy.get()
-        stop.set(true); connection?.cancel(); localCancel.set(true)
-        activeTransport?.close()
-        if (wasActive) message("Disconnecting…")
-        buttons()
-    }
-
-    private fun enterRemoteReady() {
-        if (updating.get() || (busy.get() && stop.get())) return
+    private fun startServer(ip: String) {
         try {
-            val origin = OpenCaptureProtocol.origin(screen.address.text.toString(), screen.token.text.toString()).toString()
-            ControllerTokenStore(this).save(origin, screen.token.text.toString())
-            check(getSharedPreferences("opencapture", MODE_PRIVATE).edit().putString("address", origin).putBoolean("remoteReady", true).commit()) { "Cannot save Remote ready settings" }
-            screen.address.setText(origin)
-            remoteReadyEnabled = true; remoteDimmed = true
-            if (stop.get()) message("Waiting for camera and PC…")
-            stopDiscovery(); applyRemoteScreen(); buttons(); maybeStartRemoteReady()
-        } catch (error: Exception) { message(error.message ?: "Cannot enable Remote ready") }
+            val listener = CameraServer(ip, session, ::info, ::selectCamera) { previewBytes }
+            listener.start(5000, true); server = listener; address = ip
+            val nsd = getSystemService(NSD_SERVICE) as NsdManager
+            val advertised = NsdServiceInfo().apply {
+                serviceName = "OpenCapture ${android.os.Build.MODEL}"; serviceType = "_oc-camera._tcp."; port = 8767
+                setAttribute("protocol", "1"); setAttribute("role", "camera"); setAttribute("auth", "none"); setAttribute("deviceID", deviceID)
+            }
+            registration = object : NsdManager.RegistrationListener {
+                override fun onRegistrationFailed(info: NsdServiceInfo, error: Int) { message("Ready at $ip:8767") }
+                override fun onServiceRegistered(info: NsdServiceInfo) {}
+                override fun onServiceUnregistered(info: NsdServiceInfo) {}
+                override fun onUnregistrationFailed(info: NsdServiceInfo, error: Int) {}
+            }
+            nsd.registerService(advertised, NsdManager.PROTOCOL_DNS_SD, registration)
+            message("Ready at $ip:8767")
+        } catch (error: Exception) { stopServer(); message(error.message ?: "Server unavailable") }
     }
-    private fun maybeStartRemoteReady() {
-        if (remoteReadyEnabled && resumed && camera.previewReady && !busy.get() && !updating.get()) startConnection()
+    private fun stopServer() {
+        server?.stop(); server = null; address = null; session.end(); previewBytes = null
+        registration?.let { runCatching { (getSystemService(NSD_SERVICE) as NsdManager).unregisterService(it) } }
+        registration = null
     }
-    private fun applyRemoteScreen() {
-        val dim = remoteReadyEnabled && remoteDimmed && resumed
-        screen.showRemoteScreen(dim)
-        if (dim && previousBrightness == null) {
-            val attributes = window.attributes
-            previousBrightness = attributes.screenBrightness
-            attributes.screenBrightness = if (attributes.screenBrightness < 0) 0.08f else minOf(attributes.screenBrightness, 0.08f)
-            window.attributes = attributes
-        } else if (!dim && previousBrightness != null) {
-            window.attributes = window.attributes.apply { screenBrightness = previousBrightness!! }
-            previousBrightness = null
-        }
-    }
-
-    override fun onResume() { super.onResume(); resumed = true; openCamera(); ui.post(previewTick); applyRemoteScreen(); buttons() }
+    override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
+    override fun onResume() { super.onResume(); resumed = true; if (enabled) openCamera(); ui.post(tick) }
     override fun onStop() {
-        resumed = false; stopConnection(); updateCancel.set(true); updater?.close(); applyRemoteScreen()
-        ui.removeCallbacks(previewTick); stopDiscovery(); camera.close(); opening = false; previewBytes = null
-        super.onStop()
+        resumed = false; displayManager.unregisterDisplayListener(displayListener)
+        stopServer(); updateCancel.set(true); updater?.close(); ui.removeCallbacks(tick)
+        camera.close(); opening = false; super.onStop()
     }
-    override fun onDestroy() { camera.shutdown(); worker.shutdown(); updateWorker.shutdown(); super.onDestroy() }
+    override fun onDestroy() { session.close(); camera.shutdown(); updates.shutdown(); super.onDestroy() }
     private fun openCamera() {
-        if (!resumed || opening || !texture.isAvailable) return
-        if (camera.rawCameraChoices().isEmpty()) { message("This phone exposes no rear RAW camera to Camera2"); return }
+        if (!resumed || !enabled || opening || !texture.isAvailable) return
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 1); return
         }
+        if (camera.rawCameraChoices().isEmpty()) { message("No supported rear RAW camera"); return }
         opening = true
         camera.open { success -> runOnUiThread {
-            if (success && resumed) {
+            if (success && resumed && enabled) {
                 camera.startPreview(texture, ::message); transformPreview()
-                val caps = capture.capabilities()
-                screen.cameraInfo.text = "${caps.getInt("maxPhotoWidth")} × ${caps.getInt("maxPhotoHeight")} DNG · ISO ${caps.optInt("minISO")}–${caps.optInt("maxISO")}"
-                message("Ready for local capture or Windows connection")
-            } else { opening = false; message("Cannot open a RAW camera. Check camera permission and other camera apps.") }
+                screen.cameraInfo.text = camera.rawCameraChoices().firstOrNull { it.first == camera.cameraID() }?.second ?: "OpenCapture"
+                message("Starting camera server")
+            } else { opening = false; message("Camera unavailable") }
         } }
     }
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) openCamera() else message("Camera permission is required. Enable it in Android app settings.")
+    override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(code, permissions, results)
+        if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) openCamera() else message("Camera permission required")
     }
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) { openCamera() }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) { transformPreview() }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { stopConnection(); camera.close(); opening = false; return true }
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { stopServer(); camera.close(); opening = false; return true }
     override fun onConfigurationChanged(configuration: Configuration) { super.onConfigurationChanged(configuration); texture.post { transformPreview() } }
     private fun transformPreview() {
         val size = camera.previewDimensions() ?: return
-        val displayRotation = when (windowManager.defaultDisplay.rotation) { Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_270 -> 270; else -> 0 }
-        val sensorOrientation = camera.selectedCharacteristics().get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-        val angle = (sensorOrientation - displayRotation + 360) % 360
-        val w = texture.width; val h = texture.height
-        if (w <= 0 || h <= 0) return
-        screen.setPreviewAspect(if (angle % 180 == 0) size.width.toDouble() / size.height else size.height.toDouble() / size.width)
-        texture.setTransform(Matrix().apply { setValues(PreviewGeometry.fit(size.width, size.height, w, h, angle)) })
+        val rotation = when (texture.display?.rotation) { Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_270 -> 270; else -> 0 }
+        val sensor = camera.selectedCharacteristics().get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        if (texture.width <= 0 || texture.height <= 0) return
+        val transform = Matrix().apply { setValues(PreviewGeometry.textureFit(size.width, size.height, texture.width, texture.height, sensor, rotation)) }
+        texture.setTransform(transform)
+        screen.outline(android.graphics.RectF(0f, 0f, texture.width.toFloat(), texture.height.toFloat()).apply { transform.mapRect(this) })
     }
-
-    private fun discoverControllers() {
-        if (busy.get() || updating.get() || remoteReadyEnabled) { message("End Remote ready and disconnect before changing controllers"); return }
-        if (discovery != null) return
-        discovered.clear(); screen.showControllers(discovered)
-        val nsd = getSystemService(NSD_SERVICE) as NsdManager
-        discovery = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(type: String) {}
-            override fun onStartDiscoveryFailed(type: String, error: Int) { discovery = null; message("Discovery unavailable; enter the PC address manually") }
-            override fun onStopDiscoveryFailed(type: String, error: Int) {}
-            override fun onDiscoveryStopped(type: String) {}
-            override fun onServiceLost(service: NsdServiceInfo) { runOnUiThread { discovered.remove(service.serviceName); screen.showControllers(discovered) } }
-            override fun onServiceFound(service: NsdServiceInfo) {
-                nsd.resolveService(service, object : NsdManager.ResolveListener {
-                    override fun onResolveFailed(info: NsdServiceInfo, error: Int) {}
-                    override fun onServiceResolved(info: NsdServiceInfo) {
-                        val host = info.host?.hostAddress ?: return
-                        if (!OpenCaptureProtocol.privateHost(host) || info.attributes["protocol"]?.toString(Charsets.UTF_8) != "1") return
-                        runOnUiThread { discovered[info.serviceName] = "$host:${info.port}"; screen.showControllers(discovered) }
-                    }
-                })
-            }
-        }
-        try { nsd.discoverServices("_opencapture._tcp.", NsdManager.PROTOCOL_DNS_SD, discovery) }
-        catch (error: Exception) { discovery = null; message("Discovery unavailable; enter the PC address manually") }
+    private fun showAbout() {
+        AlertDialog.Builder(this).setTitle("OpenCapture")
+            .setMessage("Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})\nGPL-3.0-only")
+            .setPositiveButton("Check for updates") { _, _ -> checkUpdate() }
+            .setNeutralButton("Licenses") { _, _ ->
+                val text = resources.openRawResource(R.raw.third_party_notices).bufferedReader().use { it.readText() }
+                AlertDialog.Builder(this).setTitle("Licenses").setMessage(text).setPositiveButton("Close", null).show()
+            }.setNegativeButton("Close", null).show()
     }
-    private fun stopDiscovery() {
-        discovery?.let { runCatching { (getSystemService(NSD_SERVICE) as NsdManager).stopServiceDiscovery(it) } }
-        discovery = null
-    }
-    private fun history() {
-        screen.showingArchive = false; screen.captures.removeAllViews()
-        val directories = File(filesDir, "captures").listFiles()?.filter { it.isDirectory && OpenCaptureProtocol.jobId.matches(it.name) }?.sortedByDescending { it.lastModified() }.orEmpty()
-        if (directories.isEmpty()) screen.captures.addView(screen.text("No captures yet"))
-        for (directory in directories) {
-            val count = directory.listFiles()?.count { it.extension == "dng" } ?: 0
-            val completed = File(directory, "manifest.json").isFile
-            screen.button(screen.section(screen.captures, null), "${if (completed) "Bayer RAW" else "Partial capture"} · $count frames\n${directory.name.take(8)}") { archiveDetail(directory) }
-        }
-    }
-    private fun archiveDetail(directory: File) {
-        screen.showingArchive = true; screen.captures.removeAllViews()
-        screen.button(screen.captures, "Back to captures") { history() }
-        val summary = screen.section(screen.captures, "Capture ${directory.name.take(8)}")
-        screen.button(summary, "Export originals and metadata") { exportArchive(directory) }
-        screen.button(summary, "Delete capture…") { confirmDelete(listOf(directory)) }
-        if (File(directory, "uploaded.json").isFile) summary.addView(screen.text("Upload confirmed by Windows", 13f))
-        val manifest = runCatching { JSONObject(File(directory, "manifest.json").readText()) }.getOrNull()
-        if (manifest == null) summary.addView(screen.text("Partial capture; original files retained."))
-        else {
-            summary.addView(screen.text(manifest.getJSONObject("camera").getString("name")))
-            summary.addView(screen.text(manifest.getString("startedAt"), 13f))
-        }
-        val records = manifest?.optJSONArray("frames")
-        directory.listFiles().orEmpty().filter { it.extension == "dng" && OpenCaptureProtocol.fileName.matches(it.name) }.sortedBy { it.name }.forEach { file ->
-            val row = screen.section(screen.captures, file.name)
-            if (records != null) for (i in 0 until records.length()) {
-                val record = records.getJSONObject(i)
-                if (record.getJSONObject("file").getString("name") == file.name) {
-                    row.addView(screen.text("${record.getInt("width")} × ${record.getInt("height")} · ${record.getDouble("actualExposureSeconds") * 1000} ms · ISO ${record.getDouble("actualISO")}", 14f))
-                    row.addView(screen.text("Focus ${record.getDouble("lensPosition")} (0 infinity, 1 nearest)", 13f))
-                }
-            }
-            screen.button(row, "Open original") {
-                if (busy.get() || updating.get()) { message("Finish or disconnect before opening originals"); return@button }
-                try { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(FileProvider.getUriForFile(this, "$packageName.files", file), "image/dng").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
-                catch (error: Exception) { message("No DNG viewer is installed. Use Export originals and metadata.") }
-            }
-        }
-    }
-    private fun captureDirectories(): List<File> = File(filesDir, "captures").listFiles().orEmpty()
-        .filter { it.isDirectory && OpenCaptureProtocol.jobId.matches(it.name) }
-    private fun confirmDelete(directories: List<File>) {
-        if (busy.get() || updating.get() || remoteReadyEnabled) { message("End Remote ready and disconnect before deleting captures."); return }
-        if (directories.isEmpty()) { message("No captures to delete"); return }
-        AlertDialog.Builder(this).setTitle("Delete ${directories.size} capture${if (directories.size == 1) "" else "s"}?")
-            .setMessage("Permanently delete these originals, metadata and cached exports from OpenCapture on this phone? Files already uploaded to Windows are unaffected.")
-            .setNegativeButton("Keep", null).setPositiveButton("Delete") { _, _ ->
-                if (remoteReadyEnabled || updating.get() || !busy.compareAndSet(false, true)) { message("Finish or disconnect before deleting captures"); return@setPositiveButton }
-                buttons()
-                worker.execute {
-                    try {
-                        val store = CaptureArchives(File(filesDir, "captures"), File(cacheDir, "exports"))
-                        directories.forEach { store.delete(it.name) }
-                        message("Deleted ${directories.size} capture${if (directories.size == 1) "" else "s"} from this phone")
-                    } catch (error: Exception) { message(error.message ?: "Could not delete every capture") }
-                    finally { runOnUiThread { busy.set(false); buttons(); history() } }
-                }
-            }.show()
-    }
-    private fun exportArchive(directory: File) {
-        if (updating.get() || !busy.compareAndSet(false, true)) { message("Finish or disconnect before exporting captures"); return }
-        buttons()
-        worker.execute {
-            try {
-                val archive = File(File(cacheDir, "exports").apply { mkdirs() }, "${directory.name}.zip")
-                ZipOutputStream(archive.outputStream()).use { zip ->
-                    directory.listFiles().orEmpty().filter { it.isFile && (OpenCaptureProtocol.fileName.matches(it.name) || it.name in setOf("manifest.json", "failure.json", "uploaded.json")) }.forEach { file ->
-                        zip.putNextEntry(ZipEntry(file.name)); file.inputStream().use { it.copyTo(zip) }; zip.closeEntry()
-                    }
-                }
-                runOnUiThread { if (resumed) share(archive, "application/zip", "Export originals") }
-            } catch (error: Exception) { message(error.message ?: "Export failed") }
-            finally { busy.set(false); buttons() }
-        }
-    }
-    private fun share(file: File, type: String, title: String) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
-        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, uri)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), title))
-    }
-    private fun exportCapabilities() {
-        if (busy.get() || updating.get()) { message("Finish or disconnect before exporting capabilities"); return }
-        try {
-            val report = File(File(cacheDir, "exports").apply { mkdirs() }, "opencapture-camera-capabilities.json")
-            report.writeText(capture.capabilities().put("reportedAt", java.time.Instant.now().toString()).toString())
-            share(report, "application/json", "Export camera capabilities")
-        } catch (error: Exception) { message(error.message ?: "Cannot read camera capabilities") }
-    }
-
     private fun checkUpdate() {
-        if (updating.get() || (busy.get() && stop.get())) return
-        val client = OpenCaptureUpdates()
-        updating.set(true); updateCancel = AtomicBoolean(false); updater = client
-        update = null; downloadedUpdate = null; screen.updateStatus.text = "Checking…"; buttons()
-        updateWorker.execute {
+        if (!updating.compareAndSet(false, true)) return
+        message("Checking updates")
+        val client = OpenCaptureUpdates(); updater = client; updateCancel = AtomicBoolean(false)
+        updates.execute {
             try {
                 val release = client.check()
-                val manifest = release.apk
-                check(!updateCancel.get()) { "Update cancelled" }
                 runOnUiThread {
-                    if (release.minSdk > android.os.Build.VERSION.SDK_INT) {
-                        screen.updateStatus.text = "The GitHub update requires a newer Android version."
-                    } else if (manifest.versionCode > BuildConfig.VERSION_CODE) {
-                        update = release; screen.updateInstall.text = "Download and install"
-                        screen.updateStatus.text = "${manifest.versionName} (build ${manifest.versionCode}) is available. Disconnect before installing."
-                    } else screen.updateStatus.text = "You have the newest Android build published on GitHub."
+                    if (!resumed) return@runOnUiThread
+                    if (release.apk.versionCode <= BuildConfig.VERSION_CODE) AlertDialog.Builder(this)
+                        .setTitle("OpenCapture").setMessage("You have the newest published Android build.").setPositiveButton("Close", null).show()
+                    else AlertDialog.Builder(this).setTitle("OpenCapture ${release.apk.versionName}")
+                        .setMessage("Stop the camera session and install this update?")
+                        .setNegativeButton("Cancel", null).setPositiveButton("Update") { _, _ -> installUpdate(release) }.show()
                 }
-            } catch (error: Exception) { runOnUiThread { screen.updateStatus.text = error.message ?: "Update check failed" } }
-            finally { client.close(); updater = null; updating.set(false); buttons() }
+            } catch (error: Exception) { message(error.message ?: "Update check failed") }
+            finally { client.close(); updater = null; updating.set(false) }
         }
     }
-    private fun installUpdate() {
-        val release = update ?: return
-        val manifest = release.apk
-        if (busy.get() || updating.get() || remoteReadyEnabled) return
-        val ready = downloadedUpdate
-        if (ready != null && ready.isFile) { launchInstaller(ready, manifest); return }
-        val client = OpenCaptureUpdates()
-        updating.set(true); updateCancel = AtomicBoolean(false); updater = client; buttons()
-        screen.progress.visibility = View.VISIBLE; screen.progress.progress = 0
-        screen.updateStatus.text = "Downloading and verifying…"
-        updateWorker.execute {
+    private fun installUpdate(release: OpenCaptureUpdates.Release) {
+        if (!updating.compareAndSet(false, true)) return
+        enabled = false; screen.serving(false); stopServer(); camera.close(); opening = false
+        val client = OpenCaptureUpdates(); updater = client; updateCancel = AtomicBoolean(false)
+        updates.execute {
             try {
-                val file = File(File(cacheDir, "updates").apply { mkdirs() }, "opencapture-${manifest.versionCode}.apk")
-                client.download(release, file, updateCancel) { value -> runOnUiThread { screen.progress.progress = value } }
-                ApkUpdateVerifier.verifyPackage(this, file, manifest)
+                val file = File(File(cacheDir, "updates").apply { mkdirs() }, "opencapture-${release.apk.versionCode}.apk")
+                client.download(release, file, updateCancel) { message("Downloading update: $it%") }
+                ApkUpdateVerifier.verifyPackage(this, file, release.apk)
                 check(!updateCancel.get()) { "Update cancelled" }
                 runOnUiThread {
-                    downloadedUpdate = file; screen.updateInstall.text = "Install downloaded update"
-                    screen.updateStatus.text = "Verified. Ready to install."
-                    if (resumed) launchInstaller(file, manifest)
+                    if (!resumed) return@runOnUiThread
+                    if (!packageManager.canRequestPackageInstalls()) {
+                        message("Allow updates, then open About again")
+                        startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                    } else {
+                        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+                        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    }
                 }
-            } catch (error: Exception) { runOnUiThread { screen.updateStatus.text = error.message ?: "Update failed" } }
-            finally {
-                client.close(); updater = null; updating.set(false)
-                runOnUiThread { screen.progress.visibility = View.GONE; buttons() }
-            }
+            } catch (error: Exception) { message(error.message ?: "Update failed") }
+            finally { client.close(); updater = null; updating.set(false) }
         }
-    }
-    private fun launchInstaller(file: File, manifest: ApkUpdateManifest) {
-        try {
-            require(manifest.versionCode > BuildConfig.VERSION_CODE) { "This build is already installed" }
-            ApkUpdateVerifier.verifyPackage(this, file, manifest)
-            if (!packageManager.canRequestPackageInstalls()) {
-                screen.updateStatus.text = "Allow OpenCapture to install updates, then return and tap Install downloaded update."
-                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-                return
-            }
-            val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
-            startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-        } catch (error: Exception) { screen.updateStatus.text = error.message ?: "Cannot start the Android installer" }
     }
 }

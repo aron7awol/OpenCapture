@@ -1,5 +1,34 @@
 # Verification and Device Test Plan
 
+## Android preview regression (2026-11-12)
+
+The Pixel 10 Pro user reported a quarter-turn and off-screen preview in
+landscape. The Android view now fits Camera2's already sensor-oriented texture,
+compensates display rotation only, and observes display changes including
+180-degree turns. The preview no longer belongs to the controls' ScrollView;
+portrait uses stacked panes and wide landscape uses side-by-side panes.
+Neither rotation nor layout changes original DNG bytes/coordinates.
+
+The geometry tests model the platform sensor transform before applying our
+matrix, checking labeled corners/interior points, all four sensor/display
+angles, multiple stream sizes and short/wide viewports. Bounds-only tests of
+an unrotated synthetic buffer did not cover the previous double rotation.
+
+Local Android debug APK and legacy-app compilation passed; 27 tests passed in
+each of the debug/release unit-test variants. Local lint is blocked by the
+installed SDK's `37.0` version parsing error. The existing API 33 emulator
+configuration lacks its system image, so no emulator screenshot pass is claimed.
+The source has not been published or installed on the Pixel in this change.
+
+On hardware, aim at upright text with all four frame edges visible. Verify
+portrait, both landscapes, and a direct landscape-to-opposite-landscape turn.
+Scroll the settings without moving the preview, show/hide the keyboard, resize
+the app, switch tabs and enter/exit Remote ready. Confirm the complete aiming
+image stays upright and visible; compare the PC's aiming JPEG. During a remote
+job, rotation/tab changes must not recreate the camera, cancel a lease or
+change original DNG orientation. Record real-device results separately from
+the mathematical transform tests.
+
 ## Remote ready and deletion (0.3.0)
 
 Core/Android tests cover transient reconnect/backoff, stopping pending retries,
@@ -21,6 +50,14 @@ Existing archives must remain after updating the app. These behaviors still
 require physical iPhone/Pixel testing.
 
 ## Automated
+
+- Android RAW diagnostics: padded row strides, unsigned RAW16 samples,
+  read-only/nonzero-position buffers, sparse hashes, flat buffers and truncated
+  input. Diagnostics must not mutate bytes, buffer state or capture decisions.
+  On hardware, compare pre/post-DngCreator sample hashes and original DNG
+  samples, plus request/start/result/image timing for normal and empty frames.
+  Preserve sidecars even when a downstream consumer excludes an original.
+  Logging is observability, not a claimed fix for a sensor/HAL failure.
 
 - Python tests: validation, malformed/non-finite/duplicate JSON, authentication,
   cross-origin rejection, leased jobs, path traversal, bounds, hash mismatch,

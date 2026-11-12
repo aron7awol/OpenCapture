@@ -73,7 +73,11 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
                 OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
                     .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
-                    .put("native", native).put("characteristics", staticMetadata(c)))
+                    .put("native", native).put("characteristics", staticMetadata(c))
+                    .put("captureDiagnostics", JSONObject(frame.diagnostics)))
+                // No controller address, credentials, file paths or scene pixels in logcat.
+                android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
+                    "diagnostics=" + JSONObject(frame.diagnostics).toString())
                 records.put(reading(frame.result, c).put("index", index)
                     .put("actualExposureSeconds", native.getDouble("exposureTimeNs") / 1e9)
                     .put("actualISO", native.getInt("iso"))
@@ -114,6 +118,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
     private fun nativeMetadata(r: TotalCaptureResult, c: CameraCharacteristics): JSONObject {
         val g = requireNotNull(r.get(CaptureResult.COLOR_CORRECTION_GAINS))
         val data = JSONObject().put("sensorTimestampNs", requireNotNull(r.get(CaptureResult.SENSOR_TIMESTAMP)))
+            .put("frameNumber", r.frameNumber)
             .put("exposureTimeNs", requireNotNull(r.get(CaptureResult.SENSOR_EXPOSURE_TIME)))
             .put("iso", requireNotNull(r.get(CaptureResult.SENSOR_SENSITIVITY)))
             .put("focusDistanceDiopters", requireNotNull(r.get(CaptureResult.LENS_FOCUS_DISTANCE)))
@@ -130,6 +135,21 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("cropRegion", r.get(CaptureResult.SCALER_CROP_REGION)?.toShortString())
             .put("colorCorrectionTransform", r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.toString())
             .put("maximumFocusDiopters", c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f)
+            .put("sensorTimestampSource", c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE))
+            .put("rollingShutterSkewNs", r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW))
+            .put("pipelineDepth", r.get(CaptureResult.REQUEST_PIPELINE_DEPTH))
+            .put("dynamicWhiteLevel", r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL))
+            .put("dynamicBlackLevel", r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.let { JSONArray(it.toList()) })
+        // Often empty for logical-only outputs; never substitute logical readings.
+        @Suppress("DEPRECATION")
+        val physical = if (Build.VERSION.SDK_INT >= 31) r.physicalCameraTotalResults else r.physicalCameraResults
+        val physicalResults = JSONObject()
+        for ((id, result) in physical) physicalResults.put(id, JSONObject()
+            .put("sensorTimestampNs", result.get(CaptureResult.SENSOR_TIMESTAMP))
+            .put("exposureTimeNs", result.get(CaptureResult.SENSOR_EXPOSURE_TIME))
+            .put("iso", result.get(CaptureResult.SENSOR_SENSITIVITY))
+            .put("frameDurationNs", result.get(CaptureResult.SENSOR_FRAME_DURATION)))
+        data.put("physicalCaptureResults", physicalResults)
         if (Build.VERSION.SDK_INT >= 29) data.put("physicalCameraId", r.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
         return data
     }

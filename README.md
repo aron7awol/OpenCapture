@@ -2,6 +2,36 @@
 
 A standalone iOS and Android camera and remote capture instrument.
 
+## Foreground Camera Server (0.4.0 Source)
+
+Open the app, grant camera/local-network access, and leave it foregrounded on
+a trusted private LAN. A desktop client discovers `_oc-camera._tcp` and
+connects to the phone on port 8767. There is no phone-side PC selection,
+pairing prompt, local shutter, settings form, or gallery. The desktop selects
+the lens and capture settings. See [camera-server protocol](docs/camera-server.md).
+
+The aspect-fit preview has a one-physical-pixel gray border and horizontal/
+vertical center guides. These are UI only, never part of originals or preview
+JPEGs. Stop/Resume and About sit below the feed in portrait and beside it in
+wide landscape. About shows version/build, licenses, and update actions.
+
+Originals are staged on disk only for the active session. The desktop retries
+the same bytes after a failed transfer, checks file hashes, commits the result,
+then acknowledges it so the phone can delete its copies. Stopping, backgrounding,
+disconnecting, or a 120-second idle expiry cancels capture before cleanup.
+Pre-update archives are not silently deleted. Windows keeps received originals.
+
+The server is intentionally unauthenticated on the trusted LAN; the automatic
+single-client session ID is an ownership reservation, not pairing or security.
+Do not expose it to the internet or public Wi-Fi. Preview is for aiming only.
+
+This is source under verification, not a published 0.4.0 update. Android builds
+and JVM tests pass; iOS requires the macOS workflow. Physical-phone checks are
+still required. The older Python reference controller and outbound transport
+remain regression fixtures; they do not drive the new server without a pull
+adapter. The sections describing tabs and outbound connection below document
+0.3.x behavior, not the new interface.
+
 The standalone [Android source and build instructions](https://github.com/aron7awol/OpenCapture/tree/main/android)
 live in `android/` in the public repository. It captures individual Camera2
 Bayer DNG originals and uses the same controller protocol. Both apps use

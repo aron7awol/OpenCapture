@@ -1,186 +1,91 @@
 import SwiftUI
 import AVFoundation
-import QuickLook
 
 @main struct OpenCaptureApp: App {
     @StateObject private var model = AppModel()
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
-            RootView(model: model)
+            CameraScreen(model: model)
                 .task { await model.foreground() }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .background { model.background() }
-                    if phase == .inactive { model.inactive() }
-                    if phase == .active { Task { await model.foreground() } }
+                .onChange(of: phase) { _, value in
+                    if value == .background { model.background() }
+                    if value == .inactive { model.inactive() }
+                    if value == .active { Task { await model.foreground() } }
                 }
         }
     }
 }
 
-struct RootView: View {
+struct CameraScreen: View {
     @ObservedObject var model: AppModel
+    @State private var about = false
     var body: some View {
-        ZStack {
-        TabView {
-            CameraView(model: model).tabItem { Label("Camera", systemImage: "camera") }
-            ArchiveList(model: model).tabItem { Label("Captures", systemImage: "photo.stack") }
-            ConnectionView(model: model).tabItem { Label("Connection", systemImage: "network") }
-        }
-        .accessibilityHidden(model.remoteReadyEnabled && model.remoteDimmed)
-        if model.remoteReadyEnabled && model.remoteDimmed { RemoteReadyView(model: model) }
-        }
-        .tint(.teal)
-        .alert("OpenCapture", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
-            Button("OK") { model.errorMessage = nil }
-        } message: { Text(model.errorMessage ?? "") }
+        GeometryReader { geometry in
+            let landscape = geometry.size.width > geometry.size.height && geometry.size.width >= 600
+            let layout = landscape ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+            layout {
+                CameraPreview(session: model.camera.session)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("cameraPreview")
+                toolbar(landscape: landscape)
+                    .frame(width: landscape ? 168 : nil)
+                    .frame(maxWidth: landscape ? nil : .infinity, maxHeight: landscape ? .infinity : nil)
+                    .background(Color(white: 0.09))
+            }
+        }.background(.black).preferredColorScheme(.dark)
+            .sheet(isPresented: $about) { AboutView(model: model) }
+    }
+    private func toolbar(landscape: Bool) -> some View {
+        let layout = landscape ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.cameraName).font(.headline).lineLimit(landscape ? 3 : 1)
+                Text(model.status).font(.subheadline).lineLimit(landscape ? 4 : 2)
+                    .accessibilityIdentifier("cameraStatus")
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if landscape { Spacer(minLength: 0) }
+            Button { Task { await model.toggle() } } label: {
+                Image(systemName: model.enabled ? "pause.fill" : "play.fill").frame(width: 44, height: 44)
+            }.accessibilityLabel(model.enabled ? "Stop camera server" : "Resume camera server")
+                .accessibilityIdentifier("serverToggle")
+                .frame(maxWidth: landscape ? .infinity : nil)
+            Button { about = true } label: { Image(systemName: "info.circle").frame(width: 44, height: 44) }
+                .accessibilityLabel("About OpenCapture").accessibilityIdentifier("aboutButton")
+                .frame(maxWidth: landscape ? .infinity : nil)
+        }.padding(12).foregroundStyle(.white).buttonStyle(.plain)
     }
 }
 
-struct RemoteReadyView: View {
+struct AboutView: View {
     @ObservedObject var model: AppModel
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                Text("Remote ready").font(.largeTitle).accessibilityIdentifier("remoteReadyScreen")
-                Text(model.status).multilineTextAlignment(.center).foregroundStyle(.gray)
-                Text("Control captures from Windows.\nKeep OpenCapture open and unlocked.")
-                    .font(.callout).multilineTextAlignment(.center).foregroundStyle(.gray)
-                Button("Show controls") { model.showControls() }.accessibilityIdentifier("showRemoteControls")
-                Button("End Remote ready") { model.disconnect() }.accessibilityIdentifier("endRemoteReady")
-            }.frame(maxWidth: .infinity).padding(32)
-        }
-        .foregroundStyle(.white).tint(.white).buttonStyle(.bordered)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.ignoresSafeArea())
-    }
-}
-
-struct CameraView: View {
-    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    private var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?" }
+    private var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?" }
     var body: some View {
         NavigationStack {
-            GeometryReader { viewport in
-            Form {
-                Section {
-                    CameraPreview(session: model.camera.session)
-                        // Bound the scrolling row by the visible page, including in landscape.
-                        // The preview layer aspect-fits the actual, rotated camera stream inside it.
-                        .frame(height: max(1, min(
-                            max(1, viewport.size.width - 40) * (viewport.size.width > viewport.size.height ? 0.75 : 4.0 / 3.0),
-                            viewport.size.height - 100)))
-                        .background(.black)
-                        .overlay(alignment: .bottomLeading) {
-                            Text("Processed live preview").font(.caption).padding(6).foregroundStyle(.white).background(.black.opacity(0.65))
-                        }
-                        .clipped()
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Full camera preview")
-                        .accessibilityIdentifier("cameraPreview")
-                        .listRowInsets(EdgeInsets())
-                    HStack {
-                        Text(model.status).font(.subheadline)
-                        Spacer()
-                        if model.connected { Image(systemName: "network").foregroundStyle(.teal) }
-                    }
-                    if model.busy { ProgressView(value: model.progress) }
+            List {
+                LabeledContent("Version", value: "\(version) (build \(build))")
+                Button { Task { await model.checkUpdate() } } label: { Label("Check for updates", systemImage: "arrow.clockwise") }
+                    .disabled(model.checkingUpdate)
+                if !model.updateStatus.isEmpty { Text(model.updateStatus).font(.subheadline) }
+                if let update = model.update {
+                    Text("\(update.version) (build \(update.build))")
+                    Button { openURL(update.appURL) } label: { Label("Update in AltStore", systemImage: "arrow.down.app") }
+                    Button { openURL(update.sourceURL) } label: { Label("Add AltStore source", systemImage: "plus.app") }
                 }
-                Section("Capture") {
-                    Picker("Camera", selection: $model.cameraID) {
-                        ForEach(model.cameras) { Text($0.name).tag($0.id) }
-                    }.disabled(model.busy || model.remoteLocked || model.configuring || model.deletingArchives)
-                        .onChange(of: model.cameraID) { old, new in
-                            if old != new && new != model.capabilities?.cameraID { Task { await model.startCamera() } }
-                        }
-                    Picker("Mode", selection: $model.mode) {
-                        Text("Bayer RAW").tag("raw")
-                        Text("Apple ProRAW / highest resolution").tag("proraw")
-                        Text("Fast JPEG burst").tag("fast")
-                        Text("Quality JPEG").tag("quality")
-                    }.accessibilityIdentifier("captureMode").disabled(model.busy || model.remoteLocked || model.deletingArchives)
-                    Stepper("Frames: \(model.frameCount)", value: $model.frameCount, in: 1...32)
-                        .disabled(model.busy || model.remoteLocked || model.deletingArchives)
-                    if let caps = model.capabilities {
-                        LabeledContent("Bayer RAW", value: caps.formats.contains(.bayerRAW) ? "Available" : "Unavailable")
-                        LabeledContent("Apple ProRAW", value: caps.formats.contains(.appleProRAW) ? "Available" : "Unavailable")
-                        LabeledContent("Photo limit", value: "\(caps.maxPhotoWidth) x \(caps.maxPhotoHeight)")
-                        if model.mode == "proraw" {
-                            if let width = caps.proRAWMaxPhotoWidth, let height = caps.proRAWMaxPhotoHeight {
-                                LabeledContent("ProRAW requested size", value: "\(width) x \(height)")
-                            }
-                            Text("Processed RGB DNG; may combine multiple exposures. Actual dimensions are saved with each frame. Compare originals with Bayer RAW before using them for measurements.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+                Link("Source / GPLv3", destination: URL(string: "https://github.com/aron7awol/OpenCapture")!)
+                NavigationLink("Third-party licenses") {
+                    ScrollView { Text(notices).font(.caption.monospaced()).padding() }.navigationTitle("Licenses")
                 }
-                Section("Exposure") {
-                    Toggle("Manual exposure", isOn: $model.manualExposure)
-                        .disabled(model.capabilities?.manualExposure != true)
-                    if model.manualExposure {
-                        NumberField(label: "Shutter (ms)", text: $model.exposureMS)
-                        NumberField(label: "ISO", text: $model.iso)
-                    } else { LabeledContent("Exposure", value: "Auto, locked for burst") }
-                    if let caps = model.capabilities {
-                        LabeledContent("ISO range", value: "\(Int(caps.minISO)) - \(Int(caps.maxISO))").font(.caption)
-                        LabeledContent("Shutter range (ms)", value: String(format: "%.3f - %.1f", caps.minExposureSeconds * 1000, caps.maxExposureSeconds * 1000)).font(.caption)
-                    }
-                }.disabled(model.busy || model.remoteLocked || model.deletingArchives)
-                Section("Focus and White Balance") {
-                    Toggle("Manual focus", isOn: $model.manualFocus).disabled(model.capabilities?.manualFocus != true)
-                    if model.manualFocus {
-                        HStack { Image(systemName: "camera.macro"); Slider(value: $model.focus, in: 0...1); Image(systemName: "mountain.2") }
-                        LabeledContent("Lens position", value: String(format: "%.3f", model.focus))
-                    }
-                    Toggle("Manual white balance", isOn: $model.manualWB).disabled(model.capabilities?.manualWhiteBalance != true)
-                    if model.manualWB {
-                        NumberField(label: "Red gain", text: $model.wbRed)
-                        NumberField(label: "Green gain", text: $model.wbGreen)
-                        NumberField(label: "Blue gain", text: $model.wbBlue)
-                    }
-                    Button { Task { await model.useCurrentControls() } } label: { Label("Use current camera settings", systemImage: "lock") }
-                    Button { model.previewSettings() } label: { Label("Apply controls", systemImage: "slider.horizontal.3") }
-                }.disabled(model.busy || model.remoteLocked || model.deletingArchives)
-                Section {
-                    Button { Task { await model.startCamera() } } label: { Label("Restart camera", systemImage: "arrow.clockwise") }
-                        .disabled(model.busy || model.remoteLocked || model.configuring || model.deletingArchives)
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-            }
-            .safeAreaInset(edge: .bottom) {
-                HStack {
-                    if model.busy {
-                        Button(role: .destructive) { model.cancel() } label: { Label("Cancel capture", systemImage: "stop.circle") }
-                    } else {
-                        Button { model.captureLocal() } label: {
-                            Label("Capture \(model.frameCount) frame\(model.frameCount == 1 ? "" : "s")", systemImage: "camera.shutter.button")
-                                .frame(maxWidth: .infinity)
-                        }.buttonStyle(.borderedProminent).accessibilityIdentifier("captureButton")
-                            .disabled(model.remoteLocked || model.capabilities == nil || model.configuring || model.deletingArchives)
-                    }
-                }.padding(.horizontal).padding(.vertical, 8).background(.bar)
-            }
-            .navigationTitle("OpenCapture")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
-                }
-            }
+            }.navigationTitle("OpenCapture").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
-}
-
-struct NumberField: View {
-    let label: String
-    @Binding var text: String
-    var body: some View {
-        HStack {
-            Text(label)
-            Spacer()
-            TextField(label, text: $text).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 150)
-        }
+    private var notices: String {
+        guard let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") else { return "No third-party notices found" }
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? "No third-party notices found"
     }
 }
 
@@ -199,227 +104,42 @@ struct CameraPreview: UIViewRepresentable {
 
 final class PreviewSurface: UIView {
     let layerView = AVCaptureVideoPreviewLayer()
+    private let guides = CAShapeLayer()
     override init(frame: CGRect) {
         super.init(frame: frame)
         clipsToBounds = true
-        layer.addSublayer(layerView)
+        layer.addSublayer(layerView); layer.addSublayer(guides)
+        guides.fillColor = UIColor.clear.cgColor; guides.strokeColor = UIColor(white: 0.5, alpha: 1).cgColor
+        guides.allowsEdgeAntialiasing = false
     }
     required init?(coder: NSCoder) { fatalError("PreviewSurface is created programmatically") }
     override func layoutSubviews() {
         super.layoutSubviews()
-        // SwiftUI can repropose the row's size during rotation. Resize the
-        // video layer explicitly, including when the simulator has no camera,
-        // instead of letting its previous backing-layer bounds overflow the row.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layerView.frame = bounds
-        CATransaction.commit()
-        guard let connection = layerView.connection else { return }
-        let angle: CGFloat
-        // Interface and physical-device orientations name landscape sides oppositely.
-        switch window?.windowScene?.interfaceOrientation {
-        case .landscapeLeft: angle = 180
-        case .landscapeRight: angle = 0
-        case .portraitUpsideDown: angle = 270
-        default: angle = 90
-        }
-        if connection.isVideoRotationAngleSupported(angle) { connection.videoRotationAngle = angle }
-    }
-}
-
-struct ArchiveList: View {
-    @ObservedObject var model: AppModel
-    @State private var pendingDelete: [String] = []
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Phone storage") {
-                    Toggle("Auto-delete uploaded remote captures", isOn: $model.autoDeleteRemote)
-                        .accessibilityIdentifier("autoDeleteRemote")
-                    Text("After Windows confirms the complete upload, remove the phone copy. Local captures and failed uploads are kept.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if !model.canDeleteArchives { Text("End Remote ready and disconnect before deleting captures.").font(.caption) }
-                }
-                if model.archives.isEmpty { ContentUnavailableView("No captures", systemImage: "photo.stack") }
-                ForEach(model.archives) { archive in
-                    NavigationLink {
-                        ArchiveDetail(model: model, archive: archive)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            if let manifest = archive.manifest {
-                                Text(manifest.request.format == .jpeg ? "JPEG / \(manifest.request.quality.rawValue)" : manifest.request.format.title)
-                                Text("\(manifest.frames.count) frames - \(manifest.startedAt)").font(.caption).foregroundStyle(.secondary)
-                            } else { Text("Partial capture").foregroundStyle(.orange) }
-                            Text(String(archive.id.prefix(8))).font(.caption.monospaced()).foregroundStyle(.secondary)
-                        }
-                    }
-                }.onDelete { indices in
-                    if model.canDeleteArchives { pendingDelete = indices.map { model.archives[$0].id } }
-                }.deleteDisabled(!model.canDeleteArchives)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        layerView.frame = bounds; guides.frame = bounds
+        if let connection = layerView.connection {
+            let angle: CGFloat
+            switch window?.windowScene?.interfaceOrientation {
+            case .landscapeLeft: angle = 180
+            case .landscapeRight: angle = 0
+            case .portraitUpsideDown: angle = 270
+            default: angle = 90
             }
-            .navigationTitle("Captures").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button { model.refreshArchives() } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("Refresh captures")
-                Button(role: .destructive) { pendingDelete = model.archives.map(\.id) } label: { Image(systemName: "trash") }
-                    .accessibilityLabel("Delete all captures").disabled(!model.canDeleteArchives || model.archives.isEmpty)
-            }
-            .refreshable { model.refreshArchives() }
-            .confirmationDialog("Delete captures from this phone?", isPresented: Binding(get: { !pendingDelete.isEmpty }, set: { if !$0 { pendingDelete = [] } }), titleVisibility: .visible) {
-                Button("Delete \(pendingDelete.count) capture(s)", role: .destructive) {
-                    let ids = pendingDelete; pendingDelete = []
-                    Task { await model.deleteArchives(ids) }
-                }
-            } message: { Text("Permanently delete these originals and metadata from OpenCapture? Files already uploaded to Windows are unaffected.") }
+            if connection.isVideoRotationAngleSupported(angle) { connection.videoRotationAngle = angle }
         }
-    }
-}
-
-struct ArchiveDetail: View {
-    @ObservedObject var model: AppModel
-    let archive: CaptureArchive
-    @Environment(\.dismiss) private var dismiss
-    @State private var share = false
-    @State private var original: URL?
-    @State private var deleting = false
-    var body: some View {
-        List {
-            if let manifest = archive.manifest {
-                Section("Capture") {
-                    LabeledContent("Camera", value: manifest.camera.name)
-                    LabeledContent("Format", value: manifest.request.format.title)
-                    LabeledContent("Priority", value: manifest.request.quality.rawValue)
-                    LabeledContent("Frames", value: String(manifest.frames.count))
-                    if FileManager.default.fileExists(atPath: archive.directory.appendingPathComponent("uploaded.json").path) {
-                        Text("Upload confirmed by Windows").font(.caption)
-                    }
-                    if manifest.request.format == .appleProRAW { Text("Apple-processed RGB DNG; not Bayer RAW.").font(.caption) }
-                }
-                ForEach(manifest.frames, id: \.index) { frame in
-                    Section("Frame \(frame.index)") {
-                        if let file = frame.previewFile,
-                           let image = UIImage(contentsOfFile: archive.directory.appendingPathComponent(file.name).path) {
-                            Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
-                            Text("Processed thumbnail").font(.caption).foregroundStyle(.secondary)
-                        }
-                        LabeledContent("Dimensions", value: "\(frame.width) x \(frame.height)")
-                        LabeledContent("EXIF shutter", value: frame.actualExposureSeconds.map { String(format: "%.3f ms", $0 * 1000) } ?? "Not reported")
-                        LabeledContent("EXIF ISO", value: frame.actualISO.map { String(format: "%.1f", $0) } ?? "Not reported")
-                        LabeledContent("Lens position", value: String(format: "%.3f", frame.lensPosition))
-                        Button { original = archive.directory.appendingPathComponent(frame.file.name) } label: {
-                            Label("Open original", systemImage: "doc.viewfinder")
-                        }
-                    }
-                }
-            } else { Text("Partial capture; original files retained.").foregroundStyle(.orange) }
-        }
-        .navigationTitle(String(archive.id.prefix(8)))
-        .toolbar {
-            Button { share = true } label: { Image(systemName: "square.and.arrow.up") }
-                .accessibilityLabel("Export originals and metadata").disabled(model.busy || model.remoteLocked || model.deletingArchives)
-            Button(role: .destructive) { deleting = true } label: { Image(systemName: "trash") }
-                .accessibilityLabel("Delete capture").disabled(!model.canDeleteArchives)
-        }
-        .confirmationDialog("Delete this capture from the phone?", isPresented: $deleting, titleVisibility: .visible) {
-            Button("Delete capture", role: .destructive) { Task { if await model.deleteArchives([archive.id]) { dismiss() } } }
-        } message: { Text("Permanently delete its originals and metadata from OpenCapture? Files already uploaded to Windows are unaffected.") }
-        .onChange(of: model.archives.map(\.id)) { _, ids in if !ids.contains(archive.id) { dismiss() } }
-        .sheet(isPresented: $share) { ShareFiles(files: archive.exportFiles) }
-        .quickLookPreview($original)
-    }
-}
-
-struct ShareFiles: UIViewControllerRepresentable {
-    let files: [URL]
-    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: files, applicationActivities: nil) }
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-struct ConnectionView: View {
-    @ObservedObject var model: AppModel
-    @StateObject private var discovery = ControllerDiscovery()
-    @Environment(\.openURL) private var openURL
-    private var sourceLink: URL? {
-        guard let text = Bundle.main.object(forInfoDictionaryKey: "OpenCaptureSourceURL") as? String else { return nil }
-        var components = URLComponents(); components.scheme = "altstore-classic"; components.host = "source"
-        components.queryItems = [URLQueryItem(name: "url", value: text)]
-        return components.url
-    }
-    var body: some View {
-        NavigationStack {
-            Form {
-                if !model.remoteLocked {
-                    Section("Nearby controllers") {
-                        if discovery.controllers.isEmpty { Text(discovery.message).font(.caption).foregroundStyle(.secondary) }
-                        ForEach(discovery.controllers) { controller in
-                            Button {
-                                model.host = controller.url
-                                if !controller.requiresToken { model.token = ""; model.connect() }
-                            } label: {
-                                VStack(alignment: .leading) {
-                                    Text(controller.name)
-                                    Text(controller.url).font(.caption).foregroundStyle(.secondary)
-                                    if controller.requiresToken { Text("Pairing token required").font(.caption) }
-                                }
-                            }.disabled(model.busy || model.capabilities == nil || model.configuring)
-                        }
-                    }
-                }
-                Section("Controller") {
-                    TextField("Controller IP or URL", text: $model.host).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).accessibilityIdentifier("controllerAddress")
-                    Text("Enter an IP address, or select a nearby controller. An address without a port uses 8765.").font(.caption).foregroundStyle(.secondary)
-                    DisclosureGroup("Advanced connection") {
-                        SecureField("Pairing token (if required)", text: $model.token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    }
-                }.disabled(model.remoteLocked)
-                Section {
-                    if model.remoteLocked {
-                        Button { model.disconnect() } label: { Label("Disconnect", systemImage: "network.slash") }
-                    } else {
-                        Button { model.connect() } label: { Label("Connect", systemImage: "network") }
-                            .disabled(model.busy || model.capabilities == nil || model.configuring)
-                    }
-                    Text(model.status)
-                }
-                Section("Tripod use") {
-                    if model.remoteReadyEnabled {
-                        Button("Dim screen") { model.dimRemoteScreen() }.accessibilityIdentifier("dimRemoteScreen")
-                        Button("End Remote ready") { model.disconnect() }.accessibilityIdentifier("endRemoteReadySettings")
-                    } else {
-                        Button("Remote ready") { model.enterRemoteReady() }.accessibilityIdentifier("enterRemoteReady")
-                            .disabled(model.configuring || (model.busy && !model.remoteRunning))
-                    }
-                    Text("Remembers this PC, reconnects automatically and keeps the phone awake while OpenCapture is open. End the mode before changing PCs.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Updates") {
-                    LabeledContent("Version", value: "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
-                    Button { Task { await model.checkUpdate() } } label: { Label("Check for updates", systemImage: "arrow.clockwise") }
-                        .disabled(model.busy || model.checkingUpdate)
-                    if !model.updateStatus.isEmpty { Text(model.updateStatus).font(.caption) }
-                    if let update = model.update {
-                        Text("\(update.version) (\(update.build))").font(.headline)
-                        if !update.notes.isEmpty { Text(update.notes).font(.caption) }
-                        Button { launch(update.appURL) } label: { Label("Update in AltStore", systemImage: "arrow.down.app") }.disabled(model.busy || model.remoteLocked)
-                    }
-                    if let link = sourceLink {
-                        Button { launch(link) } label: { Label("Add AltStore source", systemImage: "plus.app") }.disabled(model.busy || model.remoteLocked)
-                    }
-                }
-            }.navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
-                .scrollDismissesKeyboard(.interactively)
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
-                        Button("Done") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
-                    }
-                }
-                .onAppear { discovery.start() }
-                .onDisappear { discovery.stop() }
-        }
-    }
-    private func launch(_ url: URL) {
-        openURL(url) { accepted in
-            if !accepted { model.errorMessage = "AltStore Classic is not available. Install it before opening this link." }
-        }
+        let scale = window?.screen.scale ?? UIScreen.main.scale
+        let pixel = 1 / scale
+        let frame = layerView.layerRectConverted(fromMetadataOutputRect: CGRect(x: 0, y: 0, width: 1, height: 1)).intersection(bounds)
+        guard !frame.isNull, !frame.isEmpty else { guides.path = nil; return }
+        func edge(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+        let fitted = CGRect(x: edge(frame.minX) + pixel / 2, y: edge(frame.minY) + pixel / 2,
+            width: edge(frame.maxX) - edge(frame.minX) - pixel, height: edge(frame.maxY) - edge(frame.minY) - pixel)
+        let path = UIBezierPath(rect: fitted)
+        let x = floor(fitted.midX * scale) / scale + pixel / 2
+        let y = floor(fitted.midY * scale) / scale + pixel / 2
+        path.move(to: CGPoint(x: x, y: fitted.minY)); path.addLine(to: CGPoint(x: x, y: fitted.maxY))
+        path.move(to: CGPoint(x: fitted.minX, y: y)); path.addLine(to: CGPoint(x: fitted.maxX, y: y))
+        guides.contentsScale = scale; guides.lineWidth = pixel; guides.path = path.cgPath
     }
 }

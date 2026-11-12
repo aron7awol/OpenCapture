@@ -10,8 +10,8 @@ android {
         applicationId = "com.uniformitycomp.opencapture"
         minSdk = 28
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 6
+        versionName = "0.4.0"
     }
     buildFeatures { buildConfig = true }
     compileOptions {
@@ -23,5 +23,6 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
     testImplementation("junit:junit:4.13.2")
 }

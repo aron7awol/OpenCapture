@@ -58,6 +58,8 @@ class JSONObject() {
 
     fun optJSONObject(name: String): JSONObject? = values[name] as? JSONObject
 
+    fun getJSONArray(name: String): JSONArray = get(name) as? JSONArray ?: throw JSONException("$name is not an array")
+
     fun getInt(name: String): Int = getNumber(name).toInt()
 
     fun getDouble(name: String): Double = getNumber(name).toDouble()
@@ -239,6 +241,8 @@ class JSONArray() {
     }
 
     fun length(): Int = values.size
+
+    fun getJSONObject(index: Int): JSONObject = values[index] as? JSONObject ?: throw JSONException("Not an object")
 
     override fun toString(): String = values.joinToString(prefix = "[", postfix = "]") { stringify(it) }
 }

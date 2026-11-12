@@ -4,7 +4,7 @@ import CryptoKit
 import ImageIO
 import UIKit
 
-struct CameraChoice: Identifiable {
+struct CameraChoice: Identifiable, Codable, Sendable {
     let id: String
     let name: String
 }
@@ -60,6 +60,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 for item in session.outputs { session.removeOutput(item) }
                 session.sessionPreset = .photo
                 let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera, .builtInTelephotoCamera], mediaType: .video, position: .back).devices
+                if let cameraID, !devices.contains(where: { $0.uniqueID == cameraID }) {
+                    throw CaptureError.unavailable("The requested camera is not available")
+                }
                 guard let chosen = devices.first(where: { $0.uniqueID == cameraID }) ?? devices.first(where: { $0.deviceType == .builtInWideAngleCamera }) ?? devices.first else {
                     throw CaptureError.unavailable("No rear camera is available")
                 }

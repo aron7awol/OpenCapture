@@ -16,7 +16,17 @@ object PreviewGeometry {
             .maxByOrNull { it.width.toLong() * it.height }
     }
 
-    /** TextureView starts with its buffer stretched to view bounds; undo that before fitting. */
+    /** Camera2 already applies sensor orientation inside TextureView; only compensate display rotation. */
+    fun textureFit(bufferWidth: Int, bufferHeight: Int, viewWidth: Int, viewHeight: Int,
+                   sensorOrientation: Int, displayRotation: Int): FloatArray {
+        require(sensorOrientation in listOf(0, 90, 180, 270))
+        require(displayRotation in listOf(0, 90, 180, 270))
+        val swapped = sensorOrientation % 180 != 0
+        return fit(if (swapped) bufferHeight else bufferWidth, if (swapped) bufferWidth else bufferHeight,
+            viewWidth, viewHeight, (360 - displayRotation) % 360)
+    }
+
+    /** Fit an already-oriented buffer stretched to view bounds, without cropping or changing its aspect. */
     fun fit(bufferWidth: Int, bufferHeight: Int, viewWidth: Int, viewHeight: Int, rotation: Int): FloatArray {
         require(minOf(bufferWidth, bufferHeight, viewWidth, viewHeight) > 0)
         require(rotation in listOf(0, 90, 180, 270))

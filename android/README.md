@@ -36,6 +36,14 @@ completed originals survive cancellation. Uninstalling removes local archives.
 
 ## GitHub updates
 
+Version 0.3.1 / build 5 source adds RAW-capture diagnostics to each hashed JSON
+sidecar and `OpenCaptureRAW` logcat: request, shutter callback, result/image
+arrival and DNG-write times, plus sparse RAW-buffer statistics before/after
+serialization. Sensor timestamps and elapsed-realtime timestamps are labeled
+separately. It preserves every original and does not filter or average photos.
+Actual compile/release/install status must be checked separately; a source
+version bump does not publish an update.
+
 Version 0.3.0 / build 4 adds **Connection > Remote ready**. Enter/select the PC
 and optional token, then enable it before mounting the phone. It remembers
 that exact controller, reconnects after temporary network failures and uses a

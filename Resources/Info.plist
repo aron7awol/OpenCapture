@@ -9,9 +9,9 @@
   <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSRequiresIPhoneOS</key><true/>
-  <key>NSCameraUsageDescription</key><string>Capture photos and camera metadata at your request, locally or from your paired controller.</string>
-  <key>NSLocalNetworkUsageDescription</key><string>Find and connect to your chosen capture controller to receive requests and transfer photos.</string>
-  <key>NSBonjourServices</key><array><string>_opencapture._tcp</string></array>
+  <key>NSCameraUsageDescription</key><string>Show the camera preview and capture photos requested by your computer.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Make this camera available to computers on your trusted Wi-Fi network while OpenCapture is open.</string>
+  <key>NSBonjourServices</key><array><string>_oc-camera._tcp</string></array>
   <key>NSAppTransportSecurity</key><dict>
     <key>NSAllowsLocalNetworking</key><true/>
     <key>NSExceptionDomains</key><dict>

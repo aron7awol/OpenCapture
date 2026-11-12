@@ -1,5 +1,12 @@
 # OpenCapture Protocol 1
 
+OpenCapture 0.4.0 uses the [foreground camera-server transport](camera-server.md).
+Capture requests, results and original-file receipt schemas below are reused
+unchanged. The outbound connection/endpoints in this document are the legacy
+0.3.x transport, retained for controller compatibility and regression tests.
+Do not confuse `_oc-camera._tcp` (phone server) with `_opencapture._tcp`
+(legacy desktop controller).
+
 This contract is independent of any display calibration protocol. The phone
 is the client; a user-selected controller leases capture jobs and receives
 original files. All paths below are relative to that configured origin.
@@ -143,6 +150,22 @@ possible multi-frame fusion. Original lossless file bytes are retained.
 For an Android client declaring `actualControlsSource: camera2CaptureResult`,
 actual exposure/ISO and timestamps come from that frame's matched Camera2
 result instead of EXIF; native result fields remain in the hashed sidecar.
+Android 0.3.1/build 5 adds optional `captureDiagnostics` in each sidecar:
+request/sequence/frame identifiers, request/start-callback/result/image/write
+times, and sparse RAW16 sample statistics/hashes before and after DngCreator.
+`*ElapsedNs` uses elapsed realtime; `*SensorTimestampNs`/`imageTimestampNs`
+uses the camera clock. Do not subtract different clocks without timestamp-source
+evidence. The raw sampler reads all four sites in up to 96x64 evenly distributed
+2x2 Bayer blocks, respecting buffer strides, without changing bytes or position.
+The canonical sample hash uses low-byte-first unsigned 16-bit samples. Statistics
+describe sparse native samples, not exposure accuracy or calibrated image quality.
+Native metadata also includes frame number, timestamp source, pipeline depth,
+rolling-shutter skew, dynamic black/white levels, and separately labeled physical
+capture results when Camera2 supplies them (an empty object means unavailable).
+These additive diagnostics do not change requests, original counts, bytes,
+capture selection or the generic protocol version. The client still returns
+every requested original, including suspicious ones; consumers own selection
+and requests for additional jobs.
 Completion is idempotent only for an identical manifest. Completed captures
 are immutable. Error/cancel/expiry never erases already written originals.
 
