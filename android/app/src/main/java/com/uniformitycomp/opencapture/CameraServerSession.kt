@@ -53,7 +53,7 @@ class CameraServerSession(
     }
     @Synchronized fun expire() { if (owner != null && now() - touched > 120_000) end() }
     @Synchronized fun end() {
-        if (draining) return
+        if (draining || closed) return
         owner = null; draining = true
         jobs.values.forEach { it.cancel.set(true) }
         worker.execute {
@@ -80,6 +80,7 @@ class CameraServerSession(
         } finally { synchronized(this) { switching = false } }
     }
     @Synchronized fun submit(request: JSONObject): JSONObject {
+        if (closed || draining || owner == null) fail(409, "No active camera session")
         OpenCaptureProtocol.request(request)
         val id = request.getString("id")
         val serialized = canonical(request).toString()

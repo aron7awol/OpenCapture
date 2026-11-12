@@ -49,6 +49,8 @@ class CameraServerSessionTest {
             session.ack(id, hash); session.ack(id, hash)
             assertFalse(File(root, id).exists()); assertTrue(old.exists())
             assertEquals("acknowledged", session.submit(request).getString("status"))
+            val changed = JSONObject(request.toString()).put("context", JSONObject().put("label", "different\nrequest"))
+            fault(409) { session.submit(changed) }
             session.end(); waitFor { !session.state().optBoolean("connected") && root.listFiles().orEmpty().isEmpty() }
         } finally { session.close() }
     }
@@ -82,5 +84,16 @@ class CameraServerSessionTest {
     @Test fun privatePeersExcludePublicAndMalformedAddresses() {
         for (value in listOf("10.0.0.1", "192.168.11.10", "172.16.4.2", "169.254.1.2", "127.0.0.1")) assertTrue(CameraServer.privateIPv4(value))
         for (value in listOf("8.8.8.8", "172.32.1.1", "192.168.1.999", "camera.local", "::1")) assertFalse(CameraServer.privateIPv4(value))
+    }
+    @Test fun repeatedLifecycleCleanupAfterCloseDoesNotQueueOnStoppedWorker() {
+        val root = Files.createTempDirectory("oc-lifecycle").resolve("staging").toFile()
+        val drained = CountDownLatch(1)
+        val session = CameraServerSession(root, { _, _, _ -> error("No capture expected") }, { drained.countDown() })
+        fault(409) { session.submit(OpenCaptureProtocol.localRequest(1, null, null, null)) }
+        session.close()
+        assertTrue(drained.await(3, TimeUnit.SECONDS))
+        session.end(); session.close()
+        fault(409) { session.submit(OpenCaptureProtocol.localRequest(1, null, null, null)) }
+        fault(503) { session.connect(connection(UUID.randomUUID().toString())) }
     }
 }
