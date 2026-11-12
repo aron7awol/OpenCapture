@@ -28,16 +28,27 @@ historical regression coverage for the retained outbound transport only.
    originals/preview JPEG have no overlay pixels. An emulator rotating its UI
    does not physically rotate its synthetic camera and cannot prove orientation.
 
-Local evidence on 2026-11-12: Android debug/legacy APK builds and 30 tests in
-each OpenCapture debug/release variant passed. API 33 phone emulator screenshots
-cover portrait/landscape/About, and a real Camera2 emulator capture transferred
-one DNG plus sidecar with exact hashes, repeated ACK and empty staging afterward.
-This is software evidence, not physical Pixel image quality or LAN discovery.
-The iOS source-only macOS build is tracked separately; no release/feed update
-is implied by committing source. Local Android lint remains blocked by the
-installed SDK `37.0` version parser, not reported as passing.
+Software evidence on 2026-11-12:
 
-## Android preview regression (2026-11-12)
+- Android debug/legacy APK builds and 31 tests in each OpenCapture debug/release
+  variant passed. Standalone GitHub run `43263465037` also passed lint. Local lint
+  is blocked by the installed SDK `37.0` parser; CI uses an isolated supported SDK.
+- API 33 phone emulator screenshots cover portrait/landscape/About. A Camera2
+  emulator capture transferred one DNG plus sidecar with exact hashes, repeated
+  ACK and empty staging afterward. The final APK repeated this after background/
+  resume. Repeated lifecycle cleanup after shutdown has a regression test.
+- iOS runs `43258525053` and `43261828840` passed unsigned device compilation,
+  16 Swift core tests and portrait/both-landscapes/About/Stop navigation tests.
+  The simulator has no physical camera. Full-screen screenshot export replaces
+  element-only landscape attachments, which were incorrectly cropped.
+- The merged generic Python controller suite passed 28 tests locally, including
+  the Windows atomic-write sharing retry regression.
+
+These are software checks, not physical Pixel/iPhone orientation, image quality,
+network permissions or LAN discovery evidence. No release/feed update is implied
+by committing source.
+
+## Historical Android Preview Regression (2026-11-12)
 
 The Pixel 10 Pro user reported a quarter-turn and off-screen preview in
 landscape. The Android view now fits Camera2's already sensor-oriented texture,
@@ -66,7 +77,7 @@ job, rotation/tab changes must not recreate the camera, cancel a lease or
 change original DNG orientation. Record real-device results separately from
 the mathematical transform tests.
 
-## Remote ready and deletion (0.3.0)
+## Historical Remote Ready And Deletion (0.3.0)
 
 Core/Android tests cover transient reconnect/backoff, stopping pending retries,
 authentication/certificate rejection, archive path bounds, used-ID protection

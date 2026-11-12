@@ -2,7 +2,7 @@
 
 OpenCapture opens a camera server on the trusted Wi-Fi LAN while foregrounded.
 There is no account, pairing prompt, stored controller address or local gallery.
-Windows discovers/selects the phone and owns all capture settings and lens choice.
+A desktop controller discovers/selects the phone and owns capture settings and lens choice.
 The existing protocol-1 capture request, controls result, original-file receipts
 and capture manifest are unchanged. This is a new transport, not a new image domain.
 
@@ -32,8 +32,8 @@ An interrupted/restarted session cannot silently replay an old capture ID.
 POST `/oc/v1/disconnect` releases the reservation. POST `/oc/v1/camera` accepts
 `{"cameraID":"..."}` and returns fresh info after reconfiguration. Unknown IDs
 fail; no silent fallback. Lens changes are refused during capture or pending
-transfer. Windows additionally blocks phone/lens changes for the entire active
-calibration operation, including pauses. New lens capabilities replace old
+transfer. A controller should also block phone/lens changes throughout any active
+multi-capture operation, including pauses. New lens capabilities replace old
 ones; lens-specific exposure/focus/mode settings must be checked again.
 
 ## Jobs And Files
@@ -47,7 +47,7 @@ ones; lens-specific exposure/focus/mode settings must be checked again.
   result. SHA-256 must match `resultSha256` from job state.
 - GET `/oc/v1/jobs/<id>/files/<name>`: stream only originals/sidecars explicitly
   referenced by that result; exact Content-Length and original bytes.
-- POST `/oc/v1/jobs/<id>/ack`: `{"resultSha256":"..."}` after Windows has
+- POST `/oc/v1/jobs/<id>/ack`: `{"resultSha256":"..."}` after the controller has
   verified every file's length/hash and committed the complete result locally.
   Delete phone image files, retain an acknowledged ID/result-hash tombstone
   within the session. Repeated matching acknowledgement succeeds.
@@ -65,8 +65,8 @@ session. Interrupted downloads retry the same bytes/ID; they never retake photos
 under that ID or relabel old measurements as fresh. Failed job staging may remain
 until cancellation/session end for bounded recovery, but is not a permanent phone
 archive. Session expiry cancels capture before deleting files. Old pre-server
-archives are not silently erased by this change. Windows retains received originals
-and diagnostics under its existing provenance/acceptance rules.
+archives are not silently erased by this change. The controller is responsible
+for retaining received originals and diagnostics after acknowledging receipt.
 
 ## Minimal Phone UI
 
@@ -78,15 +78,3 @@ not letterboxing. These guides never appear in originals or preview JPEGs.
 No Camera/Captures/Connection tabs, local shutter,
 exposure forms, gallery or pairing UI. Keep awake while serving. Foreground exit
 ends the session; reopening starts a fresh server. No background camera service.
-
-## Windows Integration
-
-The private bridge adds a phone-server client and LAN browser. Operator endpoints
-under `/api/v2/opencapture/` add GET `devices`, POST `connect` (`address`), POST
-`disconnect`, and POST `camera` (`cameraID`), with `protocolVersion:2` in POSTs.
-These retain the existing operator authentication/trusted-LAN policy. The bridge
-feeds fetched originals through the existing checked controller completion path;
-solver, native renderer ownership and independent validation are unchanged.
-Old outbound phone clients remain usable during migration, but cannot replace an
-actively selected server camera. The phone session ends when Windows disconnects
-or its helper stops; a lost helper is bounded by the phone idle lease.
