@@ -224,7 +224,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     if request.format != .jpeg {
                         let query: (OSType) -> Bool = request.format == .appleProRAW
                             ? AVCapturePhotoOutput.isAppleProRAWPixelFormat : AVCapturePhotoOutput.isBayerRAWPixelFormat
-                        guard let raw = output.availableRawPhotoPixelFormatTypes.first(where: query) else {
+                        guard let raw = output.availableRawPhotoPixelFormatTypes.first(where: {
+                            query($0) && (request.averaging == nil || RawCaptureDiagnostics.formats[$0] != nil)
+                        }) else {
                             throw CaptureError.unavailable("\(request.format.title) is unavailable")
                         }
                         settings = AVCapturePhotoSettings(rawPixelFormatType: raw)

@@ -121,12 +121,31 @@ final class BayerAverageTests: XCTestCase {
         XCTAssertThrowsError(try BayerAverage.inspect(file:a.file,layout:a.layout,integrity:a.integrity))
         let valid = try stage(directory,index:1,values:[100,100,100,100])
         let task = Task {
-            try await Task.sleep(nanoseconds:1_000_000_000)
+            withUnsafeCurrentTask { $0?.cancel() }
             return try BayerAverage.write([valid],directory:directory)
         }
-        task.cancel()
         do { _ = try await task.value; XCTFail("Cancelled work succeeded") } catch is CancellationError {} catch { XCTFail("Unexpected \(error)") }
     }
+#if !DEBUG
+    func testTwelveMegapixelStripProcessing() throws {
+        let directory = try root(), start = Date()
+        var model = layout
+        model.rawWidth = 4032; model.rawHeight = 3024; model.activeArea = [0,0,3024,4032]
+        model.radialGain = [DNGRadialGain(flags:0,coefficients:[0.25,0,0,0,0],center:[0.5,0.5])]
+        let file = directory.appendingPathComponent("large.raw16")
+        try Data().write(to:file)
+        let stream = try FileHandle(forWritingTo:file)
+        let row = Data((0..<4032*2).map { $0%2 == 0 ? UInt8(100) : UInt8(0) })
+        for _ in 0..<3024 { try stream.write(contentsOf:row) }
+        try stream.close()
+        let evidence = try BayerAverage.inspect(file:file,layout:model,integrity:"consistent_native_buffer_and_file")
+        let result = try BayerAverage.write([evidence,evidence],directory:directory)
+        XCTAssertEqual(result["moments"]?.bytes,2016*1512*24)
+        XCTAssertEqual(result["clipping"]?.bytes,2016*1512)
+        XCTAssertEqual(evidence.clippedFraction,0)
+        print("12 MP native-strip inspect and two-frame average: \(Date().timeIntervalSince(start)) seconds")
+    }
+#endif
     private func records(_ n: Int, directory: URL) throws -> [FrameRecord] {
         try (1...n).map { index in
             let name = String(format:"frame-%04d",index)

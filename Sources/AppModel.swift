@@ -249,8 +249,9 @@ private struct CameraServerInfo: Encodable {
             }
             frames.append(frame)
             if selection != nil {
+                let capturedFrame = frame
                 let evidence = try await processing {
-                    guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(frame.metadataFile.name))) as? [String:Any],
+                    guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(capturedFrame.metadataFile.name))) as? [String:Any],
                           let diagnostics = sidecar["captureDiagnostics"] as? [String:Any], let fields = diagnostics["normalization"] else {
                         throw CaptureError.invalid("Missing native Bayer normalization")
                     }

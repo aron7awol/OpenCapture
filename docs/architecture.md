@@ -1,9 +1,13 @@
 # Architecture and Handoff
 
-Android's optional [Bayer averaging](frame-averaging.md) is a generic capture
-operation, not a calibration solver. `BayerAverage.kt` selects usable attempts,
-then streams fractional native-site/luma moments from staged DNGs. The default
-original-file path is unchanged; iOS does not advertise this extension.
+Optional [Bayer averaging](frame-averaging.md) is a generic capture operation,
+not a calibration solver. Android `BayerAverage.kt` streams fractional moments
+from staged DNGs (v1). iOS `Core/BayerDNG.swift` parses bounded normalization
+metadata; `Core/BayerAverage.swift` selects attempts and streams moments from
+native rasters with the embedded radial gain model (v2). Native-buffer/file
+evidence lives in `Sources/RawCaptureDiagnostics.swift`. No compressed DNG pixel
+decoder or private calibration math is embedded. Original-file mode remains
+the default and retains each requested original unchanged.
 
 ## Boundaries
 
@@ -85,9 +89,8 @@ requested exposure; EXIF is retained and displayed. Exposure/focus/WB lock
 is not proof of radiometric linearity or the absence of sensor processing.
 
 Original frames are sequential still photos, not video-frame grabs, not a
-guarantee of the stock camera's burst cadence. Averaging is deferred until
-the correct RAW black-level and sample-domain treatment is implemented and
-tested. Never substitute an average of displayed RAW thumbnails.
+guarantee of the stock camera's burst cadence. Averaging is explicit and
+capability-gated; never substitute an average of displayed RAW thumbnails.
 
 Metadata records exposure and ISO from photo EXIF when available, and labels
 device exposure/ISO/focus/WB readings separately. Missing EXIF stays missing.
@@ -101,8 +104,8 @@ timestamps are UTC wall time. Never subtract these different clock domains.
    installation and access to the live preview have been reported working.
 2. Measure repeatability, clipped pixels, and known synthetic perturbations
    before using frames to propose correction.
-3. Validate Android's optional fractional-precision averaging on physical devices;
-   iOS still sends originals. Do not default to visually pleasing photo development.
+3. Validate optional fractional-precision averaging on physical Android/iOS devices.
+   Do not default to visually pleasing photo development.
 4. Add a separate consumer adapter for calibration; native DNG is not the
    Android RAW plane stream or averaged-YUV payload.
 5. The controller keeps active leases in memory. Restarted controllers retain

@@ -1,12 +1,13 @@
 # Verification and Device Test Plan
 
-## Android Optional Bayer Averaging
+## Optional Bayer Averaging (0.4.1)
 
 Read [frame averaging](frame-averaging.md). Test original-file mode and averaged
 mode separately; neither replaces physical-device verification.
 
-- Verify capability gating and capture-only request validation. iOS must not
-  receive the extension. The app's minimal foreground UI stays unchanged.
+- Verify capability gating and capture-only request validation. Send v1 only
+  to advertising Android cameras and v2 only to advertising iOS cameras.
+  The app's minimal foreground UI stays unchanged.
 - Check fractional parity means, luma sample variance (including inter-site
   covariance), native clipping counts, strip boundaries and both TIFF byte
   orders. With all originals retained, compare against independent desktop
@@ -23,6 +24,20 @@ mode separately; neither replaces physical-device verification.
   session. Confirm no lingering file exposure after ACK/session cleanup.
 - Measure overhead and compare Pixel failure rate with averaging disabled.
   Sparse matching checkpoints do not prove root cause or radiometric accuracy.
+- iOS: test native-buffer vs DNG dimensions/crop, CFA and sample-unit mapping,
+  including active-area width versus padded TIFF storage width. Compare retained
+  accepted DNGs' independently decoded native sites with sidecar coordinates.
+  Incorrect bit alignment, different units, and changed metadata must fail.
+- iOS: test radial gain before 2x2 binning, signed sub-black noise, clipping
+  before gain, unsupported/malformed opcodes and fractional moments. The Swift
+  tests contain a Windows-generated Float32 payload/hash golden. Run both
+  `swift test` and `swift test -c release`; the optimized suite also exercises
+  two-frame 12 MP strip processing and reports elapsed time. The full device
+  build and simulator UI tests are separate from physical camera verification.
+- On a real iPhone, first request 2..4 frames with `keepOriginals:true`, and
+  compare the exact contributing frames through the desktop original importer.
+  Then test compact transfer, dark frames and cancellation. Mac fixtures cannot
+  prove that an untested camera/lens returns a supported native buffer.
 
 ## Foreground Server And Minimal UI (0.4.0)
 

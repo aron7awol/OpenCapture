@@ -172,9 +172,11 @@ pairwise comparisons, per-Bayer-position statistics, stored DNG black/white
 metadata and additional timing. Read [RAW diagnostics](raw-diagnostics.md)
 for the bounded reader, interpretation and limitations. This is additive
 sidecar evidence only. Separately, the optional capability-gated `averaging`
-request field adds `bayer-mean-v1`; see [frame averaging](frame-averaging.md) for
+request field adds Android `bayer-mean-v1` and iOS `bayer-mean-v2`; see [frame averaging](frame-averaging.md) for
 the strict request, derived payloads, usable-frame replacement and transfer
-subset contract. Original-file requests and iOS remain unchanged. In averaging
+subset contract. Original-file requests remain unchanged. iOS 0.4.1 adds
+diagnostics v3 for native-buffer/file-byte checks, distinct from Android's v2
+decoded-DNG sample checks. In averaging
 mode `frameCount` is the target usable count and manifest `frames` includes all
 attempts, up to `2 * frameCount`.
 Completion is idempotent only for an identical manifest. Completed captures

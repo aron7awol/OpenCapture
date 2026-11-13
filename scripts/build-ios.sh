@@ -12,6 +12,7 @@ chmod +x "$XCODEGEN"
 python3 scripts/make_icon.py
 python3 -m unittest discover -s controller/tests -v
 swift test
+swift test -c release
 "$XCODEGEN" generate
 xcodebuild -version
 xcodebuild -project OpenCapture.xcodeproj -scheme OpenCapture -configuration Release \

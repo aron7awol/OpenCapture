@@ -1,4 +1,41 @@
-# Android RAW Capture Diagnostics
+# RAW Capture Diagnostics
+
+iOS and Android have different native capture APIs and therefore different
+diagnostic scopes. Do not relabel one platform's checks as the other's.
+
+## iOS 0.4.1
+
+Bayer captures automatically add `captureDiagnostics.diagnosticsVersion:3`
+and `platform:"ios"` to each original's JSON sidecar, with or without averaging:
+
+- `rawBeforeDng` / `rawAfterDng`: native pixel-buffer samples around
+  `fileDataRepresentation()`, before the photo callback returns. Width, height,
+  row stride, pixel format, CFA, coordinates/values, and sample SHA-256 are saved.
+- Sampling uses 16x12 complete 2x2 blocks (768 sites), ordered by block row,
+  column, then TL/TR/BL/BR. Hash bytes are unsigned 16-bit little-endian.
+- `rawSavedDng`: SHA-256 of the actual saved file compared with the encoded Data.
+  `encoded_bytes_verified` means file bytes only, NOT decoded DNG pixels.
+- `normalization` / `bufferOrigin`: DNG active area, stored dimensions,
+  black/white, CFA and supported radial model; native origin in DNG coordinates.
+- Monotonic pre-encoding/post-encoding/readback times, photo timestamp,
+  resolved-settings ID, and repeated sample-hash indication within a burst.
+  EXIF exposure/ISO and shutter-time device readings remain separately labeled.
+
+`consistent_native_buffer_and_file` means the native checkpoints and file-byte
+check matched. `sample_mismatch_observed` or `incomplete_diagnostics` are not
+driver diagnoses. There is no phone-side decoder for compressed DNG pixels;
+the desktop averaging importer independently compares retained accepted DNGs
+against their native sample coordinates. Unsupported native layouts can still
+produce valid originals with explicit incomplete diagnostics, but cannot enter
+the on-device average. Apple does not expose Android's Camera2 state/result
+pipeline, and those fields must not be fabricated for iOS.
+
+Buffer samples, file bytes and controls can all be consistent while a frame is
+genuinely dark, stale, or otherwise unusable. Preserve originals for investigation.
+New iOS native-buffer behavior requires physical-device verification; macOS core
+tests and simulator navigation cannot establish sensor behavior.
+
+## Android 0.4.1
 
 Android source 0.4.1/build 7 adds automatic, phone-side diagnostics for frames
 whose RAW data appears empty despite plausible capture-result settings.

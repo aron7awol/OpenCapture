@@ -11,7 +11,7 @@ the lens and capture settings from your computer.
   APK from [Releases](https://github.com/aron7awol/OpenCapture/releases).
 
 Development source can be newer than the published app. The workflow below
-describes version 0.4.0 and requires a compatible desktop controller.
+describes version 0.4.1 and requires a compatible desktop controller.
 
 ## Use
 
@@ -36,7 +36,7 @@ Wi-Fi or port forwarding.
 Android captures individual **Bayer RAW DNGs**. iPhone supports **Bayer RAW**,
 **Apple ProRAW**, and **JPEG**, depending on the lens/device. ProRAW and JPEG
 include Apple processing. Preview is for aiming, not calibrated measurement.
-Bursts preserve 1..32 original frames plus metadata by default. Supported Android
+Bursts preserve 1..32 original frames plus metadata by default. Supported Bayer
 cameras also offer optional [on-device averaging](docs/frame-averaging.md).
 
 ## Updates

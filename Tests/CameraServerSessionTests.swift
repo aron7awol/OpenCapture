@@ -68,4 +68,23 @@ import XCTest
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(request.id).path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
     }
+    func testDerivedFilesRequireOptInAndAreCleanedOnAck() async throws {
+        let root = try temporaryRoot()
+        let session = try CameraServerSession(root:root,hash:{_ in "hash"}) { request in
+            let directory = try CaptureArchiveStore(root:root).create(request.id)
+            let file = directory.appendingPathComponent("average.f32")
+            try Data([1,2,3,4]).write(to:file)
+            return CameraServerResult(data:Data("{}".utf8),files:["average.f32":file])
+        }
+        try await session.connect(id:UUID().uuidString.lowercased(),client:"PC")
+        var request = CaptureRequest()
+        _ = try session.submit(request)
+        try await wait { try session.state(request.id).status == "failed" }
+        request.id = UUID().uuidString.lowercased()
+        request.averaging = AveragingOptions(mode:BayerAverage.mode,emptyFramePolicy:"dark",keepOriginals:false)
+        _ = try session.submit(request)
+        try await wait { try session.state(request.id).status == "complete" }
+        _ = try session.acknowledge(request.id,hash:"hash")
+        XCTAssertFalse(FileManager.default.fileExists(atPath:root.appendingPathComponent(request.id).path))
+    }
 }
