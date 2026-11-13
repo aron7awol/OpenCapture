@@ -28,6 +28,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         return JSONObject().put("protocolVersion", 1).put("cameraID", camera.cameraID())
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
+            .put("frameAveragingModes", JSONArray(if (usable && selected != null && selected.width.toLong()*selected.height <= 13_000_000)
+                listOf(BayerAverage.MODE) else emptyList<String>()))
             .put("minISO", iso?.lower).put("maxISO", iso?.upper)
             .put("minExposureSeconds", exposure?.lower?.div(1e9)).put("maxExposureSeconds", exposure?.upper?.div(1e9)?.coerceAtMost(30.0))
             .put("manualExposure", manualSensor).put("manualFocus", manualFocus)
@@ -59,38 +61,81 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         require(settings.exposureNs == null || exposureRange.contains(settings.exposureNs)) { "Exposure is outside this camera's range" }
         val controlOnly = request.optString("operation") == "applyControls"
         val count = if (controlOnly) 0 else request.getInt("frameCount")
+        val averaging = OpenCaptureProtocol.averaging(request)
+        require(averaging == null || cap.getJSONArray("frameAveragingModes").length() > 0) { "This camera does not support on-device averaging" }
+        val selection = averaging?.let { BayerAverage.Selection(count, it.policy) }
+        fun checkCancelled() { check(!cancel.get()) { "Capture cancelled" } }
         val directory = if (controlOnly) null else CaptureArchives(root).create(request.getString("id"))
         if (directory != null) {
-            val needed = count * cap.getInt("maxPhotoWidth").toLong() * cap.getInt("maxPhotoHeight") * 2 + 64L * 1024 * 1024
+            val needed = (selection?.maxAttempts ?: count) * cap.getInt("maxPhotoWidth").toLong() * cap.getInt("maxPhotoHeight") * 2 +
+                (if (selection == null) 64L else 160L) * 1024 * 1024
             check(directory.usableSpace >= needed) { "Not enough free space for individual DNG originals" }
         }
         val start = Instant.now().toString()
         val records = JSONArray()
         try {
-            val sequence = camera.captureDngOriginals(settings, count, directory, cancel) { frame ->
+            val sequence = camera.captureDngOriginals(settings, count, directory, cancel,
+                selection?.maxAttempts ?: count, selection?.let { { it.needsMore() } }) { frame ->
                 val index = records.length() + 1
+                val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
+                selection?.attempts?.add(BayerAverage.inspect(frame.file, frame.width, frame.height,
+                    integrity?.get("assessment") as? String ?: "incomplete_diagnostics", ::checkCancelled))
                 val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
                 val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
                 OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
                     .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
                     .put("native", native).put("characteristics", staticMetadata(c))
                     .put("captureDiagnostics", JSONObject(frame.diagnostics)))
-                // No controller address, credentials, file paths or scene pixels in logcat.
+                // Full evidence is in the hashed sidecar; keep logcat below its line limit.
                 android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
-                    "diagnostics=" + JSONObject(frame.diagnostics).toString())
+                    "diagnostics=${frame.diagnostics["diagnosticsVersion"]} " +
+                    "assessment=${integrity?.get("assessment")} findings=${integrity?.get("findings")}")
                 records.put(reading(frame.result, c).put("index", index)
                     .put("actualExposureSeconds", native.getDouble("exposureTimeNs") / 1e9)
                     .put("actualISO", native.getInt("iso"))
                     .put("file", OpenCaptureProtocol.receipt(frame.file)).put("metadataFile", OpenCaptureProtocol.receipt(sidecar))
                     .put("width", frame.width).put("height", frame.height)
                     .put("timestampSeconds", native.getDouble("sensorTimestampNs") / 1e9).put("isBayerRAW", true))
-                progress("Saved DNG $index / $count")
+                progress(if (selection == null) "Saved DNG $index / $count" else
+                    "Checked $index attempts; ${selection.accepted().size} / $count usable")
             }
             if (controlOnly) return reading(sequence.reading, c).put("protocolVersion", 1).put("request", request)
                 .put("camera", cap).put("completedAt", Instant.now().toString()) to null
             val manifest = JSONObject().put("protocolVersion", 1).put("request", request).put("camera", cap)
                 .put("frames", records).put("startedAt", start).put("completedAt", Instant.now().toString())
                 .put("processing", "Camera2 RAW_SENSOR -> DngCreator; individual originals, no averaging or demosaicing; lens shading map requested off; vendor RAW shading declared in capabilities; orientation native")
+            if (selection != null) {
+                val accepted = selection.accepted()
+                val reasons = selection.reasons()
+                val complete = accepted.size == count
+                val reference = accepted.firstOrNull() ?: 0
+                val retained = records.length().let { size -> (0 until size).filter {
+                    averaging!!.keepOriginals || it == reference || reasons[it] != null
+                } }
+                for (i in 0 until records.length()) {
+                    val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, i+1))
+                    val metadata = JSONObject(sidecar.readText(Charsets.UTF_8)).put("averagingSelection",
+                        JSONObject(selection.attempts[i].fields()).put("policy", averaging!!.policy)
+                            .put("accepted", reasons[i] == null).put("reason", reasons[i] ?: JSONObject.NULL))
+                    OpenCaptureProtocol.saveJson(sidecar, metadata)
+                    records.getJSONObject(i).put("metadataFile", OpenCaptureProtocol.receipt(sidecar))
+                }
+                val aggregation = JSONObject(selection.attempts[reference].layout.fields())
+                    .put("version", 1).put("mode", BayerAverage.MODE).put("status", if (complete) "complete" else "insufficient")
+                    .put("targetFrames", count).put("attemptedFrames", records.length())
+                    .put("acceptedIndices", JSONArray(accepted.map { it+1 })).put("referenceIndex", reference+1)
+                    .put("retainedOriginalIndices", JSONArray(retained.map { it+1 }))
+                    .put("rejected", JSONArray(reasons.mapIndexedNotNull { i, reason -> reason?.let {
+                        JSONObject().put("index", i+1).put("reason", it)
+                    } }))
+                if (complete) {
+                    progress("Averaging $count usable RAW frames")
+                    BayerAverage.write(accepted.map { selection.attempts[it] }, requireNotNull(directory), ::checkCancelled)
+                    aggregation.put("files", JSONObject().put("moments", OpenCaptureProtocol.receipt(File(directory, "average.f32")))
+                        .put("clipping", OpenCaptureProtocol.receipt(File(directory, "average-clips.u8"))))
+                } else aggregation.put("files", JSONObject())
+                manifest.put("aggregation", aggregation).put("processing", "Camera2 RAW_SENSOR -> DngCreator -> black/white normalization -> fractional Bayer-site means and luma moments; native coordinates; no demosaic or radiometric DNG opcodes")
+            }
             OpenCaptureProtocol.saveJson(File(directory, "manifest.json"), manifest)
             return manifest to directory
         } catch (error: Exception) {
@@ -138,6 +183,11 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("sensorTimestampSource", c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE))
             .put("rollingShutterSkewNs", r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW))
             .put("pipelineDepth", r.get(CaptureResult.REQUEST_PIPELINE_DEPTH))
+            .put("aeState", r.get(CaptureResult.CONTROL_AE_STATE))
+            .put("afState", r.get(CaptureResult.CONTROL_AF_STATE))
+            .put("awbState", r.get(CaptureResult.CONTROL_AWB_STATE))
+            .put("lensState", r.get(CaptureResult.LENS_STATE))
+            .put("blackLevelLocked", r.get(CaptureResult.BLACK_LEVEL_LOCK))
             .put("dynamicWhiteLevel", r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL))
             .put("dynamicBlackLevel", r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.let { JSONArray(it.toList()) })
         // Often empty for logical-only outputs; never substitute logical readings.
@@ -157,6 +207,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
     private fun staticMetadata(c: CameraCharacteristics): JSONObject {
         val black = c.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
         return JSONObject().put("sensorOrientation", c.get(CameraCharacteristics.SENSOR_ORIENTATION))
+            .put("deviceBuild", JSONObject().put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL)
+                .put("hardware", Build.HARDWARE).put("buildID", Build.ID).put("androidRelease", Build.VERSION.RELEASE)
+                .put("securityPatch", Build.VERSION.SECURITY_PATCH).put("apiLevel", Build.VERSION.SDK_INT))
             .put("lensShadingApplied", c.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED))
             .put("cfa", c.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT))
             .put("whiteLevel", c.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL))

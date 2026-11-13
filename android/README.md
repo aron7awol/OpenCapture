@@ -34,9 +34,16 @@ The phone advertises `_oc-camera._tcp` on TCP 8767. It is an unauthenticated
 private-LAN server, not suitable for public Wi-Fi or port forwarding.
 Normal RAW sizes prefer the largest advertised size <=13 MP; separate
 maximum-resolution sensor modes are not enabled. Support, actual dimensions
-and controls are recorded per device. No averaging or demosaicing is performed.
+and controls are recorded per device. Original-file capture does not demosaic or
+average. Controllers can opt into [on-device Bayer averaging](../docs/frame-averaging.md)
+on supported cameras.
 
 [Usage](../README.md) | [Server API](../docs/camera-server.md) |
 [Build/release guide](../docs/development.md) | [Testing](../docs/test-plan.md)
+
+Android 0.4.1 source adds automatic [RAW diagnostics](../docs/raw-diagnostics.md)
+to each frame's metadata. These compare native buffer samples and the saved DNG;
+they do not classify darkness by themselves. Optional averaging checks each frame
+and retains rejection evidence. Source can precede releases.
 
 GPL-3.0-only: [LICENSE](../LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md).

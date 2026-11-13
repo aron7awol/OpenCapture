@@ -21,7 +21,51 @@ def request():
             "frameCount": 1, "settleMilliseconds": 500, "context": {"label": "Synthetic test"}}
 
 
+def average_manifest():
+    job = dict(request(), frameCount=2, averaging=dict(mode='bayer-mean-v1',emptyFramePolicy='illuminated',keepOriginals=False))
+    files, frames = {}, []
+    def receipt(name, data, media):
+        files[name] = data
+        return dict(name=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),mediaType=media)
+    for i in range(1,4):
+        frames.append(dict(index=i,width=8,height=8,timestampSeconds=i,deviceExposureSeconds=.01,deviceISO=100,
+            actualExposureSeconds=.01,actualISO=100,lensPosition=.5,whiteBalance=dict(red=1,green=1,blue=1),isBayerRAW=True,
+            file=receipt(f'frame-{i:04d}.dng',b'original'+bytes([i]),'image/dng'),
+            metadataFile=receipt(f'frame-{i:04d}.json',b'{}','application/json')))
+    aggregation=dict(version=1,mode='bayer-mean-v1',status='complete',targetFrames=2,attemptedFrames=3,
+        acceptedIndices=[1,3],rejected=[dict(index=2,reason='empty_signal')],referenceIndex=1,retainedOriginalIndices=[1,2],
+        domain='black_subtracted_bayer_site_relative_signal',width=4,height=4,rawWidth=8,rawHeight=8,
+        activeArea=[0,0,8,8],blackLevels=[256]*4,whiteLevel=4095,cfa=[0,1,1,2],
+        files=dict(moments=receipt('average.f32',bytes(4*4*24),'application/octet-stream'),
+                   clipping=receipt('average-clips.u8',bytes(4*4),'application/octet-stream')))
+    return dict(protocolVersion=1,request=job,camera=dict(platform='android',frameAveragingModes=['bayer-mean-v1']),
+        frames=frames,aggregation=aggregation,startedAt='synthetic',completedAt='synthetic',processing='synthetic'),files
+
+
 class ContractTests(unittest.TestCase):
+    def test_average_contract_retains_diagnostics_and_only_selected_originals(self):
+        m, _ = average_manifest()
+        files = server.manifest_files(m)
+        self.assertNotIn('frame-0003.dng',files)
+        self.assertIn('frame-0003.json',files)
+        self.assertIn('frame-0002.dng',files)
+        self.assertIn('average.f32',files)
+
+    def test_average_rejects_underfill_bad_indices_crop_and_sizes(self):
+        for field,value in [('acceptedIndices',[1]),('retainedOriginalIndices',[1]),('acceptedIndices',[1,1]),
+                            ('targetFrames',1),('activeArea',[0,0,10,8]),('width',False),('whiteLevel',0),
+                            ('status','insufficient'),('attemptedFrames',65),('cfa',[0,1,1,True])]:
+            m,_=average_manifest();m['aggregation'][field]=value
+            with self.subTest(field=field),self.assertRaises(server.Invalid):server.manifest_files(m)
+        m,_=average_manifest();m['aggregation']['files']['moments']['bytes']-=1
+        with self.assertRaises(server.Invalid):server.manifest_files(m)
+
+    def test_average_is_explicit_bayer_capture_only(self):
+        m,_=average_manifest()
+        for changes in (dict(format='jpeg'),dict(operation='applyControls',frameCount=1),dict(averaging=None)):
+            with self.assertRaises(server.Invalid):server.validate_request(dict(m['request'],**changes))
+        m['request']['averaging']['keepOriginals']=1
+        with self.assertRaises(server.Invalid):server.validate_request(m['request'])
     def test_proraw_requires_explicit_quality_request(self):
         job = dict(request(), format='appleProRaw')
         with self.assertRaises(server.Invalid):
@@ -77,6 +121,23 @@ class ContractTests(unittest.TestCase):
 
 
 class HTTPTests(unittest.TestCase):
+    def test_average_transfer_completion_and_idempotency(self):
+        m,files=average_manifest();job=m['request']
+        self.assertEqual(self.call('POST','/oc/v1/jobs',job)[0],409)
+        self.state.capabilities=m['camera']
+        self.assertEqual(self.call('POST','/oc/v1/jobs',job)[0],200)
+        lease=self.call('GET','/oc/v1/lease')[1]['leaseToken']
+        expected=server.manifest_files(m)
+        for name in expected:
+            status,receipt=self.upload(job,lease,name,files[name])
+            self.assertEqual(status,200);self.assertEqual(receipt,expected[name])
+        endpoint=f'/oc/v1/jobs/{job["id"]}/complete'
+        for _ in range(2):self.assertEqual(self.call('POST',endpoint,m,{'X-OpenCapture-Lease':lease})[0],200)
+        self.assertFalse((self.state.jobs[job['id']]['directory']/'frame-0003.dng').exists())
+
+    def test_average_payload_requires_opt_in(self):
+        job,lease=self.leased()
+        self.assertEqual(self.upload(job,lease,'average.f32',b'data')[0],400)
     def test_proraw_manifest_requires_distinct_declaration(self):
         job = dict(request(), format='appleProRaw', quality='quality')
         self.assertEqual(self.call('POST', '/oc/v1/jobs', job)[0], 200)

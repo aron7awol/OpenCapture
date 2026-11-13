@@ -166,6 +166,17 @@ These additive diagnostics do not change requests, original counts, bytes,
 capture selection or the generic protocol version. The client still returns
 every requested original, including suspicious ones; consumers own selection
 and requests for additional jobs.
+Android 0.4.1/build 7 adds `captureDiagnostics.diagnosticsVersion:2`: sparse
+RAW samples at acquisition, pre/post-DngCreator and saved-DNG readback, plus
+pairwise comparisons, per-Bayer-position statistics, stored DNG black/white
+metadata and additional timing. Read [RAW diagnostics](raw-diagnostics.md)
+for the bounded reader, interpretation and limitations. This is additive
+sidecar evidence only. Separately, the optional capability-gated `averaging`
+request field adds `bayer-mean-v1`; see [frame averaging](frame-averaging.md) for
+the strict request, derived payloads, usable-frame replacement and transfer
+subset contract. Original-file requests and iOS remain unchanged. In averaging
+mode `frameCount` is the target usable count and manifest `frames` includes all
+attempts, up to `2 * frameCount`.
 Completion is idempotent only for an identical manifest. Completed captures
 are immutable. Error/cancel/expiry never erases already written originals.
 

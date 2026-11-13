@@ -104,18 +104,13 @@ class CameraServerSession(
                 val files = linkedMapOf<String, File>()
                 if (directory != null) {
                     require(directory.canonicalFile == File(root, id).canonicalFile) { "Capture directory is outside this job" }
-                    val frames = result.getJSONArray("frames")
-                    for (i in 0 until frames.length()) {
-                        val frame = frames.getJSONObject(i)
-                        for (key in listOf("file", "metadataFile", "previewFile")) {
-                            val receipt = frame.optJSONObject(key) ?: continue
-                            val name = receipt.getString("name")
-                            require(OpenCaptureProtocol.fileName.matches(name)) { "Invalid capture filename" }
-                            val file = File(directory, name)
-                            require(file.isFile && file.length() in 1..134217728) { "Capture file size invalid" }
-                            files[name] = file
-                        }
+                    fun add(receipt: JSONObject) {
+                        val name = receipt.getString("name")
+                        require(OpenCaptureProtocol.fileName.matches(name)) { "Invalid capture filename" }
+                        val file = File(directory, name)
+                        require(file.isFile && file.length() in 1..134217728 && files.put(name, file) == null) { "Invalid/duplicate capture file" }
                     }
+                    OpenCaptureProtocol.transferReceipts(result).forEach(::add)
                     require(files.values.sumOf { it.length() } <= 4L * 1024 * 1024 * 1024) { "Capture exceeds storage limit" }
                 }
                 synchronized(this) {

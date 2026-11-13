@@ -9,9 +9,6 @@ import android.os.Handler
 import android.os.SystemClock
 import android.view.Surface
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -39,44 +36,6 @@ data class DngFrame(val file: File, val result: TotalCaptureResult, val width: I
                     val imageTimestampNs: Long, val diagnostics: Map<String, Any> = emptyMap())
 data class DngSequence(val locked: DngLockedSettings, val reading: TotalCaptureResult, val frames: List<DngFrame>)
 
-/** Sparse RAW16 diagnostics only; never alters pixels, buffer position or capture decisions. */
-internal object RawBufferDiagnostics {
-    fun sample(buffer: ByteBuffer, width: Int, height: Int, rowStride: Int, pixelStride: Int): Map<String, Any> {
-        require(width >= 2 && height >= 2 && pixelStride >= 2 && rowStride >= width.toLong()*pixelStride)
-        val data = buffer.duplicate().order(ByteOrder.nativeOrder())
-        require((height-1L)*rowStride+(width-1L)*pixelStride+2 <= data.limit())
-        val nx = minOf(96, width/2)
-        val ny = minOf(64, height/2)
-        val digest = MessageDigest.getInstance("SHA-256")
-        var count = 0
-        var mean = 0.0
-        var m2 = 0.0
-        var low = 65535
-        var high = 0
-        // Sample all four Bayer sites, including both greens, in each block.
-        for (gy in 0 until ny) for (gx in 0 until nx) {
-            val x = (gx.toLong()*(width/2-1)/(nx-1).coerceAtLeast(1)).toInt()*2
-            val y = (gy.toLong()*(height/2-1)/(ny-1).coerceAtLeast(1)).toInt()*2
-            for (dy in 0..1) for (dx in 0..1) {
-                val value = data.getShort((y+dy)*rowStride+(x+dx)*pixelStride).toInt() and 65535
-                count++
-                val delta = value-mean
-                mean += delta/count
-                m2 += delta*(value-mean)
-                low = minOf(low,value); high = maxOf(high,value)
-                // Canonical low-byte-first hash independent of the buffer view.
-                digest.update(value.toByte()); digest.update((value ushr 8).toByte())
-            }
-        }
-        return mapOf("policy" to "raw16-sparse-bayer-blocks-v1", "sampleCount" to count,
-            "gridColumns" to nx, "gridRows" to ny, "width" to width, "height" to height,
-            "rowStrideBytes" to rowStride, "pixelStrideBytes" to pixelStride,
-            "bufferLimitBytes" to data.limit(), "byteOrder" to ByteOrder.nativeOrder().toString(),
-            "minimum" to low, "maximum" to high, "mean" to mean, "spatialStd" to kotlin.math.sqrt(m2/count),
-            "sampleSha256" to digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) })
-    }
-}
-
 /** One original at a time, bounded queues, no averaging and no demosaicing. Called off the UI thread. */
 internal class DngCapture(
     private val camera: CameraDevice,
@@ -87,12 +46,18 @@ internal class DngCapture(
     private val cancel: AtomicBoolean
 ) {
     private val failure = AtomicReference<Throwable?>()
-    private data class RawArrival(val image: Image, val elapsedNs: Long)
+    private data class RawArrival(val image: Image, val elapsedNs: Long,
+        val sampledElapsedNs: Long, val samples: Map<String, Any>, val queueDepth: Int)
     private val images = ArrayBlockingQueue<RawArrival>(2)
     private val results = ArrayBlockingQueue<TotalCaptureResult>(16)
     private val timings = ConcurrentHashMap<Int, ConcurrentHashMap<String, Any>>()
     private var session: CameraCaptureSession? = null
     private val ended = AtomicBoolean(false)
+
+    private fun rawSample(image: Image): Map<String, Any> = runCatching {
+        val plane = image.planes.single()
+        RawBufferDiagnostics.sample(plane.buffer, image.width, image.height, plane.rowStride, plane.pixelStride)
+    }.getOrElse { mapOf("unavailable" to (it.message ?: it.javaClass.simpleName).take(240)) }
 
     private fun check() {
         if (cancel.get()) throw InterruptedException("Capture cancelled; partial originals retained")
@@ -131,8 +96,10 @@ internal class DngCapture(
         }
     }
 
-    fun run(settings: DngSettings, count: Int, directory: File?, onFrame: (DngFrame) -> Unit): DngSequence {
+    fun run(settings: DngSettings, count: Int, directory: File?, onFrame: (DngFrame) -> Unit,
+            maxAttempts: Int = count, needsMore: (() -> Boolean)? = null): DngSequence {
         require(count in 0..32)
+        require(maxAttempts in count..64 && (needsMore != null || maxAttempts == count))
         val caps = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         require(caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) &&
@@ -143,11 +110,21 @@ internal class DngCapture(
         val sessions = ArrayBlockingQueue<CameraCaptureSession>(1)
         try {
             reader.setOnImageAvailableListener({ source ->
-                val image = runCatching { source.acquireNextImage() }.getOrNull()
-                if (image != null && (ended.get() || cancel.get())) image.close()
-                else if (image != null && !images.offer(RawArrival(image,SystemClock.elapsedRealtimeNanos()))) {
-                    image.close()
-                    failure.compareAndSet(null, IllegalStateException("RAW queue overflow"))
+                val image = try { source.acquireNextImage() } catch (error: Exception) {
+                    if (!ended.get() && !cancel.get()) failure.compareAndSet(null, error)
+                    null
+                }
+                if (image != null) {
+                    val acquired = SystemClock.elapsedRealtimeNanos()
+                    val samples = if (ended.get() || cancel.get()) emptyMap() else rawSample(image)
+                    val sampled = SystemClock.elapsedRealtimeNanos()
+                    synchronized(images) {
+                        if (ended.get() || cancel.get()) image.close()
+                        else if (!images.offer(RawArrival(image, acquired, sampled, samples, images.size))) {
+                            image.close()
+                            failure.compareAndSet(null, IllegalStateException("RAW queue overflow"))
+                        }
+                    }
                 }
             }, handler)
             camera.createCaptureSession(listOf(preview, reader.surface), object : CameraCaptureSession.StateCallback() {
@@ -229,15 +206,22 @@ internal class DngCapture(
                 var physicalId: String? = null
                 var previousSensorTimestamp: Long? = null
                 var previousCloseElapsed: Long? = null
-                repeat(count) { index ->
+                var previousSampleHash: String? = null
+                for (index in 0 until maxAttempts) {
+                    if (needsMore != null && !needsMore()) break
                     check()
                     val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                     request.addTarget(reader.surface)
                     applyLocked(request, locked, characteristics)
                     request.setTag(index)
                     val timing = ConcurrentHashMap<String, Any>()
-                    timing["diagnosticsVersion"] = 1
+                    timing["diagnosticsVersion"] = 2
                     timing["requestIndex"] = index+1
+                    timing["imageReaderMaxImages"] = reader.maxImages
+                    timing["requestTemplate"] = "TEMPLATE_STILL_CAPTURE"
+                    timing["repeatingPreviewDuringStill"] = false
+                    timing["requestedExposureNs"] = locked.exposureNs
+                    timing["requestedISO"] = locked.iso
                     timing["requestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     previousCloseElapsed?.let { timing["previousImageClosedElapsedNs"] = it }
                     timings[index] = timing
@@ -245,11 +229,20 @@ internal class DngCapture(
                     timing["captureSequenceId"] = sequenceId
                     val arrival = await(images)
                     val image = arrival.image
-                    try {
+                    val frame = try {
                         var result: TotalCaptureResult
                         do { result = await(results) } while (result.get(CaptureResult.SENSOR_TIMESTAMP) != image.timestamp)
                         check(result.request.tag == index) { "RAW image/result identity mismatch" }
                         timing["imageArrivedElapsedNs"] = arrival.elapsedNs
+                        timing["acquisitionSamplingEndedElapsedNs"] = arrival.sampledElapsedNs
+                        timing["imageResultMatchedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        timing["imageQueueDepthAtArrival"] = arrival.queueDepth
+                        timing["rawAtAcquisition"] = arrival.samples
+                        val sampleHash = arrival.samples["sampleSha256"] as? String
+                        if (sampleHash != null && previousSampleHash != null) {
+                            timing["sameSamplesAsPreviousFrame"] = sampleHash == previousSampleHash
+                        }
+                        previousSampleHash = sampleHash
                         timing["imageTimestampNs"] = image.timestamp
                         timing["imageFormat"] = image.format
                         timing["imagePlaneCount"] = image.planes.size
@@ -262,11 +255,8 @@ internal class DngCapture(
                         }
                         val file = File(directory, "frame-%04d.dng".format(java.util.Locale.ROOT, index + 1))
                         val pending = File(directory, file.name + ".partial")
-                        fun rawSample(): Map<String, Any> = runCatching {
-                            val plane = image.planes.single()
-                            RawBufferDiagnostics.sample(plane.buffer,image.width,image.height,plane.rowStride,plane.pixelStride)
-                        }.getOrElse { mapOf("unavailable" to (it.message ?: it.javaClass.simpleName)) }
-                        timing["rawBeforeDng"] = rawSample()
+                        val before = rawSample(image)
+                        timing["rawBeforeDng"] = before
                         timing["dngWriteStartedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                         DngCreator(characteristics, result).use { creator ->
                             // Pixels retain native sensor coordinates. Preview orientation is independent.
@@ -274,18 +264,27 @@ internal class DngCapture(
                             pending.outputStream().use { creator.writeImage(it, image) }
                         }
                         timing["dngWriteEndedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
-                        timing["rawAfterDng"] = rawSample()
+                        val after = rawSample(image)
+                        timing["rawAfterDng"] = after
                         check(pending.length() in 1..(128L * 1024 * 1024)) { "DNG exceeds file limit" }
                         check(pending.renameTo(file)) { "Cannot finalize DNG original" }
                         timing["dngBytes"] = file.length()
-                        val frame = DngFrame(file, result, image.width, image.height, image.timestamp, timing.toMap())
-                        frames.add(frame)
-                        onFrame(frame)
+                        timing["dngReadbackStartedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        val saved = runCatching { DngSampleDiagnostics.sample(file, image.width, image.height) }
+                            .getOrElse { mapOf("unavailable" to (it.message ?: it.javaClass.simpleName).take(240)) }
+                        timing["dngReadbackEndedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        timing["rawSavedDng"] = saved
+                        timing["sampleIntegrity"] = RawBufferDiagnostics.compare(arrival.samples, before, after, saved)
+                        DngFrame(file, result, image.width, image.height, image.timestamp)
                     } finally {
                         image.close()
                         previousCloseElapsed = SystemClock.elapsedRealtimeNanos()
+                        timing["imageClosedElapsedNs"] = previousCloseElapsed!!
                         timings.remove(index)
                     }
+                    val recorded = frame.copy(diagnostics = timing.toMap())
+                    frames.add(recorded)
+                    onFrame(recorded)
                 }
             }
             return DngSequence(locked, observed, frames)
@@ -294,7 +293,8 @@ internal class DngCapture(
             session?.close()
             sessions.poll()?.close()
             reader.setOnImageAvailableListener(null, null)
-            while (true) (images.poll() ?: break).image.close()
+            // A callback already sampling an image may outlive listener removal.
+            synchronized(images) { while (true) (images.poll() ?: break).image.close() }
         }
     }
 

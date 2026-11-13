@@ -1,5 +1,29 @@
 # Verification and Device Test Plan
 
+## Android Optional Bayer Averaging
+
+Read [frame averaging](frame-averaging.md). Test original-file mode and averaged
+mode separately; neither replaces physical-device verification.
+
+- Verify capability gating and capture-only request validation. iOS must not
+  receive the extension. The app's minimal foreground UI stays unchanged.
+- Check fractional parity means, luma sample variance (including inter-site
+  covariance), native clipping counts, strip boundaries and both TIFF byte
+  orders. With all originals retained, compare against independent desktop
+  decoding of those exact contributing frames, not a second capture.
+- Inject known empty/mismatched attempts in fixtures. Require the usable target,
+  unchanged locked controls and no more than exactly 2*N attempts. Confirm initial
+  low attempts can be reclassified, and dark references are not brightness-rejected.
+- Exhaust the budget: transfer every sidecar/rejected original but no average;
+  desktop must save diagnostics and fail without publishing a measurement.
+- Verify receipt/hash/length bounds, missing originals/sidecars, payload NaNs,
+  invalid variance/clipping counts, changed normalization and unsupported DNG
+  opcodes. Repeated downloads and ACK must not capture additional frames.
+- Cancel during capture/aggregation and capture again in the same foreground
+  session. Confirm no lingering file exposure after ACK/session cleanup.
+- Measure overhead and compare Pixel failure rate with averaging disabled.
+  Sparse matching checkpoints do not prove root cause or radiometric accuracy.
+
 ## Foreground Server And Minimal UI (0.4.0)
 
 The following replaces the old tab/Remote ready workflow. Older sections are
@@ -99,6 +123,13 @@ Existing archives must remain after updating the app. These behaviors still
 require physical iPhone/Pixel testing.
 
 ## Automated
+
+- Android diagnostics v2: compare acquisition/pre-write/post-write/saved-DNG
+  samples, retain native per-position statistics and fractional DNG black-level
+  metadata, reject malformed diagnostic TIFF layouts, and never treat a flat
+  dark scene as an automatic frame failure. Check actual platform-writer output
+  in the emulator, then separately on physical Pixel hardware. See
+  [RAW diagnostics](raw-diagnostics.md) for what matching samples do not prove.
 
 - Android RAW diagnostics: padded row strides, unsigned RAW16 samples,
   read-only/nonzero-position buffers, sparse hashes, flat buffers and truncated

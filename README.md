@@ -36,7 +36,8 @@ Wi-Fi or port forwarding.
 Android captures individual **Bayer RAW DNGs**. iPhone supports **Bayer RAW**,
 **Apple ProRAW**, and **JPEG**, depending on the lens/device. ProRAW and JPEG
 include Apple processing. Preview is for aiming, not calibrated measurement.
-Bursts preserve 1..32 original frames plus metadata; the app does not average them.
+Bursts preserve 1..32 original frames plus metadata by default. Supported Android
+cameras also offer optional [on-device averaging](docs/frame-averaging.md).
 
 ## Updates
 

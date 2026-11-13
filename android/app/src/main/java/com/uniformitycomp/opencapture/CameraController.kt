@@ -77,6 +77,7 @@ class CameraController(private val context: Context) {
 
     /** Sequential original DNG capture; the caller retains each completed file. */
     fun captureDngOriginals(settings: DngSettings, count: Int, directory: java.io.File?, cancel: AtomicBoolean,
+                            maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
         val reader = requireNotNull(rawReader) { "No supported RAW size" }
@@ -87,7 +88,7 @@ class CameraController(private val context: Context) {
         previewReady = false
         try {
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel)
-                .run(settings, count, directory, onFrame)
+                .run(settings, count, directory, onFrame, maxAttempts, needsMore)
             dngPreviewControls = sequence.locked
             return sequence
         } finally {

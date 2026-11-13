@@ -24,6 +24,7 @@ MAX_FILE = 128 * 1024 * 1024
 MAX_JSON = 1024 * 1024
 MAX_JOB_BYTES = 4 * 1024 * 1024 * 1024
 FILE_RE = re.compile(r"frame-(\d{4})(\.dng|\.jpg|\.json|\.preview\.jpg)\Z")
+AVERAGE_FILES = {"average.f32", "average-clips.u8"}
 JOB_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 TERMINAL = {"complete", "failed", "cancelled", "expired"}
@@ -63,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -82,6 +83,13 @@ def validate_request(request):
         raise Invalid("Unsupported camera operation")
     if request.get("operation") == "applyControls" and request["frameCount"] != 1:
         raise Invalid("Apply controls requires frameCount 1 and saves no photo")
+    if "averaging" in request:
+        average = request["averaging"]
+        if (request["format"] != "bayerRaw" or request.get("operation") == "applyControls" or
+                not isinstance(average, dict) or set(average) != {"mode", "emptyFramePolicy", "keepOriginals"} or
+                average["mode"] != "bayer-mean-v1" or average["emptyFramePolicy"] not in ("relative", "illuminated", "dark") or
+                type(average["keepOriginals"]) is not bool):
+            raise Invalid("Invalid on-device averaging request")
     if type(request["settleMilliseconds"]) is not int or not 0 <= request["settleMilliseconds"] <= 10000:
         raise Invalid("Invalid settling interval")
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
@@ -106,6 +114,108 @@ def validate_request(request):
 
 def canonical_request(request):
     return {key: value for key, value in request.items() if value is not None}
+
+
+def manifest_files(manifest):
+    """Validate transfer structure, including provenance-only averaged originals."""
+    required = {"protocolVersion", "request", "camera", "frames", "startedAt", "completedAt", "processing"}
+    if not isinstance(manifest, dict) or not required <= manifest.keys() or manifest.keys() - required - {"aggregation"}:
+        raise Invalid("Malformed manifest")
+    request = validate_request(manifest["request"])
+    frames = manifest["frames"]
+    n = request["frameCount"]
+    if type(manifest["protocolVersion"]) is not int or manifest["protocolVersion"] != 1 or not isinstance(frames, list):
+        raise Invalid("Invalid manifest version or frames")
+    a = manifest.get("aggregation")
+    if ("averaging" in request) != (a is not None):
+        raise Invalid("Averaging request/result mismatch")
+    retained = set(range(1, len(frames)+1))
+    extra = {}
+    if a is None:
+        if len(frames) != n:
+            raise Invalid("Frame count mismatch")
+    else:
+        keys = {"version", "mode", "status", "targetFrames", "attemptedFrames", "acceptedIndices", "referenceIndex",
+                "retainedOriginalIndices", "rejected", "files", "domain", "rawWidth", "rawHeight", "width", "height",
+                "activeArea", "blackLevels", "whiteLevel", "cfa"}
+        if not isinstance(a, dict) or set(a) != keys or type(a["version"]) is not int or a["version"] != 1 or a["mode"] != "bayer-mean-v1":
+            raise Invalid("Invalid aggregation descriptor")
+        if (type(a["targetFrames"]) is not int or a["targetFrames"] != n or type(a["attemptedFrames"]) is not int or
+                a["attemptedFrames"] != len(frames) or not n <= len(frames) <= 2*n):
+            raise Invalid("Invalid averaging attempt count")
+        def indices(value):
+            if (not isinstance(value, list) or any(type(i) is not int or not 1 <= i <= len(frames) for i in value) or
+                    value != sorted(set(value))):
+                raise Invalid("Invalid averaging frame indices")
+            return set(value)
+        accepted = indices(a["acceptedIndices"])
+        retained = indices(a["retainedOriginalIndices"])
+        if not isinstance(a["rejected"], list) or any(not isinstance(r, dict) or set(r) != {"index", "reason"} or
+                r["reason"] not in ("empty_signal", "capture_integrity_not_verified") for r in a["rejected"]):
+            raise Invalid("Invalid averaging rejections")
+        rejected = indices([r["index"] for r in a["rejected"]])
+        if accepted & rejected or accepted | rejected != set(range(1, len(frames)+1)):
+            raise Invalid("Averaging selection does not partition attempts")
+        if (a["status"] not in ("complete", "insufficient") or
+                (a["status"] == "complete" and len(accepted) != n) or
+                (a["status"] == "insufficient" and (len(accepted) >= n or len(frames) != 2*n))):
+            raise Invalid("Underfilled or invalid average")
+        reference = min(accepted) if accepted else 1
+        expected_retained = set(range(1, len(frames)+1)) if request["averaging"]["keepOriginals"] else rejected | {reference}
+        if type(a["referenceIndex"]) is not int or a["referenceIndex"] != reference or retained != expected_retained:
+            raise Invalid("Invalid retained reference/originals")
+        for key in ("rawWidth", "rawHeight", "width", "height"):
+            if type(a[key]) is not int or not 1 <= a[key] <= 16384:
+                raise Invalid("Invalid average dimensions")
+        area = a["activeArea"]
+        if (a["rawWidth"]*a["rawHeight"] > 13_000_000 or not isinstance(area, list) or len(area) != 4 or
+                any(type(i) is not int for i in area) or not 0 <= area[0] < area[2] <= a["rawHeight"] or
+                not 0 <= area[1] < area[3] <= a["rawWidth"] or area[2]-area[0] != 2*a["height"] or area[3]-area[1] != 2*a["width"]):
+            raise Invalid("Invalid average active area")
+        if (a["domain"] != "black_subtracted_bayer_site_relative_signal" or not number(a["whiteLevel"], 1, 65535) or
+                not isinstance(a["blackLevels"], list) or len(a["blackLevels"]) != 4 or
+                any(not number(v, 0, a["whiteLevel"]-1e-9) for v in a["blackLevels"]) or
+                not isinstance(a["cfa"], list) or any(type(v) is not int for v in a["cfa"]) or sorted(a["cfa"]) != [0,1,1,2]):
+            raise Invalid("Invalid average normalization")
+        extra = a["files"]
+        if not isinstance(extra, dict) or set(extra) != ({"moments", "clipping"} if a["status"] == "complete" else set()):
+            raise Invalid("Invalid average payloads")
+    result = {}
+    def add(record, name, media, *, transfer=True, size=None):
+        if (not isinstance(record, dict) or set(record) != {"name", "bytes", "sha256", "mediaType"} or record["name"] != name or
+                type(record["bytes"]) is not int or not 1 <= record["bytes"] <= MAX_FILE or
+                not isinstance(record["sha256"], str) or not HASH_RE.fullmatch(record["sha256"]) or record["mediaType"] != media or
+                (size is not None and record["bytes"] != size)):
+            raise Invalid("Invalid file receipt")
+        if transfer:
+            if name in result:
+                raise Invalid("Duplicate file receipt")
+            result[name] = record
+    for index, frame in enumerate(frames, 1):
+        if not isinstance(frame, dict) or type(frame.get("index")) is not int or frame["index"] != index or frame.get("isBayerRAW") is not (request["format"] == "bayerRaw"):
+            raise Invalid("Frame identity mismatch")
+        if frame.get("isAppleProRAW", False) is not (request["format"] == "appleProRaw"):
+            raise Invalid("Apple ProRAW identity mismatch")
+        if not all(type(frame.get(key)) is int and 1 <= frame[key] <= 20000 for key in ("width", "height")):
+            raise Invalid("Invalid frame dimensions")
+        if a is not None and (frame["width"], frame["height"]) != (a["rawWidth"], a["rawHeight"]):
+            raise Invalid("Averaging frame dimensions changed")
+        if not all(number(frame.get(key), 0, 1e12) for key in ("timestampSeconds", "deviceExposureSeconds", "deviceISO", "lensPosition")):
+            raise Invalid("Missing capture-result metadata")
+        for key in ("actualExposureSeconds", "actualISO"):
+            if frame.get(key) is not None and not number(frame[key], 0, 1e12):
+                raise Invalid("Invalid EXIF metadata")
+        suffix = ".dng" if request["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
+        add(frame.get("file"), f"frame-{index:04d}{suffix}", "image/dng" if suffix == ".dng" else "image/jpeg", transfer=index in retained)
+        add(frame.get("metadataFile"), f"frame-{index:04d}.json", "application/json")
+        if frame.get("previewFile") is not None:
+            add(frame["previewFile"], f"frame-{index:04d}.preview.jpg", "image/jpeg")
+    for key, name, stride in (("moments", "average.f32", 24), ("clipping", "average-clips.u8", 1)):
+        if key in extra:
+            add(extra[key], name, "application/octet-stream", size=a["width"]*a["height"]*stride)
+    if sum(r["bytes"] for r in result.values()) > MAX_JOB_BYTES:
+        raise Invalid("Capture exceeds transfer limit")
+    return result
 
 
 def atomic_json(path, value):
@@ -161,6 +271,8 @@ class State:
             self.expire()
             if request.get("operation") == "applyControls" and "applyControls" not in (self.capabilities or {}).get("operations", []):
                 raise Invalid("Update the camera app: remote apply controls is not advertised", 409)
+            if "averaging" in request and "bayer-mean-v1" not in (self.capabilities or {}).get("frameAveragingModes", []):
+                raise Invalid("Camera does not support on-device averaging", 409)
             if request["id"] in self.jobs:
                 job = self.jobs[request["id"]]
                 if canonical_request(job["request"]) == canonical_request(request):
@@ -388,7 +500,7 @@ class Handler(BaseHTTPRequestHandler):
     def upload(self, job_id, lease, name):
         state = self.server.state
         match = FILE_RE.fullmatch(name)
-        if not match:
+        if not match and name not in AVERAGE_FILES:
             raise Invalid("Invalid filename")
         length = self.length(MAX_FILE)
         digest = self.headers.get("X-Content-SHA256", "")
@@ -400,10 +512,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise Invalid("Control operations cannot upload photos", 409)
             if job["cancelled"]:
                 raise Invalid("Capture cancelled", 409)
-            if not 1 <= int(match[1]) <= job["request"]["frameCount"]:
+            averaging = "averaging" in job["request"]
+            count = job["request"]["frameCount"]
+            if match and not 1 <= int(match[1]) <= count * (2 if averaging else 1):
                 raise Invalid("Invalid frame index")
+            if not match and not averaging:
+                raise Invalid("Average payload not requested")
             expected_image = ".dng" if job["request"]["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
-            if match[2] not in {expected_image, ".json", ".preview.jpg"}:
+            if match and match[2] not in {expected_image, ".json", ".preview.jpg"}:
                 raise Invalid("File does not match requested format")
             previous = job["files"].get(name)
             if previous and (previous["sha256"] != digest or previous["bytes"] != length):
@@ -435,7 +551,7 @@ class Handler(BaseHTTPRequestHandler):
                     stream.write(chunk)
             if hash_state.hexdigest() != digest:
                 raise Invalid("Content hash mismatch", 422)
-            media_type = {".dng": "image/dng", ".jpg": "image/jpeg", ".preview.jpg": "image/jpeg", ".json": "application/json"}[match[2]]
+            media_type = {".dng": "image/dng", ".jpg": "image/jpeg", ".preview.jpg": "image/jpeg", ".json": "application/json"}[match[2]] if match else "application/octet-stream"
             receipt = {"name": name, "bytes": length, "sha256": digest, "mediaType": media_type}
             with state.lock:
                 job = state.job(job_id, lease, allow_complete=True)
@@ -487,38 +603,11 @@ class Handler(BaseHTTPRequestHandler):
             job = state.job(job_id, lease, allow_complete=True)
             if job["cancelled"] or job["uploading"]:
                 raise Invalid("Cancelled or still uploading", 409)
-            if not isinstance(manifest, dict) or set(manifest) != {"protocolVersion", "request", "camera", "frames", "startedAt", "completedAt", "processing"}:
-                raise Invalid("Malformed manifest")
-            validate_request(manifest["request"])
+            referenced = manifest_files(manifest)
             if manifest["protocolVersion"] != 1 or canonical_request(manifest["request"]) != canonical_request(job["request"]):
                 raise Invalid("Manifest request mismatch", 409)
-            frames = manifest["frames"]
-            if not isinstance(frames, list) or len(frames) != job["request"]["frameCount"]:
-                raise Invalid("Frame count mismatch")
-            referenced = set()
-            for index, frame in enumerate(frames, 1):
-                if not isinstance(frame, dict) or frame.get("index") != index or frame.get("isBayerRAW") is not (job["request"]["format"] == "bayerRaw"):
-                    raise Invalid("Frame identity mismatch")
-                if frame.get("isAppleProRAW", False) is not (job["request"]["format"] == "appleProRaw"):
-                    raise Invalid("Apple ProRAW identity mismatch")
-                if not all(type(frame.get(key)) is int and 1 <= frame[key] <= 20000 for key in ("width", "height")):
-                    raise Invalid("Invalid frame dimensions")
-                if not all(number(frame.get(key), 0, 1e12) for key in ("timestampSeconds", "deviceExposureSeconds", "deviceISO", "lensPosition")):
-                    raise Invalid("Missing capture-result metadata")
-                for key in ("actualExposureSeconds", "actualISO"):
-                    if frame.get(key) is not None and not number(frame[key], 0, 1e12):
-                        raise Invalid("Invalid EXIF metadata")
-                suffix = ".dng" if job["request"]["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
-                expected = {"file": f"frame-{index:04d}{suffix}", "metadataFile": f"frame-{index:04d}.json"}
-                if frame.get("previewFile") is not None:
-                    expected["previewFile"] = f"frame-{index:04d}.preview.jpg"
-                for field, name in expected.items():
-                    record = frame.get(field)
-                    if not isinstance(record, dict) or record.get("name") != name or record != job["files"].get(name):
-                        raise Invalid("Manifest references missing or mismatched file", 409)
-                    referenced.add(name)
-            if referenced != job["files"].keys():
-                raise Invalid("Manifest omits uploaded files", 409)
+            if referenced != job["files"]:
+                raise Invalid("Manifest references missing, omitted or mismatched files", 409)
             destination = job["directory"] / "manifest.json"
             if job["status"] == "complete":
                 if parse_json(destination.read_bytes()) != manifest:

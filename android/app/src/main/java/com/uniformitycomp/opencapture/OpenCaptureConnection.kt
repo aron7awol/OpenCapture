@@ -57,19 +57,15 @@ class OpenCaptureConnection(
                         readback(manifest)
                         status("Controls applied. Camera remains locked.")
                     } else {
-                        val frames = manifest.getJSONArray("frames")
-                        for (i in 0 until frames.length()) {
-                            val frame = frames.getJSONObject(i)
-                            status("Uploading original ${i + 1} / ${frames.length()}")
-                            for (key in listOf("file", "metadataFile")) {
-                                val receipt = frame.getJSONObject(key)
-                                val file = File(directory, receipt.getString("name"))
-                                // Same lease/name/hash makes a lost-response retry idempotent.
-                                try { transport.upload(id, secret, file, receipt, cancel) }
-                                catch (error: java.io.IOException) {
-                                    if (cancel.get() || stopped.get()) throw error
-                                    transport.upload(id, secret, file, receipt, cancel)
-                                }
+                        val receipts = OpenCaptureProtocol.transferReceipts(manifest)
+                        for ((i, receipt) in receipts.withIndex()) {
+                            status("Uploading capture file ${i + 1} / ${receipts.size}")
+                            val file = File(directory, receipt.getString("name"))
+                            // Same lease/name/hash makes a lost-response retry idempotent.
+                            try { transport.upload(id, secret, file, receipt, cancel) }
+                            catch (error: java.io.IOException) {
+                                if (cancel.get() || stopped.get()) throw error
+                                transport.upload(id, secret, file, receipt, cancel)
                             }
                         }
                         val confirmation = transport.json("POST", "/oc/v1/jobs/$id/complete", manifest, secret, cancel)
@@ -80,8 +76,8 @@ class OpenCaptureConnection(
                             val remove = autoDelete()
                             finishUpload(directory, confirmation, remove)
                             if (remove) {
-                                status("Uploaded ${frames.length()} DNG originals. Phone copy deleted.")
-                            } else status("Uploaded ${frames.length()} DNG originals; phone copy retained.")
+                                status("Capture uploaded. Phone copy deleted.")
+                            } else status("Capture uploaded; phone copy retained.")
                         } catch (_: Exception) { status("Upload confirmed. Phone cleanup failed; check Captures.") }
                         archivesChanged()
                     }

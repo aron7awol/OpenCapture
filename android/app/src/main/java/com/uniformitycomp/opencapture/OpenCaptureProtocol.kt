@@ -9,9 +9,20 @@ import java.util.UUID
 
 object OpenCaptureProtocol {
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-    val fileName = Regex("frame-[0-9]{4}\\.(dng|json)")
+    val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")
-    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance")
+    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging")
+
+    internal data class Averaging(val policy: String, val keepOriginals: Boolean)
+    internal fun averaging(value: JSONObject): Averaging? {
+        if (!value.has("averaging")) return null
+        val a = value.getJSONObject("averaging")
+        require(a.keys().asSequence().toSet() == setOf("mode", "emptyFramePolicy", "keepOriginals"))
+        require(a.getString("mode") == BayerAverage.MODE && a.get("keepOriginals") is Boolean)
+        require(a.getString("emptyFramePolicy") in setOf("relative", "illuminated", "dark"))
+        require(value.isNull("operation") || value.getString("operation") == "capture") { "Averaging is capture-only" }
+        return Averaging(a.getString("emptyFramePolicy"), a.get("keepOriginals") as Boolean)
+    }
 
     fun request(value: JSONObject): DngSettings {
         val keys = value.keys().asSequence().toSet()
@@ -23,6 +34,7 @@ object OpenCaptureProtocol {
         val operation = if (value.isNull("operation")) "capture" else value.getString("operation")
         require(operation in setOf("capture", "applyControls")) { "Unknown operation" }
         require(operation != "applyControls" || frames == 1)
+        averaging(value)
         val settle = integer(value, "settleMilliseconds", 0, 10000)
         val exposure = optionalNumber(value, "exposureSeconds", 1e-9, 30.0)
         val iso = optionalNumber(value, "iso", 1.0, 204800.0)
@@ -91,7 +103,26 @@ object OpenCaptureProtocol {
         }
         return JSONObject().put("name", file.name).put("bytes", file.length())
             .put("sha256", hash.digest().joinToString("") { "%02x".format(it) })
-            .put("mediaType", if (file.extension == "dng") "image/dng" else "application/json")
+            .put("mediaType", when (file.extension) { "dng" -> "image/dng"; "json" -> "application/json"; else -> "application/octet-stream" })
+    }
+
+    internal fun transferReceipts(manifest: JSONObject): List<JSONObject> {
+        val aggregation = manifest.optJSONObject("aggregation")
+        val retained = aggregation?.getJSONArray("retainedOriginalIndices")?.let { a ->
+            (0 until a.length()).map { a.getInt(it) }.toSet()
+        }
+        val result = mutableListOf<JSONObject>()
+        val frames = manifest.getJSONArray("frames")
+        for (i in 0 until frames.length()) {
+            val frame = frames.getJSONObject(i)
+            for (key in listOf("file", "metadataFile", "previewFile")) {
+                if (key == "file" && retained != null && i+1 !in retained) continue
+                frame.optJSONObject(key)?.let { result.add(it) }
+            }
+        }
+        aggregation?.getJSONObject("files")?.let { a -> a.keys().forEach { result.add(a.getJSONObject(it)) } }
+        require(result.map { it.getString("name") }.let { names -> names.distinct().size == names.size && names.all(fileName::matches) })
+        return result
     }
 
     fun saveJson(file: File, value: JSONObject) {

@@ -1,5 +1,10 @@
 # Architecture and Handoff
 
+Android's optional [Bayer averaging](frame-averaging.md) is a generic capture
+operation, not a calibration solver. `BayerAverage.kt` selects usable attempts,
+then streams fractional native-site/luma moments from staged DNGs. The default
+original-file path is unchanged; iOS does not advertise this extension.
+
 ## Boundaries
 
 - `Core/CameraServerSession.swift`: automatic single-PC reservation, bounded
@@ -12,6 +17,9 @@
 - `android/` in the public repository: standalone Camera2 DNG server with the
   same foreground session/file contract, using NanoHTTPD 2.3.1 for HTTP.
   Its camera lifecycle contains no private measurement logic.
+- Android `RawCaptureDiagnostics.kt`: bounded, pure-JVM sparse native-buffer and
+  saved-DNG sampling with checkpoint comparison. It records evidence, not frame
+  acceptance or normalization. See `docs/raw-diagnostics.md`.
 
 - `Core/Protocol.swift`: Codable contract, bounded setting validation,
   controller URL policy, numeric release-version comparison. Foundation only.
@@ -93,8 +101,8 @@ timestamps are UTC wall time. Never subtract these different clock domains.
    installation and access to the live preview have been reported working.
 2. Measure repeatability, clipped pixels, and known synthetic perturbations
    before using frames to propose correction.
-3. Add controlled RAW development/inspection and fractional-precision
-   averaging. Do not default to visually pleasing photo development.
+3. Validate Android's optional fractional-precision averaging on physical devices;
+   iOS still sends originals. Do not default to visually pleasing photo development.
 4. Add a separate consumer adapter for calibration; native DNG is not the
    Android RAW plane stream or averaged-YUV payload.
 5. The controller keeps active leases in memory. Restarted controllers retain

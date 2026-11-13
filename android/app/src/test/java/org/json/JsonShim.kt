@@ -244,6 +244,8 @@ class JSONArray() {
 
     fun getJSONObject(index: Int): JSONObject = values[index] as? JSONObject ?: throw JSONException("Not an object")
 
+    fun getInt(index: Int): Int = (values[index] as? Number)?.toInt() ?: throw JSONException("Not a number")
+
     override fun toString(): String = values.joinToString(prefix = "[", postfix = "]") { stringify(it) }
 }
 
