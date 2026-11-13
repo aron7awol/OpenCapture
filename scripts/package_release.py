@@ -39,7 +39,7 @@ def package(app, output, repository):
         "versions": [{"version": version, "buildVersion": build,
                       "date": datetime.now(timezone.utc).isoformat(), "downloadURL": base + "/OpenCapture.ipa",
                       "size": ipa.stat().st_size, "sha256": digest, "minOSVersion": info.get("MinimumOSVersion", "17.0"),
-                      "localizedDescription": "Foreground camera server, remote lens and capture controls, fitted portrait/landscape preview with center guides, and About with updates. No phone-side pairing or gallery. Requires an updated desktop controller; captures are temporary for the active transfer session."}],
+                      "localizedDescription": "Optional on-device Bayer RAW averaging and native-buffer/file diagnostics. Requests target the exact usable frame count, with at most twice as many attempts. Original-file mode remains the default. Requires a compatible updated desktop controller; physical camera verification is still required. Captures remain temporary for the active session."}],
         "appPermissions": {"entitlements": [], "privacy": {key: value for key, value in info.items() if key.startswith("NS") and key.endswith("UsageDescription")}}}
     source = {"name": "OpenCapture", "website": f"https://github.com/{repository}", "apps": [app_entry], "news": []}
     (output / "altstore.json").write_text(json.dumps(source, indent=2) + "\n", encoding="utf-8")

@@ -15,6 +15,11 @@ of this repository. `context` is opaque controller-owned string metadata.
 - Preserve original DNG/JPEG bytes. Metadata distinguishes actual EXIF values
   from device readings at shutter time and requested settings.
 - Auto controls settle and lock once per burst, not once per frame.
+- Optional Bayer averaging uses the camera's advertised mode (Android v1,
+  iOS v2), exact usable counts, and a 2*N total attempt cap. Preserve native
+  clipping, signed noise, sample variance and unchanged source receipts.
+  iOS native-buffer/file-byte diagnostics are not decoded-DNG pixel checks.
+  Read docs/frame-averaging.md and docs/raw-diagnostics.md before changes.
 - Don't claim untouched sensor data, linear JPEG measurements, or calibrated
   accuracy. Preview and thumbnails are explicitly processed.
 - Frame dimensions and support are device-dependent. Never assume 48 MP RAW.
@@ -28,7 +33,8 @@ of this repository. `context` is opaque controller-owned string metadata.
 
 Windows: `python scripts/make_icon.py`, then
 `python -m unittest discover -s controller/tests -v`.
-Mac: `swift test`, then `bash scripts/build-ios.sh` for device compilation.
+Mac: `swift test` and `swift test -c release`, then `bash scripts/build-ios.sh`
+for device compilation. The build script runs both test configurations.
 Android: read `android/README.md`, then from `android/` run
 `./gradlew --no-daemon assembleDebug lint testDebugUnitTest testReleaseUnitTest`.
 CI is `.github/workflows/ios.yml` and `.github/workflows/android.yml`.
