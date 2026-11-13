@@ -69,7 +69,12 @@ enum RawCaptureDiagnostics {
             let active = before.width == layout.width*2 && before.height == layout.height*2
             guard full || active else { throw CaptureError.invalid("Native buffer and DNG crop disagree") }
             let ox = full ? layout.activeArea[1] : 0, oy = full ? layout.activeArea[0] : 0
-            let cfa = (0..<4).map {before.cfa[(($0/2+oy)%2)*2+($0%2+ox)%2]}
+            var cfa: [Int] = []
+            for site in 0..<4 {
+                let row = (site / 2 + oy) % 2
+                let column = (site % 2 + ox) % 2
+                cfa.append(before.cfa[row * 2 + column])
+            }
             guard cfa == layout.cfa else { throw CaptureError.invalid("Native Bayer pattern disagrees with DNG") }
             diagnostic["bufferOrigin"] = full ? [0,0] : [layout.activeArea[1],layout.activeArea[0]]
             diagnostic["normalization"] = try layout.fields()

@@ -43,6 +43,19 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_ios_average_v2_crop_and_radial_descriptor(self):
+        m,_ = average_manifest()
+        m['request']['averaging']['mode'] = 'bayer-mean-v2'
+        m['camera'].update(platform='ios',frameAveragingModes=['bayer-mean-v2'])
+        a = m['aggregation']
+        a.update(version=2,mode='bayer-mean-v2',domain='black_subtracted_dng_corrected_bayer_site_relative_signal',rawWidth=10,
+                 radialGain=[dict(id=3,version='1.3.0.0',flags=0,coefficients=[.25,0,0,0,0],center=[.5,.5])])
+        self.assertIn('average.f32',server.manifest_files(m))
+        for change in [dict(version=1),dict(domain='black_subtracted_bayer_site_relative_signal'),dict(radialGain=None),
+                       dict(radialGain=[dict(id=9)]),dict(radialGain=[dict(a['radialGain'][0],center=[float('nan'),.5])])]:
+            changed = dict(m,aggregation=dict(a,**change))
+            with self.subTest(change=change),self.assertRaises(server.Invalid):server.manifest_files(changed)
+
     def test_average_contract_retains_diagnostics_and_only_selected_originals(self):
         m, _ = average_manifest()
         files = server.manifest_files(m)

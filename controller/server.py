@@ -87,7 +87,7 @@ def validate_request(request):
         average = request["averaging"]
         if (request["format"] != "bayerRaw" or request.get("operation") == "applyControls" or
                 not isinstance(average, dict) or set(average) != {"mode", "emptyFramePolicy", "keepOriginals"} or
-                average["mode"] != "bayer-mean-v1" or average["emptyFramePolicy"] not in ("relative", "illuminated", "dark") or
+                average["mode"] not in ("bayer-mean-v1", "bayer-mean-v2") or average["emptyFramePolicy"] not in ("relative", "illuminated", "dark") or
                 type(average["keepOriginals"]) is not bool):
             raise Invalid("Invalid on-device averaging request")
     if type(request["settleMilliseconds"]) is not int or not 0 <= request["settleMilliseconds"] <= 10000:
@@ -138,8 +138,25 @@ def manifest_files(manifest):
         keys = {"version", "mode", "status", "targetFrames", "attemptedFrames", "acceptedIndices", "referenceIndex",
                 "retainedOriginalIndices", "rejected", "files", "domain", "rawWidth", "rawHeight", "width", "height",
                 "activeArea", "blackLevels", "whiteLevel", "cfa"}
-        if not isinstance(a, dict) or set(a) != keys or type(a["version"]) is not int or a["version"] != 1 or a["mode"] != "bayer-mean-v1":
+        version = 2 if request['averaging']['mode'] == 'bayer-mean-v2' else 1
+        if version == 2:
+            keys.add('radialGain')
+        if (not isinstance(a, dict) or set(a) != keys or type(a["version"]) is not int or
+                a["version"] != version or a["mode"] != request['averaging']['mode']):
             raise Invalid("Invalid aggregation descriptor")
+        if version == 2:
+            ops = a['radialGain']
+            if not isinstance(ops, list) or len(ops) > 16:
+                raise Invalid('Invalid DNG radial gain descriptor')
+            for op in ops:
+                if (not isinstance(op, dict) or set(op) != {'id','version','flags','coefficients','center'} or
+                        type(op['id']) is not int or op['id'] != 3 or op['version'] != '1.3.0.0' or
+                        type(op['flags']) is not int or not 0 <= op['flags'] <= 3 or
+                        not isinstance(op['coefficients'], list) or len(op['coefficients']) != 5 or
+                        any(not number(v,-1000,1000) for v in op['coefficients']) or
+                        not isinstance(op['center'], list) or len(op['center']) != 2 or
+                        any(not number(v,0,1) for v in op['center'])):
+                    raise Invalid('Invalid DNG radial gain descriptor')
         if (type(a["targetFrames"]) is not int or a["targetFrames"] != n or type(a["attemptedFrames"]) is not int or
                 a["attemptedFrames"] != len(frames) or not n <= len(frames) <= 2*n):
             raise Invalid("Invalid averaging attempt count")
@@ -172,7 +189,8 @@ def manifest_files(manifest):
                 any(type(i) is not int for i in area) or not 0 <= area[0] < area[2] <= a["rawHeight"] or
                 not 0 <= area[1] < area[3] <= a["rawWidth"] or area[2]-area[0] != 2*a["height"] or area[3]-area[1] != 2*a["width"]):
             raise Invalid("Invalid average active area")
-        if (a["domain"] != "black_subtracted_bayer_site_relative_signal" or not number(a["whiteLevel"], 1, 65535) or
+        domain = 'black_subtracted_dng_corrected_bayer_site_relative_signal' if version == 2 else 'black_subtracted_bayer_site_relative_signal'
+        if (a["domain"] != domain or not number(a["whiteLevel"], 1, 65535) or
                 not isinstance(a["blackLevels"], list) or len(a["blackLevels"]) != 4 or
                 any(not number(v, 0, a["whiteLevel"]-1e-9) for v in a["blackLevels"]) or
                 not isinstance(a["cfa"], list) or any(type(v) is not int for v in a["cfa"]) or sorted(a["cfa"]) != [0,1,1,2]):
@@ -198,8 +216,12 @@ def manifest_files(manifest):
             raise Invalid("Apple ProRAW identity mismatch")
         if not all(type(frame.get(key)) is int and 1 <= frame[key] <= 20000 for key in ("width", "height")):
             raise Invalid("Invalid frame dimensions")
-        if a is not None and (frame["width"], frame["height"]) != (a["rawWidth"], a["rawHeight"]):
-            raise Invalid("Averaging frame dimensions changed")
+        if a is not None:
+            sizes = [(a['rawWidth'],a['rawHeight'])]
+            if a['version'] == 2:
+                sizes.append((2*a['width'],2*a['height']))
+            if (frame['width'],frame['height']) not in sizes:
+                raise Invalid("Averaging frame dimensions changed")
         if not all(number(frame.get(key), 0, 1e12) for key in ("timestampSeconds", "deviceExposureSeconds", "deviceISO", "lensPosition")):
             raise Invalid("Missing capture-result metadata")
         for key in ("actualExposureSeconds", "actualISO"):
@@ -271,7 +293,7 @@ class State:
             self.expire()
             if request.get("operation") == "applyControls" and "applyControls" not in (self.capabilities or {}).get("operations", []):
                 raise Invalid("Update the camera app: remote apply controls is not advertised", 409)
-            if "averaging" in request and "bayer-mean-v1" not in (self.capabilities or {}).get("frameAveragingModes", []):
+            if "averaging" in request and request['averaging']['mode'] not in (self.capabilities or {}).get("frameAveragingModes", []):
                 raise Invalid("Camera does not support on-device averaging", 409)
             if request["id"] in self.jobs:
                 job = self.jobs[request["id"]]

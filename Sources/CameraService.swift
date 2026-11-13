@@ -305,6 +305,8 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             if format == .bayerRAW, let buffer = photo.pixelBuffer {
                 do { before = try RawCaptureDiagnostics.snapshot(buffer,retain:averaging) }
                 catch { if averaging { throw error }; diagnosticError = error.localizedDescription }
+            } else if format == .bayerRAW {
+                diagnosticError = "Native Bayer pixel buffer unavailable"
             }
             guard photo.isRawPhoto == expectedRAW, let data = photo.fileDataRepresentation() else {
                 throw CaptureError.unavailable("Camera returned an unexpected photo format")
@@ -322,9 +324,12 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             var metadataObject = jsonValue(photo.metadata) as? [String:Any] ?? [:]
             if let before, let buffer = photo.pixelBuffer {
                 do {
-                    metadataObject["captureDiagnostics"] = try RawCaptureDiagnostics.finish(before:before,
+                    var diagnostics = try RawCaptureDiagnostics.finish(before:before,
                         after:RawCaptureDiagnostics.snapshot(buffer,retain:false),data:data,file:directory.appendingPathComponent(file.name),
                         stage:averaging ? directory.appendingPathComponent(base+".raw16") : nil,start:start,encoded:encoded)
+                    diagnostics["photoTimestampSeconds"] = photo.timestamp.seconds
+                    diagnostics["resolvedSettingsID"] = photo.resolvedSettings.uniqueID
+                    metadataObject["captureDiagnostics"] = diagnostics
                 } catch { if averaging { throw error }; diagnosticError = error.localizedDescription }
             } else if averaging { throw CaptureError.unavailable("Native Bayer diagnostics unavailable") }
             if let diagnosticError {

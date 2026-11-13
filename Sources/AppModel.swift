@@ -229,11 +229,24 @@ private struct CameraServerInfo: Encodable {
         try await camera.prepare(request)
         var frames: [FrameRecord] = []
         var files: [String: URL] = [:]
+        var previousSamples: String?
         var selection = try request.averaging.map { try BayerSelection(target:request.frameCount,policy:$0.emptyFramePolicy) }
         for index in 1...attemptLimit {
             try Task.checkCancellation()
             status = "Frame \(index) of \(request.frameCount)"
-            let frame = try await camera.photo(request: request, index: index, directory: directory)
+            var frame = try await camera.photo(request: request, index: index, directory: directory)
+            if request.format == .bayerRAW {
+                let file = directory.appendingPathComponent(frame.metadataFile.name)
+                if var sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any],
+                   var diagnostics = sidecar["captureDiagnostics"] as? [String:Any],
+                   let samples = (diagnostics["rawBeforeDng"] as? [String:Any])?["sha256"] as? String {
+                    if let previousSamples { diagnostics["sameSamplesAsPreviousFrame"] = previousSamples == samples }
+                    previousSamples = samples
+                    sidecar["captureDiagnostics"] = diagnostics
+                    try JSONSerialization.data(withJSONObject:sidecar,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
+                    frame.metadataFile = try BayerAverage.receipt(file,media:"application/json")
+                }
+            }
             frames.append(frame)
             if selection != nil {
                 let evidence = try await processing {
