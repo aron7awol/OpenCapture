@@ -121,7 +121,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
             deviceID: deviceID, operations: [.capture, .applyControls],
             proRAWMaxPhotoWidth: proRAW ? proRAWDimensions.map { Int($0.width) } : nil,
-            proRAWMaxPhotoHeight: proRAW ? proRAWDimensions.map { Int($0.height) } : nil)
+            proRAWMaxPhotoHeight: proRAW ? proRAWDimensions.map { Int($0.height) } : nil,
+            platform:"ios", frameAveragingModes: raw && Int64(standardDimensions.width)*Int64(standardDimensions.height) <= 13_000_000 &&
+                output.availableRawPhotoPixelFormatTypes.contains(where:{RawCaptureDiagnostics.formats[$0] != nil}) ? [BayerAverage.mode] : [])
     }
 
     func reading() async throws -> DeviceReading {
@@ -235,7 +237,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                             kCVPixelBufferWidthKey as String: 640, kCVPixelBufferHeightKey as String: 480]
                     }
                     let capture = StillDelegate(directory: directory, index: index, format: request.format,
-                        reading: { Self.read(d) }) { [weak self] result in
+                        averaging:request.averaging != nil, reading: { Self.read(d) }) { [weak self] result in
                         self?.queue.async { self?.delegate = nil }
                         continuation.resume(with: result)
                     }
@@ -278,15 +280,16 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private let directory: URL
     private let index: Int
     private let format: CaptureFormat
+    private let averaging: Bool
     private let reading: () -> DeviceReading
     private var atShutter: DeviceReading?
     private let lock = NSLock()
     private var completion: ((Result<FrameRecord, Error>) -> Void)?
     private var outcome: Result<FrameRecord, Error>?
 
-    init(directory: URL, index: Int, format: CaptureFormat, reading: @escaping () -> DeviceReading,
+    init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<FrameRecord, Error>) -> Void) {
-        self.directory = directory; self.index = index; self.format = format
+        self.directory = directory; self.index = index; self.format = format; self.averaging = averaging
         self.reading = reading; self.completion = completion
     }
 
@@ -296,6 +299,13 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
         do {
             if let error { throw error }
             let expectedRAW = format != .jpeg
+            let start = RawCaptureDiagnostics.now
+            var before: NativeRawSnapshot?
+            var diagnosticError: String?
+            if format == .bayerRAW, let buffer = photo.pixelBuffer {
+                do { before = try RawCaptureDiagnostics.snapshot(buffer,retain:averaging) }
+                catch { if averaging { throw error }; diagnosticError = error.localizedDescription }
+            }
             guard photo.isRawPhoto == expectedRAW, let data = photo.fileDataRepresentation() else {
                 throw CaptureError.unavailable("Camera returned an unexpected photo format")
             }
@@ -307,8 +317,21 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
                 guard matches else { throw CaptureError.unavailable("Camera returned the wrong RAW format") }
             }
             let base = String(format: "frame-%04d", index)
+            let encoded = RawCaptureDiagnostics.now
             let file = try write(data, name: base + (expectedRAW ? ".dng" : ".jpg"), mediaType: expectedRAW ? "image/dng" : "image/jpeg")
-            let metadata = try JSONSerialization.data(withJSONObject: jsonValue(photo.metadata), options: [.prettyPrinted, .sortedKeys])
+            var metadataObject = jsonValue(photo.metadata) as? [String:Any] ?? [:]
+            if let before, let buffer = photo.pixelBuffer {
+                do {
+                    metadataObject["captureDiagnostics"] = try RawCaptureDiagnostics.finish(before:before,
+                        after:RawCaptureDiagnostics.snapshot(buffer,retain:false),data:data,file:directory.appendingPathComponent(file.name),
+                        stage:averaging ? directory.appendingPathComponent(base+".raw16") : nil,start:start,encoded:encoded)
+                } catch { if averaging { throw error }; diagnosticError = error.localizedDescription }
+            } else if averaging { throw CaptureError.unavailable("Native Bayer diagnostics unavailable") }
+            if let diagnosticError {
+                metadataObject["captureDiagnostics"] = ["diagnosticsVersion":3,"platform":"ios",
+                    "sampleIntegrity":["assessment":"incomplete_diagnostics","findings":[diagnosticError]]]
+            }
+            let metadata = try JSONSerialization.data(withJSONObject:metadataObject, options:[.prettyPrinted,.sortedKeys])
             let metadataFile = try write(metadata, name: base + ".json", mediaType: "application/json")
             var previewFile: CapturedFile?
             if let buffer = photo.previewPixelBuffer {

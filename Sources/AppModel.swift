@@ -202,6 +202,9 @@ private struct CameraServerInfo: Encodable {
         guard let capabilities else { throw CaptureError.unavailable("Camera is not ready") }
         try request.validate()
         guard capabilities.formats.contains(request.format) else { throw CaptureError.unavailable("Capture format unavailable on this lens") }
+        if let averaging = request.averaging, !(capabilities.frameAveragingModes ?? []).contains(averaging.mode) {
+            throw CaptureError.unavailable("Averaging unavailable on this lens")
+        }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if request.operation == .applyControls {
             status = "Locking controls"
@@ -215,7 +218,8 @@ private struct CameraServerInfo: Encodable {
         }
         let available = try captureRoot.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
         let reserve: Int64 = request.format == .appleProRAW ? 160_000_000 : 100_000_000
-        guard available > Int64(request.frameCount) * reserve + 200_000_000 else { throw CaptureError.unavailable("Not enough temporary storage for this burst") }
+        let attemptLimit = request.frameCount * (request.averaging == nil ? 1 : 2)
+        guard available > Int64(attemptLimit) * reserve + 200_000_000 else { throw CaptureError.unavailable("Not enough temporary storage for this burst") }
         let directory = try CaptureArchiveStore(root: captureRoot).create(request.id)
         try encoder.encode(request).write(to: directory.appendingPathComponent("request.json"), options: .atomic)
         let started = ISO8601DateFormatter().string(from: Date())
@@ -225,23 +229,58 @@ private struct CameraServerInfo: Encodable {
         try await camera.prepare(request)
         var frames: [FrameRecord] = []
         var files: [String: URL] = [:]
-        for index in 1...request.frameCount {
+        var selection = try request.averaging.map { try BayerSelection(target:request.frameCount,policy:$0.emptyFramePolicy) }
+        for index in 1...attemptLimit {
             try Task.checkCancellation()
             status = "Frame \(index) of \(request.frameCount)"
             let frame = try await camera.photo(request: request, index: index, directory: directory)
             frames.append(frame)
+            if selection != nil {
+                let evidence = try await processing {
+                    guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(frame.metadataFile.name))) as? [String:Any],
+                          let diagnostics = sidecar["captureDiagnostics"] as? [String:Any], let fields = diagnostics["normalization"] else {
+                        throw CaptureError.invalid("Missing native Bayer normalization")
+                    }
+                    let layout = try JSONDecoder().decode(BayerLayout.self,from:JSONSerialization.data(withJSONObject:fields))
+                    let assessment = (diagnostics["sampleIntegrity"] as? [String:Any])?["assessment"] as? String ?? "incomplete_diagnostics"
+                    return try BayerAverage.inspect(file:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)),layout:layout,integrity:assessment)
+                }
+                selection!.attempts.append(evidence)
+                status = "Checked \(index) attempts; \(selection!.accepted.count) / \(request.frameCount) usable"
+                transfers?.progress(request.id,status)
+            }
             for file in [frame.file, frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
                 files[file.name] = directory.appendingPathComponent(file.name)
             }
+            if let selection, !selection.needsMore { break }
         }
-        let manifest = CaptureManifest(request: request, camera: capabilities, frames: frames, startedAt: started,
+        var aggregation: BayerAggregation?
+        if let selection, let options = request.averaging {
+            transfers?.progress(request.id,"Averaging \(selection.accepted.count) usable RAW frames")
+            let originals = frames
+            let result = try await processing { () -> (BayerAggregation,[FrameRecord]) in
+                var records = originals
+                return (try BayerAverage.finalize(selection,options:options,frames:&records,directory:directory),records)
+            }
+            aggregation = result.0; frames = result.1
+            let retained = Set(result.0.retainedOriginalIndices)
+            for frame in frames where !retained.contains(frame.index) { files.removeValue(forKey:frame.file.name) }
+            for receipt in result.0.files.values { files[receipt.name] = directory.appendingPathComponent(receipt.name) }
+        }
+        var manifest = CaptureManifest(request: request, camera: capabilities, frames: frames, startedAt: started,
             completedAt: ISO8601DateFormatter().string(from: Date()),
             processing: request.format == .bayerRAW ? "AVFoundation Bayer RAW pixel format; original DNG bytes unchanged" :
                 request.format == .appleProRAW ? "AVFoundation Apple ProRAW, maximum advertised dimensions requested; demosaiced RGB, computational processing and possible multi-frame fusion; original lossless DNG unchanged; not a Bayer measurement" :
                 "AVFoundation JPEG, \(request.quality.rawValue) priority; processed, not calibrated or guaranteed unsharpened")
+        manifest.aggregation = aggregation
+        if aggregation != nil { manifest.processing = "Native Bayer buffer; DNG black/white normalization and embedded radial gain; fractional site means and luma moments; no demosaic or geometric warp" }
         let data = try encoder.encode(manifest)
         try data.write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
         return CameraServerResult(data: data, files: files)
+    }
+    private func processing<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        let task = Task.detached(priority:.userInitiated,operation:work)
+        return try await withTaskCancellationHandler(operation:{try await task.value},onCancel:{task.cancel()})
     }
     func checkUpdate() async {
         guard !checkingUpdate else { return }

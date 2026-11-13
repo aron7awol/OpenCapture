@@ -121,7 +121,8 @@ public struct CameraJobState: Encodable {
                 var total = 0
                 let directory = root.appendingPathComponent(request.id).resolvingSymlinksInPath().standardizedFileURL
                 for (name, file) in result.files {
-                    guard name.range(of: "^frame-[0-9]{4}\\.(dng|jpg|json|preview\\.jpg)$", options: .regularExpression) != nil,
+                    let derived = request.averaging != nil && ["average.f32","average-clips.u8"].contains(name)
+                    guard derived || name.range(of: "^frame-[0-9]{4}\\.(dng|jpg|json|preview\\.jpg)$", options: .regularExpression) != nil,
                           file.lastPathComponent == name, file.resolvingSymlinksInPath().deletingLastPathComponent().standardizedFileURL == directory else {
                         throw CameraServerError(400, "Invalid capture file")
                     }
@@ -145,6 +146,9 @@ public struct CameraJobState: Encodable {
         return job
     }
     public func state(_ id: String) throws -> CameraJobState { try job(id).state }
+    public func progress(_ id: String, _ message: String) {
+        if let job = jobs[id], job.state.status == "running" { job.state.message = String(message.prefix(256)) }
+    }
     public func result(_ id: String) throws -> CameraServerResult {
         let job = try job(id)
         guard job.state.status == "complete", let result = job.result else { throw CameraServerError(409, "Capture unavailable") }

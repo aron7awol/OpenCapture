@@ -41,10 +41,17 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public var whiteBalance: WhiteBalance? = nil
     public var settleMilliseconds = 500
     public var context: [String: String] = [:]
+    public var averaging: AveragingOptions? = nil
 
     public init(id: String = UUID().uuidString.lowercased()) { self.id = id }
 
     public func validate() throws {
+        if let averaging {
+            guard averaging.mode == BayerAverage.mode, format == .bayerRAW, quality == .speed,
+                  operation != .applyControls, ["relative", "illuminated", "dark"].contains(averaging.emptyFramePolicy) else {
+                throw CaptureError.invalid("Unsupported on-device averaging request")
+            }
+        }
         guard protocolVersion == 1, UUID(uuidString: id)?.uuidString.lowercased() == id else {
             throw CaptureError.invalid("Invalid protocol version or request ID")
         }
@@ -85,11 +92,16 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> CaptureRequest {
         guard data.count <= 16384,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context"]) else {
+              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging"]) else {
             throw CaptureError.invalid("Malformed request or unknown field")
         }
         if let wb = object["whiteBalance"] as? [String: Any], Set(wb.keys) != ["red", "green", "blue"] {
             throw CaptureError.invalid("Unknown white balance field")
+        }
+        if let average = object["averaging"] {
+            guard let fields = average as? [String: Any], Set(fields.keys) == ["mode", "emptyFramePolicy", "keepOriginals"] else {
+                throw CaptureError.invalid("Unknown averaging fields")
+            }
         }
         let result = try JSONDecoder().decode(Self.self, from: data)
         try result.validate()
@@ -125,6 +137,8 @@ public struct CameraCapabilities: Codable, Sendable {
     public var operations: [CameraOperation]? = nil
     public var proRAWMaxPhotoWidth: Int? = nil
     public var proRAWMaxPhotoHeight: Int? = nil
+    public var platform: String? = nil
+    public var frameAveragingModes: [String]? = nil
 }
 
 public struct CameraControlResult: Codable, Sendable {
@@ -171,6 +185,13 @@ public struct CaptureManifest: Codable, Sendable {
     public var startedAt: String
     public var completedAt: String
     public var processing: String
+    public var aggregation: BayerAggregation? = nil
+}
+
+public struct AveragingOptions: Codable, Equatable, Sendable {
+    public var mode: String
+    public var emptyFramePolicy: String
+    public var keepOriginals: Bool
 }
 
 public enum CaptureError: LocalizedError {
