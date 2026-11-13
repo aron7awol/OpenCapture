@@ -12,6 +12,98 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class CameraServerSessionTest {
+    @Test fun discardedExposureFailureKeepsFrozenResult() {
+        val root=Files.createTempDirectory("oc-late-failure").resolve("staging").toFile()
+        val published=CountDownLatch(1);val release=CountDownLatch(1)
+        var record: JSONObject?=null
+        val session=CameraServerSession(root,{ _,_,_ -> error("Unexpected batch") },{},streamCapture={ request,_,_,stream ->
+            val dir=CaptureArchives(root).create(request.getString("id"))
+            stream.begin(JSONObject(),"start","fixture")
+            val image=File(dir,"frame-0001.dng").apply { writeText("original") }
+            val meta=File(dir,"frame-0001.json").apply { writeText("{}") }
+            record=JSONObject().put("index",1).put("file",OpenCaptureProtocol.receipt(image)).put("metadataFile",OpenCaptureProtocol.receipt(meta))
+            stream.publish(record!!);published.countDown()
+            check(release.await(3,TimeUnit.SECONDS))
+            error("Discarded lookahead failed")
+        })
+        try {
+            session.connect(connection(UUID.randomUUID().toString()))
+            val request=OpenCaptureProtocol.localRequest(1,null,null,null).put("streaming",JSONObject().put("mode","originals-v1"))
+            val id=request.getString("id");session.submit(request)
+            assertTrue(published.await(3,TimeUnit.SECONDS))
+            session.verdict(id,JSONObject().put("index",1).put("sha256",record!!.getJSONObject("file").getString("sha256"))
+                .put("accepted",true).put("reason","usable"))
+            val frozen=session.result(id)
+            release.countDown();waitFor { session.state().getBoolean("cameraReady") }
+            assertEquals("complete",session.jobState(id).getString("status"))
+            assertArrayEquals(frozen,session.result(id))
+            session.ack(id,CameraServerSession.sha256(frozen))
+        } finally { release.countDown();session.close() }
+    }
+
+    @Test fun frozenCancellationAndSessionEndWaitForWriter() {
+        for (end in listOf(false,true)) {
+            val root=Files.createTempDirectory("oc-stream-cancel").resolve("staging").toFile()
+            val published=CountDownLatch(1);val release=CountDownLatch(1)
+            var record: JSONObject?=null
+            val session=CameraServerSession(root,{ _,_,_ -> error("Unexpected batch") },{},streamCapture={ request,cancel,_,stream ->
+                val dir=CaptureArchives(root).create(request.getString("id"))
+                stream.begin(JSONObject(),"start","fixture")
+                val image=File(dir,"frame-0001.dng").apply { writeText("original") }
+                val meta=File(dir,"frame-0001.json").apply { writeText("{}") }
+                record=JSONObject().put("index",1).put("file",OpenCaptureProtocol.receipt(image)).put("metadataFile",OpenCaptureProtocol.receipt(meta))
+                stream.publish(record!!);published.countDown()
+                check(release.await(3,TimeUnit.SECONDS))
+                assertTrue(cancel.get());assertTrue(image.exists())
+                error("Cancelled while draining")
+            })
+            try {
+                val owner=UUID.randomUUID().toString();session.connect(connection(owner))
+                val request=OpenCaptureProtocol.localRequest(1,null,null,null).put("streaming",JSONObject().put("mode","originals-v1"))
+                val id=request.getString("id");session.submit(request)
+                assertTrue(published.await(3,TimeUnit.SECONDS))
+                session.verdict(id,JSONObject().put("index",1).put("sha256",record!!.getJSONObject("file").getString("sha256"))
+                    .put("accepted",true).put("reason","usable"))
+                if(end) session.end() else session.cancel(id)
+                assertFalse(session.state().getBoolean("cameraReady"));assertTrue(File(root,id).exists())
+                fault(409) { session.submit(OpenCaptureProtocol.localRequest(1,null,null,null)) }
+                fault(409) { session.select(owner) { JSONObject() } }
+                release.countDown();waitFor { session.state().getBoolean("cameraReady") && !File(root,id).exists() }
+            } finally { release.countDown();session.close() }
+        }
+    }
+
+    @Test fun streamedReceiptPrecedesExtraExposureCleanupButNextJobWaits() {
+        val root=Files.createTempDirectory("oc-stream-session").resolve("staging").toFile()
+        val published=CountDownLatch(1);val release=CountDownLatch(1)
+        var record: JSONObject?=null
+        val session=CameraServerSession(root,{ _,_,_ -> error("Unexpected batch capture") },{},streamCapture={ request,_,_,stream ->
+            val dir=CaptureArchives(root).create(request.getString("id"))
+            stream.begin(JSONObject(),"start","fixture")
+            val image=File(dir,"frame-0001.dng").apply { writeText("original") }
+            val meta=File(dir,"frame-0001.json").apply { writeText("{}") }
+            record=JSONObject().put("index",1).put("file",OpenCaptureProtocol.receipt(image)).put("metadataFile",OpenCaptureProtocol.receipt(meta))
+            stream.publish(record!!);published.countDown()
+            release.await(3,TimeUnit.SECONDS)
+            assertTrue("ACK must not delete files under the writer",image.exists())
+            stream.finish() to dir
+        })
+        try {
+            session.connect(connection(UUID.randomUUID().toString()))
+            val request=OpenCaptureProtocol.localRequest(1,null,null,null).put("streaming",JSONObject().put("mode","originals-v1"))
+            val id=request.getString("id");session.submit(request)
+            assertTrue(published.await(3,TimeUnit.SECONDS))
+            session.verdict(id,JSONObject().put("index",1).put("sha256",record!!.getJSONObject("file").getString("sha256"))
+                .put("accepted",true).put("reason","usable"))
+            assertEquals("complete",session.jobState(id).getString("status"))
+            session.ack(id,CameraServerSession.sha256(session.result(id)))
+            assertFalse(session.state().getBoolean("cameraReady"))
+            assertTrue(File(root,id).exists())
+            fault(409) { session.submit(OpenCaptureProtocol.localRequest(1,null,null,null)) }
+            release.countDown();waitFor { session.state().getBoolean("cameraReady") }
+            assertFalse(File(root,id).exists())
+        } finally { release.countDown();session.close() }
+    }
     private fun connection(id: String) = JSONObject().put("protocolVersion", 1).put("sessionID", id).put("clientName", "Test PC")
     private fun waitFor(test: () -> Boolean) {
         val deadline = System.nanoTime() + 3_000_000_000L

@@ -26,6 +26,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val selected = sizes.filter { it.width.toLong() * it.height <= 13_000_000L }.maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.filter { it.width.toLong() * it.height <= 60_000_000L }.minByOrNull { it.width.toLong() * it.height }
         return JSONObject().put("protocolVersion", 1).put("cameraID", camera.cameraID())
+            .put("captureStreamingModes", JSONArray(if (usable && selected != null) listOf("originals-v1") else emptyList<String>()))
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
             .put("frameAveragingModes", JSONArray(if (usable && selected != null && selected.width.toLong()*selected.height <= 13_000_000)
@@ -46,7 +47,13 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("whiteBalanceModel", "rggbGreenMean")
     }
 
-    fun capture(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit): Pair<JSONObject, File?> {
+    fun capture(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit): Pair<JSONObject, File?> =
+        captureImpl(request,cancel,progress,null)
+
+    fun captureStreaming(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream): Pair<JSONObject, File?> =
+        captureImpl(request,cancel,progress,stream)
+
+    private fun captureImpl(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream?): Pair<JSONObject, File?> {
         val settings = OpenCaptureProtocol.request(request)
         val previewDeadline = System.nanoTime() + 10_000_000_000L
         while (!camera.previewReady) {
@@ -67,15 +74,18 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         fun checkCancelled() { check(!cancel.get()) { "Capture cancelled" } }
         val directory = if (controlOnly) null else CaptureArchives(root).create(request.getString("id"))
         if (directory != null) {
-            val needed = (selection?.maxAttempts ?: count) * cap.getInt("maxPhotoWidth").toLong() * cap.getInt("maxPhotoHeight") * 2 +
+            val needed = (stream?.limit ?: selection?.maxAttempts ?: count) * cap.getInt("maxPhotoWidth").toLong() * cap.getInt("maxPhotoHeight") * 2 +
                 (if (selection == null) 64L else 160L) * 1024 * 1024
             check(directory.usableSpace >= needed) { "Not enough free space for individual DNG originals" }
         }
         val start = Instant.now().toString()
+        stream?.begin(cap,start,"Camera2 RAW_SENSOR -> DngCreator; immutable original frames, controller selection; no averaging or demosaicing")
         val records = JSONArray()
         try {
             val sequence = camera.captureDngOriginals(settings, count, directory, cancel,
-                selection?.maxAttempts ?: count, selection?.let { { it.needsMore() } }) { frame ->
+                stream?.limit ?: selection?.maxAttempts ?: count,
+                stream?.let { { it.next() } } ?: selection?.let { { it.needsMore() } }) { frame ->
+                if(stream?.isFrozen==true) { frame.file.delete(); return@captureDngOriginals }
                 val index = records.length() + 1
                 val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
                 selection?.attempts?.add(BayerAverage.inspect(frame.file, frame.width, frame.height,
@@ -96,11 +106,13 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                     .put("file", OpenCaptureProtocol.receipt(frame.file)).put("metadataFile", OpenCaptureProtocol.receipt(sidecar))
                     .put("width", frame.width).put("height", frame.height)
                     .put("timestampSeconds", native.getDouble("sensorTimestampNs") / 1e9).put("isBayerRAW", true))
+                stream?.publish(records.getJSONObject(index-1))
                 progress(if (selection == null) "Saved DNG $index / $count" else
                     "Checked $index attempts; ${selection.accepted().size} / $count usable")
             }
             if (controlOnly) return reading(sequence.reading, c).put("protocolVersion", 1).put("request", request)
                 .put("camera", cap).put("completedAt", Instant.now().toString()) to null
+            if(stream!=null) return stream.finish() to directory
             val manifest = JSONObject().put("protocolVersion", 1).put("request", request).put("camera", cap)
                 .put("frames", records).put("startedAt", start).put("completedAt", Instant.now().toString())
                 .put("processing", "Camera2 RAW_SENSOR -> DngCreator; individual originals, no averaging or demosaicing; lens shading map requested off; vendor RAW shading declared in capabilities; orientation native")

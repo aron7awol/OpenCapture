@@ -99,6 +99,7 @@ class CameraServer(
                 return newFixedLengthResponse(Response.Status.OK, "application/octet-stream", file.inputStream(), file.length())
             }
         } else if (parts.size == 6) {
+            if (parts[5] == "verdict") return json(200,session.verdict(id,body))
             if (parts[5] == "ack") {
                 require(body.keys().asSequence().toSet() == setOf("resultSha256")) { "Invalid receipt" }
                 return json(200, session.ack(id, body.getString("resultSha256")))

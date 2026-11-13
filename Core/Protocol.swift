@@ -42,10 +42,16 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public var settleMilliseconds = 500
     public var context: [String: String] = [:]
     public var averaging: AveragingOptions? = nil
+    public var streaming: StreamingOptions? = nil
 
     public init(id: String = UUID().uuidString.lowercased()) { self.id = id }
 
     public func validate() throws {
+        if let streaming {
+            guard streaming.mode == "originals-v1", averaging == nil, operation != .applyControls else {
+                throw CaptureError.invalid("Streaming requires original captures")
+            }
+        }
         if let averaging {
             guard averaging.mode == BayerAverage.mode, format == .bayerRAW, quality == .speed,
                   operation != .applyControls, ["relative", "illuminated", "dark"].contains(averaging.emptyFramePolicy) else {
@@ -92,7 +98,7 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> CaptureRequest {
         guard data.count <= 16384,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging"]) else {
+              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging", "streaming"]) else {
             throw CaptureError.invalid("Malformed request or unknown field")
         }
         if let wb = object["whiteBalance"] as? [String: Any], Set(wb.keys) != ["red", "green", "blue"] {
@@ -101,6 +107,11 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
         if let average = object["averaging"] {
             guard let fields = average as? [String: Any], Set(fields.keys) == ["mode", "emptyFramePolicy", "keepOriginals"] else {
                 throw CaptureError.invalid("Unknown averaging fields")
+            }
+        }
+        if let stream = object["streaming"] {
+            guard let fields = stream as? [String: Any], Set(fields.keys) == ["mode"] else {
+                throw CaptureError.invalid("Unknown streaming fields")
             }
         }
         let result = try JSONDecoder().decode(Self.self, from: data)
@@ -139,6 +150,7 @@ public struct CameraCapabilities: Codable, Sendable {
     public var proRAWMaxPhotoHeight: Int? = nil
     public var platform: String? = nil
     public var frameAveragingModes: [String]? = nil
+    public var captureStreamingModes: [String]? = nil
 }
 
 public struct CameraControlResult: Codable, Sendable {
@@ -186,6 +198,11 @@ public struct CaptureManifest: Codable, Sendable {
     public var completedAt: String
     public var processing: String
     public var aggregation: BayerAggregation? = nil
+    public var streaming: StreamSelection? = nil
+}
+
+public struct StreamingOptions: Codable, Equatable, Sendable {
+    public var mode: String
 }
 
 public struct AveragingOptions: Codable, Equatable, Sendable {

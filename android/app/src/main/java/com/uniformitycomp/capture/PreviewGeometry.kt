@@ -8,6 +8,13 @@ import kotlin.math.sin
 object PreviewGeometry {
     data class Size(val width: Int, val height: Int)
 
+    fun thumbnailSize(width: Int, height: Int, maxEdge: Int = 640): Size {
+        require(minOf(width, height, maxEdge) > 0)
+        val scale = minOf(1.0, maxEdge.toDouble() / maxOf(width, height))
+        return Size(kotlin.math.round(width * scale).toInt().coerceAtLeast(1),
+            kotlin.math.round(height * scale).toInt().coerceAtLeast(1))
+    }
+
     fun choose(sizes: List<Size>, photoWidth: Int, photoHeight: Int): Size? {
         val bounded = sizes.filter { it.width <= 1920 && it.height <= 1080 }.ifEmpty { sizes }
         val ratio = photoWidth.toDouble() / photoHeight.coerceAtLeast(1)

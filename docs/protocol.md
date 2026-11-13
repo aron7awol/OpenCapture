@@ -7,6 +7,11 @@ unchanged. The outbound connection/endpoints in this document are the legacy
 Do not confuse `_oc-camera._tcp` (phone server) with `_opencapture._tcp`
 (legacy desktop controller).
 
+Optional `streaming:{"mode":"originals-v1"}` is defined by
+[the foreground original-streaming extension](original-streaming.md). It is
+capture-only, capability-gated and mutually exclusive with phone averaging.
+The legacy outbound transport does not perform streaming verdicts.
+
 This contract is independent of any display calibration protocol. The phone
 is the client; a user-selected controller leases capture jobs and receives
 original files. All paths below are relative to that configured origin.

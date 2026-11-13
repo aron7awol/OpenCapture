@@ -123,7 +123,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             proRAWMaxPhotoWidth: proRAW ? proRAWDimensions.map { Int($0.width) } : nil,
             proRAWMaxPhotoHeight: proRAW ? proRAWDimensions.map { Int($0.height) } : nil,
             platform:"ios", frameAveragingModes: raw && Int64(standardDimensions.width)*Int64(standardDimensions.height) <= 13_000_000 &&
-                output.availableRawPhotoPixelFormatTypes.contains(where:{RawCaptureDiagnostics.formats[$0] != nil}) ? [BayerAverage.mode] : [])
+                output.availableRawPhotoPixelFormatTypes.contains(where:{RawCaptureDiagnostics.formats[$0] != nil}) ? [BayerAverage.mode] : [],
+            captureStreamingModes:["originals-v1"])
     }
 
     func reading() async throws -> DeviceReading {

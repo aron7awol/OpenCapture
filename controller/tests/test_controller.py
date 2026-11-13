@@ -43,6 +43,19 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_streamed_originals_preserve_all_judged_receipts_and_exact_partition(self):
+        m,_=average_manifest();del m['aggregation'];del m['request']['averaging']
+        m['request']['streaming']={'mode':'originals-v1'}
+        m['streaming']=dict(mode='originals-v1',status='complete',targetFrames=2,attemptedFrames=3,
+            acceptedIndices=[1,3],rejected=[dict(index=2,reason='empty_signal')])
+        self.assertEqual(set(server.manifest_files(m)),{f'frame-{i:04d}.{ext}' for i in (1,2,3) for ext in ('dng','json')})
+        for change in [dict(acceptedIndices=[1,1]),dict(acceptedIndices=[1,2]),dict(targetFrames=True),
+                       dict(attemptedFrames=4),dict(status='insufficient'),dict(rejected=[])]:
+            with self.subTest(change=change),self.assertRaises(server.Invalid):
+                server.manifest_files(dict(m,streaming=dict(m['streaming'],**change)))
+        for extra in [dict(operation='applyControls'),dict(averaging=dict(mode='bayer-mean-v1',emptyFramePolicy='dark',keepOriginals=False))]:
+            with self.assertRaises(server.Invalid):server.validate_request(dict(m['request'],**extra))
+
     def test_ios_average_v2_crop_and_radial_descriptor(self):
         m,_ = average_manifest()
         m['request']['averaging']['mode'] = 'bayer-mean-v2'

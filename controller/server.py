@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -90,6 +90,9 @@ def validate_request(request):
                 average["mode"] not in ("bayer-mean-v1", "bayer-mean-v2") or average["emptyFramePolicy"] not in ("relative", "illuminated", "dark") or
                 type(average["keepOriginals"]) is not bool):
             raise Invalid("Invalid on-device averaging request")
+    if 'streaming' in request and (request['streaming'] != {'mode': 'originals-v1'} or
+            'averaging' in request or request.get('operation') == 'applyControls'):
+        raise Invalid('Streaming requires original captures and originals-v1')
     if type(request["settleMilliseconds"]) is not int or not 0 <= request["settleMilliseconds"] <= 10000:
         raise Invalid("Invalid settling interval")
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
@@ -116,10 +119,41 @@ def canonical_request(request):
     return {key: value for key, value in request.items() if value is not None}
 
 
+def stream_selection(manifest):
+    """A frozen, contiguous prefix of attempts; late lookahead frames never enter it."""
+    request, frames = manifest['request'], manifest['frames']
+    s = manifest.get('streaming')
+    if ('streaming' in request) != (s is not None):
+        raise Invalid('Streaming request/result mismatch')
+    if s is None:
+        return None
+    keys = {'mode', 'status', 'targetFrames', 'attemptedFrames', 'acceptedIndices', 'rejected'}
+    n = request['frameCount']
+    if (not isinstance(s, dict) or set(s) != keys or s['mode'] != 'originals-v1' or
+            type(s['targetFrames']) is not int or s['targetFrames'] != n or
+            type(s['attemptedFrames']) is not int or s['attemptedFrames'] != len(frames) or
+            not n <= len(frames) <= 2*n):
+        raise Invalid('Invalid streaming selection')
+    accepted, rejected = s['acceptedIndices'], s['rejected']
+    if (not isinstance(accepted, list) or any(type(i) is not int for i in accepted) or
+            accepted != sorted(set(accepted)) or not isinstance(rejected, list) or
+            any(not isinstance(v, dict) or set(v) != {'index','reason'} or type(v['index']) is not int or
+                not isinstance(v['reason'],str) or not 1 <= len(v['reason']) <= 80 for v in rejected)):
+        raise Invalid('Invalid streaming verdicts')
+    indices = [v['index'] for v in rejected]
+    if (indices != sorted(set(indices)) or set(accepted) & set(indices) or
+            set(accepted) | set(indices) != set(range(1,len(frames)+1)) or
+            s['status'] not in ('complete','insufficient') or
+            (s['status']=='complete' and len(accepted)!=n) or
+            (s['status']=='insufficient' and (len(accepted)>=n or len(frames)!=2*n))):
+        raise Invalid('Streaming verdicts do not partition a bounded result')
+    return s
+
+
 def manifest_files(manifest):
     """Validate transfer structure, including provenance-only averaged originals."""
     required = {"protocolVersion", "request", "camera", "frames", "startedAt", "completedAt", "processing"}
-    if not isinstance(manifest, dict) or not required <= manifest.keys() or manifest.keys() - required - {"aggregation"}:
+    if not isinstance(manifest, dict) or not required <= manifest.keys() or manifest.keys() - required - {"aggregation", "streaming"}:
         raise Invalid("Malformed manifest")
     request = validate_request(manifest["request"])
     frames = manifest["frames"]
@@ -127,12 +161,13 @@ def manifest_files(manifest):
     if type(manifest["protocolVersion"]) is not int or manifest["protocolVersion"] != 1 or not isinstance(frames, list):
         raise Invalid("Invalid manifest version or frames")
     a = manifest.get("aggregation")
+    streaming = stream_selection(manifest)
     if ("averaging" in request) != (a is not None):
         raise Invalid("Averaging request/result mismatch")
     retained = set(range(1, len(frames)+1))
     extra = {}
     if a is None:
-        if len(frames) != n:
+        if streaming is None and len(frames) != n:
             raise Invalid("Frame count mismatch")
     else:
         keys = {"version", "mode", "status", "targetFrames", "attemptedFrames", "acceptedIndices", "referenceIndex",
@@ -295,6 +330,8 @@ class State:
                 raise Invalid("Update the camera app: remote apply controls is not advertised", 409)
             if "averaging" in request and request['averaging']['mode'] not in (self.capabilities or {}).get("frameAveragingModes", []):
                 raise Invalid("Camera does not support on-device averaging", 409)
+            if 'streaming' in request and 'originals-v1' not in (self.capabilities or {}).get('captureStreamingModes', []):
+                raise Invalid('Camera does not support original streaming',409)
             if request["id"] in self.jobs:
                 job = self.jobs[request["id"]]
                 if canonical_request(job["request"]) == canonical_request(request):
@@ -536,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise Invalid("Capture cancelled", 409)
             averaging = "averaging" in job["request"]
             count = job["request"]["frameCount"]
-            if match and not 1 <= int(match[1]) <= count * (2 if averaging else 1):
+            if match and not 1 <= int(match[1]) <= count * (2 if averaging or 'streaming' in job['request'] else 1):
                 raise Invalid("Invalid frame index")
             if not match and not averaging:
                 raise Invalid("Average payload not requested")

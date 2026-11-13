@@ -38,6 +38,11 @@ ones; lens-specific exposure/focus/mode settings must be checked again.
 
 ## Jobs And Files
 
+The optional [original-streaming extension](original-streaming.md) adds
+published receipts during capture, ordered controller verdicts and a frozen
+selection. It requires the advertised capability and explicit request; ordinary
+whole-job clients keep the lifecycle below.
+
 - POST `/oc/v1/jobs`: the unchanged capture/applyControls request; 202 with state.
 - GET `/oc/v1/jobs/<id>`: `protocolVersion`, `id`, `status`, `message`, and,
   once complete, `resultSha256`. States: running, complete, failed, cancelled,
@@ -62,10 +67,14 @@ GET `/oc/v1/preview.jpg` returns the latest processed aiming JPEG, not measureme
 
 Temporary originals exist only to complete or retry transfer in this active
 session. Interrupted downloads retry the same bytes/ID; they never retake photos
-under that ID or relabel old measurements as fresh. Failed job staging may remain
-until cancellation/session end for bounded recovery, but is not a permanent phone
-archive. Session expiry cancels capture before deleting files. Old pre-server
-archives are not silently erased by this change. The controller is responsible
+under that ID or relabel old measurements as fresh. A terminal capture/format/I/O
+exception marks the job failed and cleans its staging; there is no failed-job
+archive download. This differs from a completed result whose transfer is being
+retried, and from an averaging `aggregation.status:insufficient` result: the
+latter still completes transport so the controller can save its declared
+diagnostic evidence before ACK, but contains no usable average. Session expiry
+cancels capture before deleting files. Old pre-server archives are not silently
+erased by this change. The controller is responsible
 for retaining received originals and diagnostics after acknowledging receipt.
 
 ## Minimal Phone UI

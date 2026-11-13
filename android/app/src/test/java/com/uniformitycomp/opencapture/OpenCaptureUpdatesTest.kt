@@ -3,13 +3,18 @@ package com.uniformitycomp.opencapture
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.EOFException
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLHandshakeException
 import com.uniformitycomp.opencapture.OpenCaptureTransportTest.Server
 import com.uniformitycomp.opencapture.OpenCaptureTransportTest.Reply
 
@@ -134,6 +139,70 @@ class OpenCaptureUpdatesTest {
             val client = client(server)
             try { try { client.check(); fail() } catch (_: IllegalArgumentException) {} }
             finally { client.close() }
+        }
+    }
+
+    @Test fun transientConnectionFailureRetriesTheFeedOnce() {
+        for (failure in listOf(UnknownHostException("fixture"), SocketTimeoutException("fixture"), EOFException("fixture"))) {
+            val attempts = AtomicInteger()
+            Server { Reply(body=manifest().toString()) }.use { server ->
+                val client = OpenCaptureUpdates { url ->
+                    if (attempts.incrementAndGet() == 1) throw failure
+                    URL("http://127.0.0.1:${server.port}${url.rawPath}").openConnection() as HttpURLConnection
+                }
+                try { assertEquals(3L, client.check().apk.versionCode); assertEquals(2,attempts.get()) }
+                finally { client.close() }
+            }
+        }
+    }
+
+    @Test fun transientHttpFailuresAreBoundedButAuthorizationAndMissingAssetsAreNotRetried() {
+        for (status in listOf(408,429,500,502,503,504,401,403,404)) {
+            val attempts = AtomicInteger()
+            Server { attempts.incrementAndGet(); Reply(status) }.use { server ->
+                val client = client(server)
+                try {
+                    try { client.check(); fail("Accepted HTTP $status") } catch (_: IOException) {}
+                    assertEquals(if (status in listOf(401,403,404)) 1 else 2, attempts.get())
+                } finally { client.close() }
+            }
+        }
+    }
+
+    @Test fun incompleteFeedRetriesWithoutAcceptingPartialJson() {
+        val attempts = AtomicInteger()
+        val body = manifest().toString()
+        Server { if (attempts.incrementAndGet() == 1) Reply(body=body,length=body.length+8) else Reply(body=body) }.use { server ->
+            val client = client(server)
+            try { assertEquals(3L,client.check().apk.versionCode); assertEquals(2,attempts.get()) }
+            finally { client.close() }
+        }
+    }
+
+    @Test fun tlsErrorsAndCancellationNeverStartAnotherConnection() {
+        val attempts = AtomicInteger()
+        val tls = OpenCaptureUpdates { attempts.incrementAndGet(); throw SSLHandshakeException("fixture") }
+        try {
+            try { tls.check(); fail() } catch (_: SSLHandshakeException) {}
+            assertEquals(1, attempts.get())
+        } finally { tls.close() }
+        attempts.set(0)
+        lateinit var cancelled: OpenCaptureUpdates
+        cancelled = OpenCaptureUpdates { attempts.incrementAndGet(); cancelled.close(); throw IOException("cancelled") }
+        try {
+            try { cancelled.check(); fail() } catch (_: IOException) {}
+            assertEquals(1, attempts.get())
+        } finally { cancelled.close() }
+    }
+
+    @Test fun errorsIdentifyDnsTimeoutAndTlsWithoutEchoingSignedUrls() {
+        val privateDetail = "https://release-assets.githubusercontent.com/file?secret=fixture"
+        assertTrue(OpenCaptureUpdates.failureMessage(UnknownHostException(privateDetail)).contains("DNS"))
+        assertTrue(OpenCaptureUpdates.failureMessage(SocketTimeoutException(privateDetail)).contains("timed out"))
+        assertTrue(OpenCaptureUpdates.failureMessage(SSLHandshakeException(privateDetail)).contains("Certificate verification was not bypassed"))
+        for (error in listOf(UnknownHostException(privateDetail), SocketTimeoutException(privateDetail),
+            SSLHandshakeException(privateDetail), IOException(privateDetail))) {
+            assertFalse(OpenCaptureUpdates.failureMessage(error).contains(privateDetail))
         }
     }
 }

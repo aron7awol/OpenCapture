@@ -8,6 +8,14 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 class PreviewGeometryTest {
+    @Test fun remoteThumbnailUsesUniformScaleIncludingTallPortraitViews() {
+        for((w,h) in listOf(1080 to 675,1080 to 2400,2400 to 1080,320 to 200)) {
+            val size=PreviewGeometry.thumbnailSize(w,h)
+            assertTrue(maxOf(size.width,size.height)<=640)
+            assertEquals(w.toDouble()/h,size.width.toDouble()/size.height,.004)
+        }
+        assertEquals(PreviewGeometry.Size(320,200),PreviewGeometry.thumbnailSize(320,200))
+    }
     @Test fun textureTransformAccountsForThePlatformsSensorRotationExactlyOnce() {
         for ((bw, bh) in listOf(1440 to 1080, 1920 to 1080, 1280 to 960))
             for ((vw, vh) in listOf(360 to 300, 760 to 180, 280 to 120, 320 to 320))

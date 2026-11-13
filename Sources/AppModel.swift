@@ -11,7 +11,7 @@ private struct CameraServerInfo: Encodable {
     let capabilities: CameraCapabilities
     let cameras: [CameraChoice]
     let session: Session
-    struct Session: Encodable { let connected: Bool; let job: CameraJobState? }
+    struct Session: Encodable { let connected: Bool; let job: CameraJobState?; var cameraReady: Bool = true }
 }
 
 @MainActor final class AppModel: NSObject, ObservableObject, NetServiceDelegate {
@@ -48,7 +48,10 @@ private struct CameraServerInfo: Encodable {
                 if transfers == nil {
                     transfers = try CameraServerSession(root: captureRoot,
                         hash: { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() },
-                        capture: { [weak self] request in
+                        streamCapture: { [weak self] request,stream in
+                            guard let self else { throw CancellationError() }
+                            return try await self.capture(request,stream:stream)
+                        }, capture: { [weak self] request in
                             guard let self else { throw CancellationError() }
                             return try await self.capture(request)
                         })
@@ -128,7 +131,8 @@ private struct CameraServerInfo: Encodable {
     private func info() throws -> CameraServerInfo {
         guard let capabilities, let deviceID = capabilities.deviceID, !configuring else { throw CameraServerError(503, "Camera is not ready") }
         return CameraServerInfo(deviceID: deviceID, name: UIDevice.current.model, capabilities: capabilities,
-            cameras: CameraService.cameras, session: .init(connected: transfers?.owner != nil, job: transfers?.latest))
+            cameras: CameraService.cameras, session: .init(connected: transfers?.owner != nil, job: transfers?.latest,
+                cameraReady: transfers?.cameraReady ?? false))
     }
     private func object(_ data: Data, keys: Set<String>) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == keys else {
@@ -178,10 +182,14 @@ private struct CameraServerInfo: Encodable {
             if request.method == "GET" {
                 if path.count == 5 { return try .json(transfers.state(id)) }
                 if path.count == 6, path[5] == "result" { return CameraHTTPResponse(data: try transfers.result(id).data) }
-                if path.count == 7, path[5] == "files", let file = try transfers.result(id).files[path[6]] {
-                    return CameraHTTPResponse(type: "application/octet-stream", file: file)
+                if path.count == 7, path[5] == "files" {
+                    return CameraHTTPResponse(type: "application/octet-stream", file: try transfers.file(id,path[6]))
                 }
             } else if path.count == 6 {
+                if path[5] == "verdict" {
+                    _ = try object(request.data,keys:["index","sha256","accepted","reason"])
+                    return try .json(transfers.verdict(id,JSONDecoder().decode(StreamVerdict.self,from:request.data)))
+                }
                 if path[5] == "ack" {
                     let body = try object(request.data, keys: ["resultSha256"])
                     guard let hash = body["resultSha256"] as? String else { throw CameraServerError(400, "Missing result hash") }
@@ -198,7 +206,7 @@ private struct CameraServerInfo: Encodable {
         }
     }
 
-    private func capture(_ request: CaptureRequest) async throws -> CameraServerResult {
+    private func capture(_ request: CaptureRequest, stream: OriginalStream? = nil) async throws -> CameraServerResult {
         guard let capabilities else { throw CaptureError.unavailable("Camera is not ready") }
         try request.validate()
         guard capabilities.formats.contains(request.format) else { throw CaptureError.unavailable("Capture format unavailable on this lens") }
@@ -218,11 +226,12 @@ private struct CameraServerInfo: Encodable {
         }
         let available = try captureRoot.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
         let reserve: Int64 = request.format == .appleProRAW ? 160_000_000 : 100_000_000
-        let attemptLimit = request.frameCount * (request.averaging == nil ? 1 : 2)
+        let attemptLimit = stream?.limit ?? request.frameCount * (request.averaging == nil ? 1 : 2)
         guard available > Int64(attemptLimit) * reserve + 200_000_000 else { throw CaptureError.unavailable("Not enough temporary storage for this burst") }
         let directory = try CaptureArchiveStore(root: captureRoot).create(request.id)
         try encoder.encode(request).write(to: directory.appendingPathComponent("request.json"), options: .atomic)
         let started = ISO8601DateFormatter().string(from: Date())
+        stream?.begin(camera:capabilities,started:started,processing:"AVFoundation original files; controller-selected immutable frames; no on-device averaging")
         status = "Settling and locking controls"
         camera.pausePreview(true)
         defer { camera.pausePreview(false) }
@@ -233,6 +242,7 @@ private struct CameraServerInfo: Encodable {
         var selection = try request.averaging.map { try BayerSelection(target:request.frameCount,policy:$0.emptyFramePolicy) }
         for index in 1...attemptLimit {
             try Task.checkCancellation()
+            if let stream, !(try await stream.next()) { break }
             status = "Frame \(index) of \(request.frameCount)"
             var frame = try await camera.photo(request: request, index: index, directory: directory)
             if request.format == .bayerRAW {
@@ -266,8 +276,10 @@ private struct CameraServerInfo: Encodable {
             for file in [frame.file, frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
                 files[file.name] = directory.appendingPathComponent(file.name)
             }
+            try stream?.publish(frame)
             if let selection, !selection.needsMore { break }
         }
+        if let stream { return try await stream.finish() }
         var aggregation: BayerAggregation?
         if let selection, let options = request.averaging {
             transfers?.progress(request.id,"Averaging \(selection.accepted.count) usable RAW frames")

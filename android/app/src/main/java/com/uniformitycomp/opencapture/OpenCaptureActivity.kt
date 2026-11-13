@@ -19,7 +19,9 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.Surface
 import android.view.TextureView
 import android.view.WindowManager
@@ -73,11 +75,16 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
                 if (ip != address) stopServer()
                 if (camera.previewReady && server == null && ip != null) startServer(ip)
                 if (camera.previewReady && texture.isAvailable) {
-                    val height = (640.0 * texture.height / texture.width.coerceAtLeast(1)).toInt().coerceIn(1, 960)
-                    texture.getBitmap(640, height)?.let { bitmap ->
+                    // Read at the view's dimensions, where its orientation/fit
+                    // matrix is defined, then resize uniformly for the browser.
+                    texture.bitmap?.let { original ->
+                        val size = PreviewGeometry.thumbnailSize(original.width, original.height)
+                        val bitmap = Bitmap.createScaledBitmap(original, size.width, size.height, true)
                         val stream = ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
-                        previewBytes = stream.toByteArray(); bitmap.recycle()
+                        previewBytes = stream.toByteArray()
+                        if (bitmap !== original) bitmap.recycle()
+                        original.recycle()
                     }
                 }
                 if (camera.previewReady && ip == null) message("Waiting for Wi-Fi")
@@ -95,7 +102,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         camera = CameraController(this)
         val staging = File(filesDir, "server-transfers")
         capture = OpenCaptureCamera(camera, deviceID, staging)
-        session = CameraServerSession(staging, capture::capture, { text -> runOnUiThread { if (server != null) message(text) } })
+        session = CameraServerSession(staging, capture::capture, { text -> runOnUiThread { if (server != null) message(text) } },
+            streamCapture=capture::captureStreaming)
         screen = OpenCaptureScreens(this, ::toggle, ::showAbout)
         texture.surfaceTextureListener = this
         camera.onConnectionLost = { runOnUiThread { stopServer(); camera.close(); opening = false; message("Camera disconnected") } }
@@ -104,12 +112,23 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         screen.status.text = if (text == "Ready" && address != null) "Ready at $address:8767" else text
     }
     private fun keepAwake() {
-        if (enabled && resumed) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (shouldKeepScreenAwake(resumed, enabled, updating.get())) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+    private fun logLifecycle(event: String) {
+        val awakeFlag = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
+        val interactive = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
+        Log.i("OpenCaptureLifecycle", "$event visible=$resumed enabled=$enabled updating=${updating.get()} keepScreenOn=$awakeFlag interactive=$interactive")
+    }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        keepAwake()
+        logLifecycle("focus=$hasFocus")
     }
     private fun toggle() {
         enabled = !enabled; screen.serving(enabled)
         keepAwake()
+        logLifecycle("toggle")
         if (enabled) { openCamera(); message("Opening camera") }
         else { stopServer(); camera.close(); opening = false; message("Stopped") }
     }
@@ -171,12 +190,14 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
     override fun onResume() {
         super.onResume(); resumed = true; keepAwake()
+        logLifecycle("resume")
         if (enabled) openCamera()
         ui.removeCallbacks(tick); ui.post(tick)
     }
     override fun onStop() {
         resumed = false; displayManager.unregisterDisplayListener(displayListener)
         keepAwake()
+        logLifecycle("stop")
         stopServer(); updateCancel.set(true); updater?.close(); ui.removeCallbacks(tick)
         camera.close(); opening = false; super.onStop()
     }
@@ -225,36 +246,67 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun checkUpdate() {
         if (!updating.compareAndSet(false, true)) return
+        keepAwake()
         message("Checking updates")
-        val client = OpenCaptureUpdates(); updater = client; updateCancel = AtomicBoolean(false)
+        val client = OpenCaptureUpdates(); updater = client
+        val cancelled = AtomicBoolean(false); updateCancel = cancelled
         updates.execute {
-            try {
-                val release = client.check()
-                runOnUiThread {
-                    if (!resumed) return@runOnUiThread
+            var release: OpenCaptureUpdates.Release? = null
+            var failure: Exception? = null
+            try { release = client.check() }
+            catch (error: Exception) { failure = error }
+            finally { client.close() }
+            val result = release
+            val error = failure
+            runOnUiThread {
+                if (updater !== client) return@runOnUiThread
+                updater = null; updating.set(false); keepAwake()
+                if (!resumed || cancelled.get()) return@runOnUiThread
+                if (error != null) showUpdateFailure("Update check failed", error)
+                else if (result != null) {
+                    val release = result
                     if (release.apk.versionCode <= BuildConfig.VERSION_CODE) AlertDialog.Builder(this)
                         .setTitle("OpenCapture").setMessage("You have the newest published Android build.").setPositiveButton("Close", null).show()
                     else AlertDialog.Builder(this).setTitle("OpenCapture ${release.apk.versionName}")
                         .setMessage("Stop the camera session and install this update?")
                         .setNegativeButton("Cancel", null).setPositiveButton("Update") { _, _ -> installUpdate(release) }.show()
                 }
-            } catch (error: Exception) { message(error.message ?: "Update check failed") }
-            finally { client.close(); updater = null; updating.set(false) }
+            }
         }
+    }
+    private fun showUpdateFailure(title: String, error: Exception) {
+        val detail = OpenCaptureUpdates.failureMessage(error)
+        message(title)
+        Log.w("OpenCaptureUpdate", "$title: $detail")
+        AlertDialog.Builder(this).setTitle(title).setMessage(detail)
+            .setPositiveButton("Retry") { _, _ -> checkUpdate() }
+            .setNegativeButton("Close", null).show()
     }
     private fun installUpdate(release: OpenCaptureUpdates.Release) {
         if (!updating.compareAndSet(false, true)) return
         enabled = false; screen.serving(false); stopServer(); camera.close(); opening = false
         keepAwake()
-        val client = OpenCaptureUpdates(); updater = client; updateCancel = AtomicBoolean(false)
+        val client = OpenCaptureUpdates(); updater = client
+        val cancelled = AtomicBoolean(false); updateCancel = cancelled
         updates.execute {
+            var downloaded: File? = null
+            var failure: Exception? = null
             try {
                 val file = File(File(cacheDir, "updates").apply { mkdirs() }, "opencapture-${release.apk.versionCode}.apk")
-                client.download(release, file, updateCancel) { message("Downloading update: $it%") }
+                client.download(release, file, cancelled) { message("Downloading update: $it%") }
                 ApkUpdateVerifier.verifyPackage(this, file, release.apk)
-                check(!updateCancel.get()) { "Update cancelled" }
-                runOnUiThread {
-                    if (!resumed) return@runOnUiThread
+                check(!cancelled.get()) { "Update cancelled" }
+                downloaded = file
+            } catch (error: Exception) { failure = error }
+            finally { client.close() }
+            val file = downloaded
+            val error = failure
+            runOnUiThread {
+                if (updater !== client) return@runOnUiThread
+                updater = null; updating.set(false); keepAwake()
+                if (!resumed || cancelled.get()) return@runOnUiThread
+                if (error != null) showUpdateFailure("Update failed", error)
+                else if (file != null) {
                     if (!packageManager.canRequestPackageInstalls()) {
                         message("Allow updates, then open About again")
                         startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
@@ -263,8 +315,10 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
                         startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
                     }
                 }
-            } catch (error: Exception) { message(error.message ?: "Update failed") }
-            finally { client.close(); updater = null; updating.set(false) }
+            }
         }
     }
 }
+
+internal fun shouldKeepScreenAwake(visible: Boolean, serverEnabled: Boolean, updateInProgress: Boolean): Boolean =
+    visible && (serverEnabled || updateInProgress)

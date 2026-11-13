@@ -15,10 +15,12 @@ class CameraServerSession(
     private val capture: (JSONObject, AtomicBoolean, (String) -> Unit) -> Pair<JSONObject, File?>,
     private val notice: (String) -> Unit,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val streamCapture: ((JSONObject, AtomicBoolean, (String) -> Unit, OriginalStream) -> Pair<JSONObject, File?>)? = null,
 ) {
     private data class Job(val request: String, val cancel: AtomicBoolean = AtomicBoolean(false),
         var status: String = "running", var message: String = "Capturing", var result: ByteArray? = null,
-        var hash: String? = null, val files: MutableMap<String, File> = linkedMapOf())
+        var hash: String? = null, val files: MutableMap<String, File> = linkedMapOf(),
+        var writing: Boolean = true, var stream: OriginalStream? = null)
     private val worker = Executors.newSingleThreadExecutor()
     private val jobs = linkedMapOf<String, Job>()
     private var owner: String? = null
@@ -65,8 +67,9 @@ class CameraServerSession(
     }
     @Synchronized fun close() { if (closed) return; end(); closed = true; worker.shutdown() }
     @Synchronized fun state(): JSONObject = JSONObject().put("protocolVersion", 1)
+        .put("cameraReady", !switching && jobs.values.none { it.writing })
         .put("connected", owner != null).put("job", jobs.keys.lastOrNull()?.let { jobState(it) } ?: JSONObject.NULL)
-    private fun pending() = switching || jobs.values.any { it.status in setOf("running", "complete") }
+    private fun pending() = switching || jobs.values.any { it.writing || it.status in setOf("running", "complete") }
     fun select(id: String?, action: () -> JSONObject): JSONObject {
         synchronized(this) {
             authorize(id)
@@ -82,6 +85,7 @@ class CameraServerSession(
     @Synchronized fun submit(request: JSONObject): JSONObject {
         if (closed || draining || owner == null) fail(409, "No active camera session")
         OpenCaptureProtocol.request(request)
+        require(!request.has("streaming") || streamCapture != null) { "Streaming unavailable" }
         val id = request.getString("id")
         val serialized = canonical(request).toString()
         jobs[id]?.let {
@@ -93,12 +97,15 @@ class CameraServerSession(
         ledger.mkdirs()
         if (!File(ledger, id).createNewFile()) fail(409, "Capture ID was already used; do not replay it")
         val job = Job(serialized); jobs[id] = job
+        if(request.has("streaming")) job.stream=OriginalStream(request,File(root,id),job.cancel)
         worker.execute {
             try {
                 check(!job.cancel.get()) { "Cancelled" }
-                val (result, directory) = capture(request, job.cancel) { message ->
+                val progress: (String) -> Unit = { message ->
                     synchronized(this) { job.message = message }; notice(message)
                 }
+                val (result, directory) = job.stream?.let { requireNotNull(streamCapture)(request,job.cancel,progress,it) }
+                    ?: capture(request,job.cancel,progress)
                 val bytes = result.toString().toByteArray(Charsets.UTF_8)
                 require(bytes.size <= 1024 * 1024) { "Capture result too large" }
                 val files = linkedMapOf<String, File>()
@@ -115,17 +122,26 @@ class CameraServerSession(
                 }
                 synchronized(this) {
                     check(!job.cancel.get()) { "Cancelled" }
-                    job.result = bytes; job.hash = sha256(bytes); job.files.putAll(files)
-                    job.status = "complete"; job.message = "Waiting for transfer"
+                    if(job.status=="running") {
+                        job.result = bytes; job.hash = sha256(bytes); job.files.putAll(files)
+                        job.status = "complete"; job.message = "Waiting for transfer"
+                    }
                 }
                 notice("Transferring")
             } catch (error: Exception) {
                 synchronized(this) {
-                    job.status = if (job.cancel.get()) "cancelled" else "failed"
-                    job.message = (error.message ?: "Capture failed").take(256)
-                    cleanup(id, job)
+                    if(job.stream?.isFrozen!=true || job.cancel.get()) {
+                        job.status = if (job.cancel.get()) "cancelled" else "failed"
+                        job.message = (error.message ?: "Capture failed").take(256)
+                        cleanup(id, job)
+                    }
                 }
                 notice(job.message)
+            } finally {
+                synchronized(this) {
+                    job.writing=false
+                    if(job.status=="acknowledged") cleanup(id,job)
+                }
             }
         }
         return jobState(id)
@@ -134,26 +150,44 @@ class CameraServerSession(
     @Synchronized fun jobState(id: String): JSONObject {
         val job = job(id)
         return JSONObject().put("protocolVersion", 1).put("id", id).put("status", job.status)
-            .put("message", job.message).also { if (job.hash != null) it.put("resultSha256", job.hash) }
+            .put("message", job.message).put("cameraReady",!job.writing)
+            .also { if (job.hash != null) it.put("resultSha256", job.hash); job.stream?.let { stream -> it.put("streaming",stream.state()) } }
     }
     @Synchronized fun result(id: String): ByteArray = job(id).let {
         if (it.status != "complete") fail(409, "Capture result unavailable")
         it.result ?: fail(404, "Capture result unavailable")
     }
     @Synchronized fun file(id: String, name: String): File = job(id).let {
+        if(it.status=="running" && it.stream!=null) return it.stream!!.file(name) ?: fail(404,"Frame not published")
         if (it.status != "complete") fail(409, "Capture files unavailable")
         it.files[name] ?: fail(404, "Unknown capture file")
+    }
+    @Synchronized fun verdict(id: String, value: JSONObject): JSONObject {
+        val job=job(id); val stream=job.stream ?: fail(409,"Not a streamed capture")
+        if(job.status !in setOf("running","complete","acknowledged")) fail(409,"Capture ended")
+        stream.verdict(value)
+        if(job.status=="running") stream.result()?.let { result ->
+            val bytes=result.toString().toByteArray(Charsets.UTF_8)
+            require(bytes.size<=1024*1024)
+            OpenCaptureProtocol.saveJson(File(root,"$id/manifest.json"),result)
+            OpenCaptureProtocol.transferReceipts(result).forEach { r ->
+                job.files[r.getString("name")]=requireNotNull(stream.file(r.getString("name")))
+            }
+            job.result=bytes;job.hash=sha256(bytes);job.status="complete";job.message="Selection frozen; waiting for receipt"
+        }
+        return jobState(id)
     }
     @Synchronized fun ack(id: String, hash: String): JSONObject {
         val job = job(id)
         if (job.status !in setOf("complete", "acknowledged") || hash != job.hash) fail(409, "Receipt does not match result")
-        cleanup(id, job); job.status = "acknowledged"; job.message = "Received by Windows"
+        if(!job.writing) cleanup(id, job)
+        job.status = "acknowledged"; job.message = "Received by Windows"
         notice("Connected. Ready")
         return jobState(id)
     }
     @Synchronized fun cancel(id: String): JSONObject {
         val job = job(id); job.cancel.set(true)
-        if (job.status != "running") { cleanup(id, job); job.status = "cancelled"; job.message = "Cancelled" }
+        if (!job.writing) { cleanup(id, job); job.status = "cancelled"; job.message = "Cancelled" }
         return jobState(id)
     }
     private fun cleanup(id: String, job: Job) {

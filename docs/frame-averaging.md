@@ -157,7 +157,9 @@ producing a differently normalized measurement. Test a short keep-originals
 burst on each physical camera before depending on compact transfer.
 
 Hash/length verification, unchanged-byte retries and result-hash ACK semantics
-are unchanged. Staging is removed only after ACK or session cancellation/end;
+are unchanged. Staging for a completed result is removed after ACK, cancellation
+or session end. Terminal capture/format/I/O exceptions instead fail the job and
+clean its staging, unlike a transport-complete `insufficient` result;
 there is no permanent phone gallery. See [RAW diagnostics](raw-diagnostics.md)
 for checkpoint interpretation and [camera server](camera-server.md) for LAN
 restrictions and session ownership.

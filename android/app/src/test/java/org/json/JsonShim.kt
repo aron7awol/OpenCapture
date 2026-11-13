@@ -62,6 +62,12 @@ class JSONObject() {
 
     fun getInt(name: String): Int = getNumber(name).toInt()
 
+    fun getLong(name: String): Long = getNumber(name).toLong()
+
+    fun getBoolean(name: String): Boolean = get(name).let {
+        if (it !is Boolean) throw JSONException("$name is not a boolean") else it
+    }
+
     fun getDouble(name: String): Double = getNumber(name).toDouble()
 
     fun optInt(name: String, fallback: Int = 0): Int = (values[name] as? Number)?.toInt() ?: fallback

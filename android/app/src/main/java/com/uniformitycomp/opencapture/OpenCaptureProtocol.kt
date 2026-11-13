@@ -11,7 +11,7 @@ object OpenCaptureProtocol {
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")
-    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging")
+    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming")
 
     internal data class Averaging(val policy: String, val keepOriginals: Boolean)
     internal fun averaging(value: JSONObject): Averaging? {
@@ -35,6 +35,11 @@ object OpenCaptureProtocol {
         require(operation in setOf("capture", "applyControls")) { "Unknown operation" }
         require(operation != "applyControls" || frames == 1)
         averaging(value)
+        if (value.has("streaming")) {
+            val stream=value.getJSONObject("streaming")
+            require(stream.keys().asSequence().toSet()==setOf("mode") && stream.getString("mode")=="originals-v1" &&
+                !value.has("averaging") && operation=="capture") { "Streaming requires original capture" }
+        }
         val settle = integer(value, "settleMilliseconds", 0, 10000)
         val exposure = optionalNumber(value, "exposureSeconds", 1e-9, 30.0)
         val iso = optionalNumber(value, "iso", 1.0, 204800.0)

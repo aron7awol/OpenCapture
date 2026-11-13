@@ -19,6 +19,8 @@ public struct CameraJobState: Encodable {
     public var status: String
     public var message: String
     public var resultSha256: String?
+    public var cameraReady = false
+    public var streaming: OriginalStreamState? = nil
 }
 
 /// Main-actor ownership serializes HTTP mutations with camera/UI lifecycle changes.
@@ -27,6 +29,8 @@ public struct CameraJobState: Encodable {
         let request: CaptureRequest
         var state: CameraJobState
         var result: CameraServerResult?
+        var stream: OriginalStream?
+        var writing = true
         init(_ request: CaptureRequest) {
             self.request = request
             state = CameraJobState(id: request.id, status: "running", message: "Capturing")
@@ -41,13 +45,16 @@ public struct CameraJobState: Encodable {
     private var ending: Task<Void, Error>?
     public private(set) var switching = false
     private let capture: (CaptureRequest) async throws -> CameraServerResult
+    private let streamCapture: ((CaptureRequest,OriginalStream) async throws -> CameraServerResult)?
     private let hash: (Data) -> String
     private let clock: () -> Double
 
     public init(root: URL, hash: @escaping (Data) -> String,
                 clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+                streamCapture: ((CaptureRequest,OriginalStream) async throws -> CameraServerResult)? = nil,
                 capture: @escaping (CaptureRequest) async throws -> CameraServerResult) throws {
         self.root = root; self.hash = hash; self.clock = clock; self.capture = capture
+        self.streamCapture = streamCapture
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try clearFiles()
     }
@@ -58,7 +65,8 @@ public struct CameraJobState: Encodable {
             }
         }
     }
-    public var latest: CameraJobState? { order.last.flatMap { jobs[$0]?.state } }
+    public var latest: CameraJobState? { order.last.flatMap { try? state($0) } }
+    public var cameraReady: Bool { !switching && task == nil }
     public var pending: Bool { switching || task != nil || jobs.values.contains { $0.state.status == "complete" } }
     public func connect(id: String, client: String) async throws {
         try await expire()
@@ -100,9 +108,10 @@ public struct CameraJobState: Encodable {
     }
     public func submit(_ request: CaptureRequest) throws -> CameraJobState {
         try request.validate()
+        guard request.streaming == nil || streamCapture != nil else { throw CameraServerError(400,"Streaming unavailable") }
         if let previous = jobs[request.id] {
             guard previous.request == request else { throw CameraServerError(409, "Capture ID has another request") }
-            return previous.state
+            return try state(request.id)
         }
         guard owner != nil, ending == nil, !pending else { throw CameraServerError(409, "Camera is not available for a new capture") }
         guard jobs.count < 1000 else { throw CameraServerError(409, "Session job limit reached; reconnect") }
@@ -111,12 +120,20 @@ public struct CameraJobState: Encodable {
         do { try Data().write(to: ledger.appendingPathComponent(request.id), options: .withoutOverwriting) }
         catch { throw CameraServerError(409, "Capture ID was already used; do not replay it") }
         let job = Job(request); jobs[request.id] = job; order.append(request.id)
+        if request.streaming != nil { job.stream = OriginalStream(request:request,directory:root.appendingPathComponent(request.id)) }
         task = Task { @MainActor in
-            defer { task = nil }
+            defer {
+                job.writing = false
+                task = nil
+                if job.state.status == "acknowledged" { try? clean(job) }
+            }
             do {
                 try Task.checkCancellation()
-                let result = try await capture(request)
+                let result: CameraServerResult
+                if let stream = job.stream, let streamCapture { result = try await streamCapture(request,stream) }
+                else { result = try await capture(request) }
                 try Task.checkCancellation()
+                if job.stream != nil && job.state.status != "running" { return }
                 guard result.data.count <= 1_048_576 else { throw CameraServerError(413, "Result too large") }
                 var total = 0
                 let directory = root.appendingPathComponent(request.id).resolvingSymlinksInPath().standardizedFileURL
@@ -134,18 +151,41 @@ public struct CameraJobState: Encodable {
                 job.result = result; job.state.resultSha256 = hash(result.data)
                 job.state.status = "complete"; job.state.message = "Waiting for transfer"
             } catch {
+                if job.stream?.frozen == true && !Task.isCancelled { return }
                 job.state.status = Task.isCancelled ? "cancelled" : "failed"
                 job.state.message = String(error.localizedDescription.prefix(256))
                 do { try clean(job) } catch { job.state.message = "Temporary-file cleanup failed" }
             }
         }
-        return job.state
+        return try state(request.id)
     }
     private func job(_ id: String) throws -> Job {
         guard let job = jobs[id] else { throw CameraServerError(404, "Unknown capture") }
         return job
     }
-    public func state(_ id: String) throws -> CameraJobState { try job(id).state }
+    public func state(_ id: String) throws -> CameraJobState {
+        let job = try job(id);var state=job.state
+        state.cameraReady=cameraReady;state.streaming=job.stream?.state
+        return state
+    }
+    public func verdict(_ id: String, _ value: StreamVerdict) throws -> CameraJobState {
+        let job=try job(id)
+        guard ["running","complete","acknowledged"].contains(job.state.status), let stream=job.stream else {
+            throw CameraServerError(409,"Not an active streamed capture")
+        }
+        try stream.verdict(value)
+        if job.state.status=="running",let result=stream.result {
+            job.result=result;job.state.resultSha256=hash(result.data)
+            job.state.status="complete";job.state.message="Selection frozen; waiting for receipt"
+        }
+        return try state(id)
+    }
+    public func file(_ id: String, _ name: String) throws -> URL {
+        let job=try job(id)
+        if job.state.status=="running",let file=job.stream?.file(name) { return file }
+        if job.state.status=="complete",let file=job.result?.files[name] { return file }
+        throw CameraServerError(404,"Frame not published")
+    }
     public func progress(_ id: String, _ message: String) {
         if let job = jobs[id], job.state.status == "running" { job.state.message = String(message.prefix(256)) }
     }
@@ -165,13 +205,16 @@ public struct CameraJobState: Encodable {
         guard ["complete", "acknowledged"].contains(job.state.status), hash == job.state.resultSha256 else {
             throw CameraServerError(409, "Receipt does not match result")
         }
-        try clean(job); job.state.status = "acknowledged"; job.state.message = "Received by Windows"
-        return job.state
+        if !job.writing { try clean(job) }
+        job.state.status = "acknowledged"; job.state.message = "Received by Windows"
+        return try state(id)
     }
     public func cancel(_ id: String) async throws -> CameraJobState {
         let job = try job(id)
-        if job.state.status == "running" { task?.cancel(); await task?.value }
+        // A stream can freeze its result while the extra exposure still owns
+        // the writer. Cancellation must wait for that writer before deletion.
+        if job.writing { let active = task; active?.cancel(); await active?.value }
         try clean(job); job.state.status = "cancelled"; job.state.message = "Cancelled"
-        return job.state
+        return try state(id)
     }
 }

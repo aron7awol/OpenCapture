@@ -8,6 +8,11 @@ Select the phone and lens from a compatible desktop controller.
 The preview fits without scrolling. Stop/Resume and About are below it in
 portrait and beside it in landscape. About includes version and updates.
 Border and center guides are for aiming only and never enter the captures.
+The screen stays awake while the app is visible and its server or an update
+operation is active. Stopping the server allows sleep unless an update is still
+running; backgrounding always releases it. The power button still works normally.
+Update failures show a persistent error with Retry. Internet access to GitHub
+is separate from the trusted-LAN camera connection.
 
 Captures contain 1..32 original Bayer DNG files and actual Camera2 metadata.
 Files are temporary on the phone: the computer verifies receipt, then the phone
