@@ -10,10 +10,11 @@ from on-device averaging and retains original files plus controller verdicts.
   verdicts and the two-attempt lookahead bound. Session tests exercise
   freeze/ACK before the discarded exposure returns, next-job/lens exclusion,
   cancellation/session-end cleanup, and failures of the late extra exposure.
-- iOS device compilation, 33 Swift tests in each debug/release configuration,
-  and simulator portrait/both-landscapes/About navigation passed in source-only
-  CI run `43531333673` at `af81a4f`. Version 0.4.2/build 31 was produced without
-  signing or publishing. The simulator has no camera; synthetic session tests
+- iOS device compilation, 32 Swift debug / 33 Swift release tests (including
+  one release-only 12 MP processing case), and simulator portrait/both-landscapes/
+  About navigation passed in final CI run `43536706712` at `54c9f30`.
+  Version 0.4.2/build 33 was published as an unsigned device IPA for AltStore.
+  The simulator has no camera; synthetic session tests
   use a fake asynchronous capture callback, not AVFoundation hardware.
 - Android parent build/lint and 74 tests per debug/release variant passed.
   API 33 with the emulated RAW camera transferred batch and streamed Bayer
@@ -29,14 +30,15 @@ from on-device averaging and retains original files plus controller verdicts.
   remain absent from the JPEG. The emulator's stationary synthetic camera
   cannot establish physical orientation; repeat against labeled real targets.
 
-Before release, test physical Pixel and iPhone with identical locked controls
+Hardware follow-up: test physical Pixel and iPhone with identical locked controls
 in batch and streaming modes. Inspect actual exposure/ISO/focus/WB and capture
 timestamps, not requested settings alone. Demonstrate exposure/transfer overlap
 and measure time through final PC commit separately from discarded-writer drain.
 Exercise Stop/background/expiry during capture and after freeze, and confirm
 files remain until the writer exits. On Pixel, compare served JPEG geometry
-with the phone view under capture load. No release or feed update is implied
-by the source-only builds above. Older dated sections below are historical.
+with the phone view under capture load. Android 0.4.2/build 8 and iOS 0.4.2/build
+33 are published; these software checks do not establish physical accuracy or
+speed. Older dated sections below are historical.
 
 ## Optional Bayer Averaging (0.4.1)
 
