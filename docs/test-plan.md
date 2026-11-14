@@ -1,5 +1,43 @@
 # Verification and Device Test Plan
 
+## Original Streaming And Remote Preview (0.4.2, 2026-11-13)
+
+Read [original streaming](original-streaming.md). This opt-in path is separate
+from on-device averaging and retains original files plus controller verdicts.
+
+- Core tests cover exact N=1/6/18 targets, all-rejected 2*N exhaustion,
+  immutable selection, byte-budget checks before publication, bad/replayed
+  verdicts and the two-attempt lookahead bound. Session tests exercise
+  freeze/ACK before the discarded exposure returns, next-job/lens exclusion,
+  cancellation/session-end cleanup, and failures of the late extra exposure.
+- iOS device compilation, 33 Swift tests in each debug/release configuration,
+  and simulator portrait/both-landscapes/About navigation passed in source-only
+  CI run `43531333673` at `af81a4f`. Version 0.4.2/build 31 was produced without
+  signing or publishing. The simulator has no camera; synthetic session tests
+  use a fake asynchronous capture callback, not AVFoundation hardware.
+- Android parent build/lint and 74 tests per debug/release variant passed.
+  API 33 with the emulated RAW camera transferred batch and streamed Bayer
+  originals at N=1/6/18, replacements and insufficient results. Hashes, exact
+  final prefixes, idempotent retries and freeze-before-writer-drain were checked.
+  This is transport verification, not frame-quality or performance acceptance.
+- Android served JPEGs were compared with phone screenshots in portrait,
+  both landscape sides and reverse portrait, including direct 180-degree
+  turns. The surface bitmap did not include the view's fit/rotation transform;
+  simply copying at native view size still stretched the export. The current
+  path explicitly rebases that transform into thumbnail coordinates and draws
+  it once. Both temporary bitmaps have a maximum edge of 640. UI guide lines
+  remain absent from the JPEG. The emulator's stationary synthetic camera
+  cannot establish physical orientation; repeat against labeled real targets.
+
+Before release, test physical Pixel and iPhone with identical locked controls
+in batch and streaming modes. Inspect actual exposure/ISO/focus/WB and capture
+timestamps, not requested settings alone. Demonstrate exposure/transfer overlap
+and measure time through final PC commit separately from discarded-writer drain.
+Exercise Stop/background/expiry during capture and after freeze, and confirm
+files remain until the writer exits. On Pixel, compare served JPEG geometry
+with the phone view under capture load. No release or feed update is implied
+by the source-only builds above. Older dated sections below are historical.
+
 ## Optional Bayer Averaging (0.4.1)
 
 Read [frame averaging](frame-averaging.md). Test original-file mode and averaged

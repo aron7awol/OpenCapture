@@ -83,6 +83,9 @@ cleanup. Temporary staging and used-ID replay protection keep the same scope
 as the ordinary server. An idle verdict wait times out after 240 seconds;
 controller heartbeats continue while files transfer.
 
-Source and synthetic controller tests are available. Mobile compilation and
-physical timing/overlap evidence are still required; no performance improvement
-is claimed from this contract alone.
+Android and iOS compilation and synthetic selection/lifetime tests have passed.
+Android emulator HTTP tests also exercise real generated DNG transfer, exact
+1/6/18-frame targets, rejected replacements, 2*N exhaustion, replay and freeze
+while the writer drains. See [verification](test-plan.md). Physical timing,
+control stability and overlap on both phones still require matched experiments;
+these software tests do not establish a performance improvement.
