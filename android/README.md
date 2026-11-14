@@ -42,6 +42,10 @@ maximum-resolution sensor modes are not enabled. Support, actual dimensions
 and controls are recorded per device. Original-file capture does not demosaic or
 average. Controllers can opt into [on-device Bayer averaging](../docs/frame-averaging.md)
 on supported cameras.
+Version 0.4.2 also supports optional [original-frame streaming](../docs/original-streaming.md)
+so a compatible controller can receive/check frames during capture and request
+replacements within the same locked burst. Streaming and phone averaging are
+separate modes; original files remain unchanged.
 
 [Usage](../README.md) | [Server API](../docs/camera-server.md) |
 [Build/release guide](../docs/development.md) | [Testing](../docs/test-plan.md)

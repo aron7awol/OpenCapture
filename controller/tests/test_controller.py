@@ -392,6 +392,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(source["apps"][0]["appPermissions"]["privacy"], {"NSCameraUsageDescription": "Test camera use"})
             self.assertIn("trusted private LAN", source["apps"][0]["localizedDescription"])
             self.assertIn("updated desktop controller", version["localizedDescription"])
+            self.assertIn("original-frame streaming", version["localizedDescription"])
             self.assertNotIn("paired remote capture", source["apps"][0]["localizedDescription"])
 
 

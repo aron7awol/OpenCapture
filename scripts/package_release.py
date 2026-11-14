@@ -39,7 +39,7 @@ def package(app, output, repository):
         "versions": [{"version": version, "buildVersion": build,
                       "date": datetime.now(timezone.utc).isoformat(), "downloadURL": base + "/OpenCapture.ipa",
                       "size": ipa.stat().st_size, "sha256": digest, "minOSVersion": info.get("MinimumOSVersion", "17.0"),
-                      "localizedDescription": "Optional on-device Bayer RAW averaging and native-buffer/file diagnostics. Requests target the exact usable frame count, with at most twice as many attempts. Original-file mode remains the default. Requires a compatible updated desktop controller; physical camera verification is still required. Captures remain temporary for the active session."}],
+                      "localizedDescription": "Optional original-frame streaming lets a compatible updated desktop controller receive and check files during a capture, requesting replacements until the exact usable count or attempt limit is reached. Frozen results are available before a discarded extra exposure finishes. Existing batch capture and optional Bayer averaging remain available. Physical camera verification is still required; captures remain temporary for the active session."}],
         "appPermissions": {"entitlements": [], "privacy": {key: value for key, value in info.items() if key.startswith("NS") and key.endswith("UsageDescription")}}}
     source = {"name": "OpenCapture", "website": f"https://github.com/{repository}", "apps": [app_entry], "news": []}
     (output / "altstore.json").write_text(json.dumps(source, indent=2) + "\n", encoding="utf-8")
