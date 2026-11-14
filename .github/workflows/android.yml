@@ -36,6 +36,8 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
       - name: Build, lint and test both variants
         run: bash ./gradlew --no-daemon assembleDebug lint testDebugUnitTest testReleaseUnitTest
+      - name: Test release packaging
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - name: Retain test and lint reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

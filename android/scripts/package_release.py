@@ -9,6 +9,15 @@ import shutil
 import subprocess
 
 
+def signer_digest(output):
+    matches = re.findall(r"^(?:Signer #\d+|V\d+ Signer):? certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$",
+                         output, re.M | re.I)
+    digests = {value.replace(":", "").lower() for value in matches}
+    if len(digests) != 1 or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
+        raise ValueError("APK signer verification failed")
+    return digests.pop()
+
+
 def package(apk, output, sdk):
     root = Path(__file__).resolve().parents[1]
     tools = sorted((sdk / "build-tools").iterdir(),
@@ -27,9 +36,7 @@ def package(apk, output, sdk):
     if not minimum or not 28 <= int(minimum[1]) <= 10000:
         raise ValueError("Invalid Android minimum SDK")
     signing = subprocess.check_output([str(signer), "verify", "--print-certs", str(apk)], text=True)
-    certificate = re.search(r"^(?:Signer #1|V\d+ Signer): certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$", signing, re.M | re.I)
-    if not certificate:
-        raise ValueError("APK signer verification failed")
+    certificate = signer_digest(signing)
     digest = hashlib.sha256(apk.read_bytes()).hexdigest()
     if not 0 < apk.stat().st_size <= 128 * 1024 * 1024:
         raise ValueError("APK exceeds updater bounds")
@@ -42,7 +49,7 @@ def package(apk, output, sdk):
     shutil.copyfile(apk, output / "OpenCapture-android.apk")
     (output / "android.json").write_text(json.dumps(feed, indent=2) + "\n", encoding="utf-8")
     release = dict(tag=tag, sourceCommit=commit, sourceUrl=f"https://github.com/aron7awol/OpenCapture/tree/{commit}/android",
-                   signerSha256=certificate[1].replace(":", "").lower(), **feed)
+                   signerSha256=certificate, **feed)
     (output / "release.json").write_text(json.dumps(release, indent=2) + "\n", encoding="utf-8")
     for source, target in ((root.parent / "LICENSE", "LICENSE"), (root / "README.md", "BUILDING.md"),
                            (root / "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md")):
