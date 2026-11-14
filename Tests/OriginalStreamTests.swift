@@ -37,6 +37,15 @@ import XCTest
         }
         XCTFail("Stream condition timed out")
     }
+    private func waitForFrame(_ session: CameraServerSession,_ id: String) async throws {
+        try await wait {
+            let state=try session.state(id)
+            if state.status == "failed" || state.status == "cancelled" {
+                throw CameraServerError(500,"Capture stopped before publication: \(state.message)")
+            }
+            return state.streaming?.frames.count == 1
+        }
+    }
     func testOneAheadBackpressureAndImmutableFrozenPrefix() async throws {
         let directory=try root();var request=CaptureRequest();request.frameCount=2;request.streaming=StreamingOptions(mode:"originals-v1")
         let stream=OriginalStream(request:request,directory:directory)
@@ -122,7 +131,7 @@ import XCTest
         },capture:{_ in throw CaptureError.invalid("Unexpected batch")})
         try await session.connect(id:UUID().uuidString.lowercased(),client:"PC")
         _=try session.submit(request)
-        try await wait { try session.state(request.id).streaming?.frames.count == 1 }
+        try await waitForFrame(session,request.id)
         _=try session.verdict(request.id,verdict(1,true))
         XCTAssertEqual(try session.state(request.id).status,"complete")
         let replay=try session.submit(request)
@@ -150,7 +159,7 @@ import XCTest
         },capture:{_ in throw CaptureError.invalid("Unexpected batch")})
         try await session.connect(id:UUID().uuidString.lowercased(),client:"PC")
         _=try session.submit(request)
-        try await wait { try session.state(request.id).streaming?.frames.count == 1 }
+        try await waitForFrame(session,request.id)
         _=try session.verdict(request.id,verdict(1,true))
         let frozen=try session.result(request.id).data
         release=true;try await wait { session.cameraReady }
@@ -175,7 +184,7 @@ import XCTest
         },capture:{_ in throw CaptureError.invalid("Unexpected batch")})
         try await session.connect(id:UUID().uuidString.lowercased(),client:"PC")
         _=try session.submit(request)
-        try await wait { try session.state(request.id).streaming?.frames.count == 1 }
+        try await waitForFrame(session,request.id)
         _=try session.verdict(request.id,verdict(1,true))
         _=try await session.cancel(request.id)
         XCTAssertTrue(drained);XCTAssertTrue(session.cameraReady)

@@ -70,7 +70,7 @@ public struct OriginalStreamState: Encodable {
         for receipt in receipts {
             let file=directory.appendingPathComponent(receipt.name).resolvingSymlinksInPath().standardizedFileURL
             guard receipt.name.range(of:"^frame-[0-9]{4}\\.(dng|jpg|json|preview\\.jpg)$",options:.regularExpression) != nil,
-                  file.deletingLastPathComponent()==directory, files[receipt.name]==nil,
+                  file.deletingLastPathComponent().path==directory.path, files[receipt.name]==nil,
                   (1...134_217_728).contains(receipt.bytes),
                   try file.resourceValues(forKeys:[.fileSizeKey]).fileSize==receipt.bytes else {
                 throw CameraServerError(400,"Invalid streamed file")
