@@ -36,11 +36,11 @@ transfer. A controller should also block phone/lens changes throughout any activ
 multi-capture operation, including pauses. New lens capabilities replace old
 ones; lens-specific exposure/focus/mode settings must be checked again.
 
-Unreleased Android 0.4.4 keeps the compatible RAW+preview session configured
+Android 0.4.4 keeps the compatible RAW+preview session configured
 between jobs. Both platforms may reuse fully specified unchanged controls
 after checking actual locked readings; auto/changed controls still prepare.
 Requested scene-settling time is always retained. Failure, camera closure or
-lens reconfiguration invalidates reuse. iOS source 0.4.3 advertises optional
+lens reconfiguration invalidates reuse. iOS 0.4.3 advertises optional
 per-photo thumbnails as described in [the request contract](protocol.md#request).
 
 ## Jobs And Files

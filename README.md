@@ -15,6 +15,12 @@ describes the 0.4.x foreground server and requires a compatible desktop controll
 Android 0.4.3 adds [RAW lens shading metadata](docs/lens-shading.md)
 and `bayer-mean-v3` averages; install a compatible desktop controller.
 
+Android 0.4.4 and iOS 0.4.3 add bounded original-photo overlap, verified manual
+control reuse and faster optional averaging. Android also checks fresh RAW
+exposure timing. Use a matching updated desktop controller; see
+[capture timing](docs/raw-diagnostics.md) and [exposure overlap](docs/exposure-overlap.md).
+Physical phone speed remains device-dependent and requires testing.
+
 ## Use
 
 1. Put the phone and computer on the same **trusted private LAN**.

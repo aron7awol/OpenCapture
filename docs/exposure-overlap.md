@@ -1,9 +1,7 @@
 # Bounded exposure overlap
 
-Source after Android 0.4.3/build 10 and iOS 0.4.2/build 33 can overlap the next
-original capture with completion of the previous photo. This is development
-source; existing released apps do not contain it. Physical timing/quality
-verification remains pending.
+Android 0.4.4 and iOS 0.4.3 can overlap the next original capture with completion
+of the previous photo. Physical timing/quality verification remains pending.
 
 ## Scope
 
@@ -135,6 +133,6 @@ Physical follow-up, separately on Android and iOS:
    while the final extra photo is unfinished. Resume a fresh job afterward and
    verify no old image or callback enters it.
 
-No APK/IPA/feed version was changed or published with this source preparation.
-Use the existing signing identity and assign a distinct development build before
-installing. A successful physical test is required to claim time savings.
+The initial display-PC source preparation did not publish or install an app.
+Release builds use the existing signing identity and distinct build numbers.
+A successful physical test is required to claim time savings.

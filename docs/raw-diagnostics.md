@@ -3,9 +3,9 @@
 iOS and Android have different native capture APIs and therefore different
 diagnostic scopes. Do not relabel one platform's checks as the other's.
 
-## Timing Integrity And Stage Timings (Unreleased)
+## Timing Integrity And Stage Timings
 
-Android source 0.4.4 adds `timingPolicy:"fresh-camera2-raw-v1"` and
+Android 0.4.4 adds `timingPolicy:"fresh-camera2-raw-v1"` and
 `timingIntegrity` to generic manual RAW diagnostics. Original DNGs remain
 unchanged. Optional phone averaging and the desktop original selector exclude
 `capture_timing_invalid` attempts, including dark references, within the same
@@ -32,7 +32,7 @@ guarantee or a diagnosis of the Pixel driver. Physical verification is pending.
 
 Consumers recompute the assessment from hashed sidecar values. A declared
 policy with malformed evidence fails validation. Older sidecars without this
-policy are unassessed; do not retroactively label them passing. iOS source
+policy are unassessed; do not retroactively label them passing. iOS
 0.4.3 records submission/processing-arrival times but does not declare this
 Camera2 policy or apply its rejection rule to Apple RAW/ProRAW.
 

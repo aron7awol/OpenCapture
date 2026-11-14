@@ -89,7 +89,7 @@ validation bound numbers; the camera additionally enforces hardware limits.
 On cameras advertising `optionalPhotoPreview:true`, a controller may include
 `includePreview:false` to omit per-photo processed JPEG thumbnails. Omission
 preserves existing behavior; this does not disable the separate aiming preview
-or change original DNG/JPEG bytes. iOS source 0.4.3 implements this capability.
+or change original DNG/JPEG bytes. iOS 0.4.3 implements this capability.
 Capture manifests may add `performance`, an object of at most 16 named finite
 nonnegative durations in seconds (each at most 86400; keys at most 64 characters).
 Timings are diagnostic and never substitute for actual capture controls.

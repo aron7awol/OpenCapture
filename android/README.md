@@ -19,6 +19,11 @@ Version 0.4.3/build 10 requests supported lens shading maps and preserves
 them in the sidecar and DNG. Optional corrected averages advertise
 `bayer-mean-v3`; install a compatible controller. See
 [lens shading](../docs/lens-shading.md) for processing and device checks.
+Version 0.4.4/build 12 reuses compatible RAW+preview sessions and verified
+unchanged manual controls, overlaps up to two unfinished originals, and checks
+fresh RAW exposure timing. Optional averaging overlaps saved-frame inspection
+with the next exposure. Use the matching updated desktop importer for the new
+timing rejection reason; physical speed and quality still require phone tests.
 Files are temporary on the phone: the computer verifies receipt, then the phone
 clears them. Failed downloads retry during the active session. Stop,
 backgrounding, disconnect or expiry cancels work and clears remaining staging.

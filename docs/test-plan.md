@@ -1,14 +1,17 @@
 # Verification and Device Test Plan
 
-## Exposure Overlap (Unreleased, 2026-11-14)
+## Exposure Overlap (Android 0.4.4 / iOS 0.4.3, 2026-11-14)
 
 Read [the bounded overlap design and verification checklist](exposure-overlap.md).
 Android original bursts can submit the next exposure after RAW image arrival;
 iOS uses exposure completion plus output readiness. Initial source preparation
 on the display PC lacked mobile toolchains. After merging the performance
 changes on the build PC, Android compilation, lint, 83 debug and 83 release
-tests passed, together with 37 controller tests. Prior release checks below
-do not verify these changes; iOS requires CI on the combined source revision.
+tests passed, together with 37 controller tests. On combined revision `f5b9922`,
+[iOS CI](https://github.com/aron7awol/OpenCapture/actions/runs/43597418131) passed
+43 debug and 44 release Swift tests, unsigned device compilation and one
+simulator navigation test. Release candidates also run CI at their exact source
+revision. Software tests do not establish physical overlap or image quality.
 
 Run the new Swift pipeline tests, updated Android/Swift stream reservation and
 session-lifetime fixtures, normal platform builds/lint and exported-source
@@ -17,7 +20,7 @@ actual overlap, identity, counts, reader/buffer integrity and post-cancellation
 recovery. Averaging and legacy Android keep sequential exposures; averaging
 may overlap inspection of one saved frame with the following exposure.
 
-## Capture Performance Follow-Up (Unreleased)
+## Capture Performance Follow-Up
 
 Use identical actual controls and scene for six- and eighteen-frame original
 and optional-average comparisons. Record app/build, thermal state, per-frame
