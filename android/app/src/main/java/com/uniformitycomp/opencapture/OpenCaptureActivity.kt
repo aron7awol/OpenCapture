@@ -5,6 +5,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -20,6 +21,7 @@ import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
+import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -157,6 +159,20 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun info(): JSONObject = JSONObject().put("protocolVersion", 1).put("role", "camera")
         .put("deviceID", deviceID).put("name", android.os.Build.MODEL).put("capabilities", capture.capabilities())
         .put("cameras", JSONArray(camera.rawCameraChoices().map { JSONObject().put("id", it.first).put("name", it.second) }))
+        .also { info ->
+            // Read the sticky OS snapshot; no receiver, camera request or capture interruption.
+            val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val percent = if (scale > 0 && level in 0..scale)
+                kotlin.math.round(level * 100.0 / scale).toInt() else null
+            val charging = when (battery?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)) {
+                BatteryManager.BATTERY_STATUS_CHARGING, BatteryManager.BATTERY_STATUS_FULL -> true
+                BatteryManager.BATTERY_STATUS_DISCHARGING, BatteryManager.BATTERY_STATUS_NOT_CHARGING -> false
+                else -> null
+            }
+            info.put("batteryPercent", percent ?: JSONObject.NULL).put("batteryCharging", charging ?: JSONObject.NULL)
+        }
     private fun selectCamera(id: String): JSONObject {
         require(camera.rawCameraChoices().any { it.first == id }) { "Unavailable camera" }
         val ready = CountDownLatch(1)

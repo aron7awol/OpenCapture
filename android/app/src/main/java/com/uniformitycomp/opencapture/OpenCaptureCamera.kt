@@ -200,6 +200,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             OpenCaptureProtocol.saveJson(File(directory, "manifest.json"), manifest)
             return manifest to directory
         } catch (error: Exception) {
+            camera.cancelCurrentCapture() // Includes post-capture inspection/packaging failures.
             if (directory != null) OpenCaptureProtocol.saveJson(File(directory, "failure.json"), JSONObject()
                 .put("status", if (cancel.get()) "cancelled" else "failed").put("message", error.message ?: "Capture failed"))
             throw error

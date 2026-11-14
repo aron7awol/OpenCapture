@@ -11,6 +11,8 @@ private struct CameraServerInfo: Encodable {
     let capabilities: CameraCapabilities
     let cameras: [CameraChoice]
     let session: Session
+    let batteryPercent: Int?
+    let batteryCharging: Bool?
     struct Session: Encodable { let connected: Bool; let job: CameraJobState?; var cameraReady: Bool = true }
 }
 
@@ -38,6 +40,7 @@ private struct CameraServerInfo: Encodable {
 
     func foreground() async {
         foregrounded = true
+        UIDevice.current.isBatteryMonitoringEnabled = true
         if let shutdownTask { await shutdownTask.value }
         guard foregrounded, enabled else { return }
         UIApplication.shared.isIdleTimerDisabled = true
@@ -83,6 +86,7 @@ private struct CameraServerInfo: Encodable {
     }
     private func beginShutdown() {
         UIApplication.shared.isIdleTimerDisabled = false
+        UIDevice.current.isBatteryMonitoringEnabled = false
         guard shutdownTask == nil else { return }
         serviceTask?.cancel()
         let previous = serviceTask
@@ -130,9 +134,18 @@ private struct CameraServerInfo: Encodable {
     }
     private func info() throws -> CameraServerInfo {
         guard let capabilities, let deviceID = capabilities.deviceID, !configuring else { throw CameraServerError(503, "Camera is not ready") }
+        let device = UIDevice.current
+        let level = device.batteryLevel
+        let batteryPercent = level.isFinite && (0...1).contains(level) ? Int((level * 100).rounded()) : nil
+        let batteryCharging: Bool?
+        switch device.batteryState {
+        case .charging, .full: batteryCharging = true
+        case .unplugged: batteryCharging = false
+        default: batteryCharging = nil
+        }
         return CameraServerInfo(deviceID: deviceID, name: UIDevice.current.model, capabilities: capabilities,
             cameras: CameraService.cameras, session: .init(connected: transfers?.owner != nil, job: transfers?.latest,
-                cameraReady: transfers?.cameraReady ?? false))
+                cameraReady: transfers?.cameraReady ?? false), batteryPercent: batteryPercent, batteryCharging: batteryCharging)
     }
     private func object(_ data: Data, keys: Set<String>) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == keys else {

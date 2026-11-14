@@ -36,7 +36,7 @@ policy are unassessed; do not retroactively label them passing. iOS
 0.4.3 records submission/processing-arrival times but does not declare this
 Camera2 policy or apply its rejection rule to Apple RAW/ProRAW.
 
-Android also records preparation start, session ready, controls locked,
+Android also records preparation start, session ready, controls locked when that phase ran,
 `sessionReused`/`controlsReused`, and optional averaging inspection start/end.
 iOS records preparation start/lock/reuse and averaging inspection start/end,
 and retains its existing encoding
@@ -78,7 +78,70 @@ genuinely dark, stale, or otherwise unusable. Preserve originals for investigati
 New iOS native-buffer behavior requires physical-device verification; macOS core
 tests and simulator navigation cannot establish sensor behavior.
 
+## Android 0.4.5 Verified Manual Fast Path (Development)
+
+Build 13 extends the earlier manual-control reuse: a matching fully specified
+request skips both auto setup and the tagged manual-preview result wait when
+the same camera/session/reader/preview configuration has a verified completed
+still. The cache compares the exact requested exposure, ISO, focus and copied
+WB tuple, independently of hardware rounding in the actual results. It keeps
+the locked color transform, crop and stabilization settings. Missing essential
+readback, a moving lens, timing-invalid or sample-unverified frames prevent a
+burst from seeding reuse. No shading map or `TotalCaptureResult` is cached.
+
+`captureSetup` adds:
+
+- `policy:"verified-manual-still-reuse-v1"`, `fastPathUsed:true` and
+  `manualPreviewSkipped:true` only when eligible.
+- `reason:"verified_identical_manual"`, or a normal-setup reason such as
+  `settings_changed`, `automatic_or_partial_request`, `session_recreated`,
+  `source_capture_cancelled`, `fresh_controls_readback_required`, or missing
+  verification evidence. Normal policy names below remain valid.
+- `reusedVerification`: `source:"previous_completed_still"`, original
+  `frameNumber`, `sensorTimestampNs` and monotonic `verifiedElapsedNs`. These
+  identify old evidence; they never stand in for a new frame's result.
+- `setupDurationNs` on both paths; `sceneWaitStartedElapsedNs` and
+  `sceneWaitEndedElapsedNs` on the fast path. The scene wait remains
+  `max(250, settleMilliseconds)` ms. It does not inspect preview brightness.
+
+On the fast path, **omit** `manualRequestSubmittedElapsedNs`, manual first/
+settled results/times, `manualResultsSeen` and top-level `controlsLockedElapsedNs`.
+No new control-settled event occurred. `sessionReusedElapsedNs` records reuse,
+not configuration or settling. In-flight preview work may still finish after
+`stopRepeating`; a smaller setup duration is not by itself an end-to-end speedup.
+
+Every new still retains fresh submission/arrival/result timing and unique
+run-owned request tags. It must match its own image sensor timestamp and request
+index. `manualStateVerification` records the metadata comparison. A changed
+state on the fast path fails the job before that frame is published; a compact
+`OpenCaptureSetup` log gives the mismatch and `nextJob=normal_setup`. Pending
+captures are aborted/drained and the reader replaced. No silent recapture,
+underfilled average or stale-result substitution is permitted. Terminal-failure
+staging follows the existing cleanup contract; retain logs and any already
+received PC evidence. First-use devices with incomplete extended metadata can
+continue through normal setup but cannot enable this optimization.
+
+The exposure/ISO/focus/WB tolerances are unchanged (3%/5%/2% of maximum focus/
+0.1 gain, with existing absolute floors). Matrix comparison allows only 1e-6
+per coefficient between actual readbacks; crop, stabilization, shading request
+modes and physical-camera ID must agree. Lens-shading **gains** are neither
+compared for reuse nor substituted: preserve each actual map independently.
+The source still must have valid fresh timing and consistent sample checkpoints.
+
+`applyControls` always returns a new preview reading, even for identical manual
+values. Automatic/partly specified requests, changed settings, camera/lens or
+session changes, reader/surface replacement, cancellation, backgrounding and
+errors take the normal path. Generation and callback ownership checks reject
+late success/failure/partial callbacks from an older run.
+
+Software fixtures and builds cannot validate a Pixel HAL or prove savings.
+See [the test plan](test-plan.md#android-045-manual-reuse-development) for the
+held-build benchmark procedure.
+
 ## Android Manual Setup Follow-Up (Source Only)
+
+The section below describes the earlier path retained for normal setup in
+0.4.5. Its manual-preview wait is skipped only by the verified path above.
 
 The source after 0.4.3/build 10 adds optional `captureSetup` evidence inside
 Android diagnostics v2. It is now merged with the performance implementation;

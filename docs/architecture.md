@@ -60,16 +60,25 @@ the default and retains each requested original unchanged.
 
 ## Capture decisions
 
-Android source after 0.4.3/build 10 reuses a previously established manual state
-only for explicitly identical full-manual jobs on the same open camera. It
-avoids the intervening auto-WB preview, while retaining manual-result settling
-and original metadata. Initial/changed/partly automatic requests still settle
-auto controls. The merged performance implementation keeps the compatible
-RAW+preview session configured, verifies the actual locked controls, and retains
-the setup/partial-result diagnostics. Failed or cancelled bursts replace the RAW
-reader before the next session. Physical verification of the combined changes
-remains pending; see
-[setup diagnostics and test cases](raw-diagnostics.md#android-manual-setup-follow-up-source-only).
+Android 0.4.5/build 13 skips the manual-preview round trip
+for explicitly identical fully manual captures in the same healthy camera,
+RAW reader, preview surface and session. `ManualCaptureState.kt` owns exact
+request keys, generation-based invalidation, actual-state comparisons and
+per-run callback tags. Only a completed, timing/sample-verified still can seed
+reuse; automatic/partial requests and `applyControls` still obtain fresh setup
+readings. The requested scene wait (minimum 250 ms) remains, without waiting
+for another long-exposure preview result. This is not scene-pixel stability detection.
+
+Exposure, ISO, focus, both WB greens, color transform, crop, stabilization,
+processing modes and physical-lens identity are checked against actual still
+metadata. Every DNG uses its own timestamp-matched full result and shading map.
+A reused-state mismatch terminates the job before publishing that frame,
+invalidates verification and makes the next job prepare normally; there is no
+hidden retry or extra attempt budget. Cancellation/errors drain the bounded
+pipeline and replace the reader. Camera/session/reader/surface changes,
+backgrounding and stale completions cannot restore verification. See
+[Android setup diagnostics](raw-diagnostics.md#android-045-verified-manual-fast-path-development).
+Physical speed and camera behavior of this fast path remain unverified.
 
 Version 0.4.0 reverses the transport: the phone advertises `_oc-camera._tcp`,
 the desktop selects it and reserves a foreground session, then pulls exact

@@ -1,5 +1,53 @@
 # Verification and Device Test Plan
 
+## Android 0.4.5 Manual Reuse (Development)
+
+Build 13 was initially held; the owner subsequently authorized mobile release
+and feed publication. Leave installation to the operator and do not interrupt
+active phone measurements. `ManualCaptureStateTest` covers first
+and identical requests, every changed manual value, auto/partial controls,
+fresh apply-controls readback, camera/session/reader/surface identity,
+cancellation before/after writer completion, errors/background/lens changes,
+late completion, stale callback ownership, incomplete metadata and actual
+control/transform/crop/stabilization/processing/lens mismatches.
+
+Run Android assembleDebug, lint, debug/release unit tests and the legacy app
+build (it shares the DNG helper). Verify the standalone Android allowlisted
+export builds with the new helper/test. Software results are separate from
+device checks; inspect the APK package, version and signing certificate before
+handing it off. Battery fields in info/state are independent OS reads: compare
+with the phone UI, charging/unplugged, and unknown-state handling.
+
+After the operator releases the Pixel for testing:
+
+1. Preserve the 0.4.4/build 12 baseline and its request JSON, original DNGs,
+   sidecars and timing summaries. Keep camera/lens, exposure, ISO, focus, WB,
+   frame count, scene, transfer mode, settleMilliseconds and thermal conditions
+   constant. Use original Bayer DNGs with averaging OFF first.
+2. On build 13, run a seed burst, then identical fully manual bursts with new
+   job IDs in the same session. Expect normal setup once, followed by
+   `verified-manual-still-reuse-v1`. Check source frame/time provenance, absent
+   manual-settled fields, and fresh per-frame timing/actual controls. Separate
+   setup duration, first-still latency, exposure spacing, metadata/DNG work,
+   transfer, frozen-result time and writer drain.
+3. Change one setting at a time (exposure, ISO, focus, WB), then test omitted
+   controls and applyControls. Each must prepare normally. Test close/reopen,
+   lens changes, background/resume, cancellation with a prefetched still,
+   session recreation and recoverable errors. Confirm the next job cannot use
+   old verification/images/results. Missing extended metadata must log an
+   explicit reason and continue normal preparation.
+4. Verify original receipts, sparse sample integrity, actual per-frame shading
+   maps and DNG/sidecar agreement. Confirm N usable within 2*N attempts,
+   timing-invalid replacement, at most two unfinished originals, bounded
+   queues and correct ACK/cancellation cleanup. Repeat N=1/6/18, including
+   delayed verdicts and cancellation. Do not hide bad frames in an average.
+5. Only then repeat the longer identical-burst baseline (24 bursts if still
+   desired). Report measured savings with valid frame counts and all fallback
+   reasons. A stable shading hash or matching controls does not prove optical
+   stability or calibrated image quality.
+
+No physical-device speedup is established by JVM fixtures or compilation.
+
 ## Exposure Overlap (Android 0.4.4 / iOS 0.4.3, 2026-11-14)
 
 Read [the bounded overlap design and verification checklist](exposure-overlap.md).

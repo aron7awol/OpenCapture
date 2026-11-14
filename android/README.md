@@ -24,6 +24,11 @@ unchanged manual controls, overlaps up to two unfinished originals, and checks
 fresh RAW exposure timing. Optional averaging overlaps saved-frame inspection
 with the next exposure. Use the matching updated desktop importer for the new
 timing rejection reason; physical speed and quality still require phone tests.
+Version 0.4.5/build 13 skips repeated manual-preview settling for explicitly
+identical requests verified by a completed still in the same healthy session.
+It preserves scene settling, actual still metadata and per-frame shading maps;
+mismatches invalidate reuse. Info/state now include optional battery percentage
+and charging state. Physical verification of the new fast path remains pending.
 Files are temporary on the phone: the computer verifies receipt, then the phone
 clears them. Failed downloads retry during the active session. Stop,
 backgrounding, disconnect or expiry cancels work and clears remaining staging.
