@@ -235,13 +235,36 @@ private struct CameraServerInfo: Encodable {
         status = "Settling and locking controls"
         camera.pausePreview(true)
         defer { camera.pausePreview(false) }
+        let prepareStarted=ProcessInfo.processInfo.systemUptime
         try await camera.prepare(request)
+        let captureStarted=ProcessInfo.processInfo.systemUptime
         var frames: [FrameRecord] = []
         var files: [String: URL] = [:]
         var previousSamples: String?
         var selection = try request.averaging.map { try BayerSelection(target:request.frameCount,policy:$0.emptyFramePolicy) }
+        let inspector=FrameProcessor<BayerEvidence>()
+        var pendingFrame: FrameRecord?
+        func publish(_ frame: FrameRecord) throws {
+            frames.append(frame)
+            for file in [frame.file,frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
+                files[file.name]=directory.appendingPathComponent(file.name)
+            }
+            try stream?.publish(frame)
+        }
+        func drainInspection() async throws {
+            if let evidence=try await inspector.take(), let frame=pendingFrame {
+                selection!.attempts.append(evidence)
+                try publish(frame)
+                pendingFrame=nil
+                status="Checked \(selection!.attempts.count) attempts; \(selection!.accepted.count) / \(request.frameCount) usable"
+                transfers?.progress(request.id,status)
+            }
+        }
+        do {
         for index in 1...attemptLimit {
             try Task.checkCancellation()
+            if inspector.hasPending, selection!.accepted.count+1 >= request.frameCount { try await drainInspection() }
+            if let selection, !selection.needsMore { break }
             if let stream, !(try await stream.next()) { break }
             status = "Frame \(index) of \(request.frameCount)"
             var frame = try await camera.photo(request: request, index: index, directory: directory)
@@ -257,11 +280,19 @@ private struct CameraServerInfo: Encodable {
                     frame.metadataFile = try BayerAverage.receipt(file,media:"application/json")
                 }
             }
-            frames.append(frame)
             if selection != nil {
-                let capturedFrame = frame
-                let evidence = try await processing {
-                    guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(capturedFrame.metadataFile.name))) as? [String:Any],
+                try await drainInspection()
+                if !selection!.needsMore {
+                    for file in [frame.file,frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
+                        try? FileManager.default.removeItem(at:directory.appendingPathComponent(file.name))
+                    }
+                    try? FileManager.default.removeItem(at:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)))
+                    break
+                }
+                pendingFrame=frame
+                let frame=frame
+                try inspector.submit {
+                    guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(frame.metadataFile.name))) as? [String:Any],
                           let diagnostics = sidecar["captureDiagnostics"] as? [String:Any], let fields = diagnostics["normalization"] else {
                         throw CaptureError.invalid("Missing native Bayer normalization")
                     }
@@ -269,17 +300,15 @@ private struct CameraServerInfo: Encodable {
                     let assessment = (diagnostics["sampleIntegrity"] as? [String:Any])?["assessment"] as? String ?? "incomplete_diagnostics"
                     return try BayerAverage.inspect(file:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)),layout:layout,integrity:assessment)
                 }
-                selection!.attempts.append(evidence)
-                status = "Checked \(index) attempts; \(selection!.accepted.count) / \(request.frameCount) usable"
-                transfers?.progress(request.id,status)
-            }
-            for file in [frame.file, frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
-                files[file.name] = directory.appendingPathComponent(file.name)
-            }
-            try stream?.publish(frame)
-            if let selection, !selection.needsMore { break }
+            } else { try publish(frame) }
+        }
+        try await drainInspection()
+        } catch {
+            await inspector.cancelAndWait()
+            throw error
         }
         if let stream { return try await stream.finish() }
+        let aggregationStarted=ProcessInfo.processInfo.systemUptime
         var aggregation: BayerAggregation?
         if let selection, let options = request.averaging {
             transfers?.progress(request.id,"Averaging \(selection.accepted.count) usable RAW frames")
@@ -299,6 +328,9 @@ private struct CameraServerInfo: Encodable {
                 request.format == .appleProRAW ? "AVFoundation Apple ProRAW, maximum advertised dimensions requested; demosaiced RGB, computational processing and possible multi-frame fusion; original lossless DNG unchanged; not a Bayer measurement" :
                 "AVFoundation JPEG, \(request.quality.rawValue) priority; processed, not calibrated or guaranteed unsharpened")
         manifest.aggregation = aggregation
+        manifest.performance=["preparationSeconds":captureStarted-prepareStarted,
+            "captureAndInspectionSeconds":aggregationStarted-captureStarted,
+            "aggregationAndPackagingSeconds":ProcessInfo.processInfo.systemUptime-aggregationStarted]
         if aggregation != nil { manifest.processing = "Native Bayer buffer; DNG black/white normalization and embedded radial gain; fractional site means and luma moments; no demosaic or geometric warp" }
         let data = try encoder.encode(manifest)
         try data.write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)

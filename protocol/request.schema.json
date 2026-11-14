@@ -27,6 +27,7 @@
       "type": ["object", "null"], "additionalProperties": false, "required": ["red", "green", "blue"],
       "properties": {"red": {"type": "number", "minimum": 1, "maximum": 64}, "green": {"type": "number", "minimum": 1, "maximum": 64}, "blue": {"type": "number", "minimum": 1, "maximum": 64}}
     },
+    "includePreview": {"type": "boolean"},
     "settleMilliseconds": {"type": "integer", "minimum": 0, "maximum": 10000},
     "context": {"type": "object", "maxProperties": 16, "propertyNames": {"maxLength": 64}, "additionalProperties": {"type": "string", "maxLength": 256}}
   },

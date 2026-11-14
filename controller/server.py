@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -95,6 +95,8 @@ def validate_request(request):
         raise Invalid('Streaming requires original captures and originals-v1')
     if type(request["settleMilliseconds"]) is not int or not 0 <= request["settleMilliseconds"] <= 10000:
         raise Invalid("Invalid settling interval")
+    if 'includePreview' in request and type(request['includePreview']) is not bool:
+        raise Invalid('includePreview must be boolean')
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
     if (exposure is None) != (iso is None):
         raise Invalid("Manual exposure requires shutter time and ISO")
@@ -182,8 +184,12 @@ def validate_gain_maps(ops, width, height):
 def manifest_files(manifest):
     """Validate transfer structure, including provenance-only averaged originals."""
     required = {"protocolVersion", "request", "camera", "frames", "startedAt", "completedAt", "processing"}
-    if not isinstance(manifest, dict) or not required <= manifest.keys() or manifest.keys() - required - {"aggregation", "streaming"}:
+    if not isinstance(manifest, dict) or not required <= manifest.keys() or manifest.keys() - required - {"aggregation", "streaming", "performance"}:
         raise Invalid("Malformed manifest")
+    if 'performance' in manifest and (not isinstance(manifest['performance'],dict) or
+            len(manifest['performance'])>16 or any(not isinstance(k,str) or len(k)>64 or not number(v,0,86400)
+            for k,v in manifest['performance'].items())):
+        raise Invalid('Malformed performance timings')
     request = validate_request(manifest["request"])
     frames = manifest["frames"]
     n = request["frameCount"]
@@ -234,7 +240,7 @@ def manifest_files(manifest):
         accepted = indices(a["acceptedIndices"])
         retained = indices(a["retainedOriginalIndices"])
         if not isinstance(a["rejected"], list) or any(not isinstance(r, dict) or set(r) != {"index", "reason"} or
-                r["reason"] not in ("empty_signal", "capture_integrity_not_verified") for r in a["rejected"]):
+                r["reason"] not in ("empty_signal", "capture_integrity_not_verified", "capture_timing_invalid") for r in a["rejected"]):
             raise Invalid("Invalid averaging rejections")
         rejected = indices([r["index"] for r in a["rejected"]])
         if accepted & rejected or accepted | rejected != set(range(1, len(frames)+1)):
@@ -329,6 +335,84 @@ def atomic_json(path, value):
             temporary.unlink(missing_ok=True)
         except OSError:
             pass  # Preserve the original failure if cleanup is also blocked.
+
+
+def receive_file(state, job_id, lease, name, length, digest, read, timing=None):
+    """One validated storage path for HTTP uploads and direct phone downloads."""
+    started = time.monotonic()
+    read_seconds = 0.
+    match = FILE_RE.fullmatch(name)
+    if not match and name not in AVERAGE_FILES:
+        raise Invalid("Invalid filename")
+    if type(length) is not int or not 0 <= length <= MAX_FILE:
+        raise Invalid("Invalid file length", 413)
+    if not HASH_RE.fullmatch(digest):
+        raise Invalid("SHA-256 required")
+    with state.lock:
+        job = state.job(job_id, lease, allow_complete=True)
+        if job["request"].get("operation") == "applyControls":
+            raise Invalid("Control operations cannot upload photos", 409)
+        if job["cancelled"]:
+            raise Invalid("Capture cancelled", 409)
+        averaging = "averaging" in job["request"]
+        count = job["request"]["frameCount"]
+        if match and not 1 <= int(match[1]) <= count * (2 if averaging or 'streaming' in job['request'] else 1):
+            raise Invalid("Invalid frame index")
+        if not match and not averaging:
+            raise Invalid("Average payload not requested")
+        expected_image = ".dng" if job["request"]["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
+        if match and match[2] not in {expected_image, ".json", ".preview.jpg"}:
+            raise Invalid("File does not match requested format")
+        previous = job["files"].get(name)
+        if previous and (previous["sha256"] != digest or previous["bytes"] != length):
+            raise Invalid("Conflicting duplicate file", 409)
+        if job["status"] == "complete" and previous is None:
+            raise Invalid("Completed capture is immutable", 409)
+        if name in job["uploading"]:
+            raise Invalid("File already uploading", 409)
+        if sum(file["bytes"] for file in job["files"].values()) + length > MAX_JOB_BYTES:
+            raise Invalid("Capture storage limit exceeded", 413)
+        if shutil.disk_usage(state.directory).free < length + 100 * 1024 * 1024:
+            raise Invalid("Insufficient controller disk space", 507)
+        job["uploading"].add(name)
+        temporary = job["directory"] / (name + "." + secrets.token_hex(8) + ".part")
+    try:
+        hash_state = hashlib.sha256()
+        with temporary.open("xb") as stream:
+            remaining = length
+            deadline = time.monotonic() + 180
+            while remaining:
+                if time.monotonic() > deadline:
+                    raise Invalid("Upload deadline exceeded", 408)
+                read_started = time.monotonic()
+                chunk = read(min(1024 * 1024, remaining))
+                read_seconds += time.monotonic()-read_started
+                if len(chunk) > remaining:
+                    raise Invalid("Oversized upload chunk", 413)
+                if not chunk:
+                    raise Invalid("Truncated upload")
+                remaining -= len(chunk)
+                hash_state.update(chunk)
+                stream.write(chunk)
+        if hash_state.hexdigest() != digest:
+            raise Invalid("Content hash mismatch", 422)
+        media_type = {".dng": "image/dng", ".jpg": "image/jpeg", ".preview.jpg": "image/jpeg", ".json": "application/json"}[match[2]] if match else "application/octet-stream"
+        receipt = {"name": name, "bytes": length, "sha256": digest, "mediaType": media_type}
+        with state.lock:
+            job = state.job(job_id, lease, allow_complete=True)
+            if job["cancelled"]:
+                raise Invalid("Capture cancelled", 409)
+            if previous is None:
+                os.replace(temporary, job["directory"] / name)
+                job["files"][name] = receipt
+                state.persist(job)
+        if timing is not None:
+            timing.update(readSeconds=read_seconds, commitSeconds=time.monotonic()-started-read_seconds)
+        return receipt
+    finally:
+        with state.lock:
+            job["uploading"].discard(name)
+        temporary.unlink(missing_ok=True)
 
 
 class State:
@@ -590,74 +674,13 @@ class Handler(BaseHTTPRequestHandler):
             raise Invalid("Unknown endpoint", 404)
 
     def upload(self, job_id, lease, name):
-        state = self.server.state
-        match = FILE_RE.fullmatch(name)
-        if not match and name not in AVERAGE_FILES:
-            raise Invalid("Invalid filename")
-        length = self.length(MAX_FILE)
-        digest = self.headers.get("X-Content-SHA256", "")
-        if not HASH_RE.fullmatch(digest):
-            raise Invalid("SHA-256 required")
-        with state.lock:
-            job = state.job(job_id, lease, allow_complete=True)
-            if job["request"].get("operation") == "applyControls":
-                raise Invalid("Control operations cannot upload photos", 409)
-            if job["cancelled"]:
-                raise Invalid("Capture cancelled", 409)
-            averaging = "averaging" in job["request"]
-            count = job["request"]["frameCount"]
-            if match and not 1 <= int(match[1]) <= count * (2 if averaging or 'streaming' in job['request'] else 1):
-                raise Invalid("Invalid frame index")
-            if not match and not averaging:
-                raise Invalid("Average payload not requested")
-            expected_image = ".dng" if job["request"]["format"] in ("bayerRaw", "appleProRaw") else ".jpg"
-            if match and match[2] not in {expected_image, ".json", ".preview.jpg"}:
-                raise Invalid("File does not match requested format")
-            previous = job["files"].get(name)
-            if previous and (previous["sha256"] != digest or previous["bytes"] != length):
-                raise Invalid("Conflicting duplicate file", 409)
-            if job["status"] == "complete" and previous is None:
-                raise Invalid("Completed capture is immutable", 409)
-            if name in job["uploading"]:
-                raise Invalid("File already uploading", 409)
-            if sum(file["bytes"] for file in job["files"].values()) + length > MAX_JOB_BYTES:
-                raise Invalid("Capture storage limit exceeded", 413)
-            if shutil.disk_usage(state.directory).free < length + 100 * 1024 * 1024:
-                raise Invalid("Insufficient controller disk space", 507)
-            job["uploading"].add(name)
-            temporary = job["directory"] / (name + "." + secrets.token_hex(8) + ".part")
-        try:
-            hash_state = hashlib.sha256()
-            with temporary.open("xb") as stream:
-                remaining = length
-                deadline = time.monotonic() + 180
-                while remaining:
-                    if time.monotonic() > deadline:
-                        raise Invalid("Upload deadline exceeded", 408)
-                    chunk = self.rfile.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise Invalid("Truncated upload")
-                    remaining -= len(chunk)
-                    self.bytes_read += len(chunk)
-                    hash_state.update(chunk)
-                    stream.write(chunk)
-            if hash_state.hexdigest() != digest:
-                raise Invalid("Content hash mismatch", 422)
-            media_type = {".dng": "image/dng", ".jpg": "image/jpeg", ".preview.jpg": "image/jpeg", ".json": "application/json"}[match[2]] if match else "application/octet-stream"
-            receipt = {"name": name, "bytes": length, "sha256": digest, "mediaType": media_type}
-            with state.lock:
-                job = state.job(job_id, lease, allow_complete=True)
-                if job["cancelled"]:
-                    raise Invalid("Capture cancelled", 409)
-                if previous is None:
-                    os.replace(temporary, job["directory"] / name)
-                    job["files"][name] = receipt
-                    state.persist(job)
-            self.reply(200, receipt)
-        finally:
-            with state.lock:
-                job["uploading"].discard(name)
-            temporary.unlink(missing_ok=True)
+        def read(size):
+            chunk = self.rfile.read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+        receipt = receive_file(self.server.state, job_id, lease, name,
+            self.length(MAX_FILE), self.headers.get("X-Content-SHA256", ""), read)
+        self.reply(200, receipt)
 
     def complete_controls(self, job_id, lease, result):
         required = {"protocolVersion", "request", "camera", "deviceExposureSeconds", "deviceISO",

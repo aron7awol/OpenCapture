@@ -73,7 +73,10 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val averaging = OpenCaptureProtocol.averaging(request)
         require(averaging == null || cap.getJSONArray("frameAveragingModes").length() > 0) { "This camera does not support on-device averaging" }
         val selection = averaging?.let { BayerAverage.Selection(count, it.policy) }
-        fun checkCancelled() { check(!cancel.get()) { "Capture cancelled" } }
+        fun checkCancelled() {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException("Inspection cancelled")
+            check(!cancel.get()) { "Capture cancelled" }
+        }
         val directory = if (controlOnly) null else CaptureArchives(root).create(request.getString("id"))
         if (directory != null) {
             val needed = (stream?.limit ?: selection?.maxAttempts ?: count) * cap.getInt("maxPhotoWidth").toLong() * cap.getInt("maxPhotoHeight") * 2 +
@@ -81,24 +84,15 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             check(directory.usableSpace >= needed) { "Not enough free space for individual DNG originals" }
         }
         val start = Instant.now().toString()
+        val captureStarted = System.nanoTime()
         stream?.begin(cap,start,"Camera2 RAW_SENSOR -> DngCreator; immutable original frames, controller selection; no averaging or demosaicing")
         val records = JSONArray()
-        try {
-            val sequence = camera.captureDngOriginals(settings, count, directory, cancel,
-                stream?.limit ?: selection?.maxAttempts ?: count,
-                stream?.let { { it.next() } } ?: selection?.let { { it.needsMore() } }) { frame ->
-                if(stream?.isFrozen==true) { frame.file.delete(); return@captureDngOriginals }
-                val index = records.length() + 1
-                val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
-                val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
-                val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
-                OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
-                    .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
-                    .put("native", native).put("characteristics", staticMetadata(c))
-                    .put("captureDiagnostics", JSONObject(frame.diagnostics)))
-                if (selection != null) {
+        val processor = if (selection == null) null else FrameProcessor<Pair<com.uniformitycomp.capture.DngFrame,BayerAverage.Evidence>>()
+        fun inspectFrame(frame: com.uniformitycomp.capture.DngFrame): BayerAverage.Evidence {
+            val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
                     val evidence = BayerAverage.inspect(frame.file, frame.width, frame.height,
-                        integrity?.get("assessment") as? String ?: "incomplete_diagnostics", ::checkCancelled)
+                        integrity?.get("assessment") as? String ?: "incomplete_diagnostics", check = ::checkCancelled,
+                        timingInvalid = (frame.diagnostics["timingIntegrity"] as? Map<*, *>)?.get("status") == "invalid")
                     val map = frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
                     require(!cap.getBoolean("lensShadingMapRequested") || (map != null &&
                         frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_MAP_MODE) == 1 &&
@@ -108,8 +102,19 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                         DngGainMaps.verify(evidence.layout.gainMaps,map.rowCount,map.columnCount,
                             gains.map { it.toDouble() },evidence.layout.cfa)
                     } else require(evidence.layout.gainMaps.isEmpty()) { "DNG gains have no Camera2 provenance" }
-                    selection.attempts.add(evidence)
-                }
+                    return evidence
+        }
+        fun recordFrame(frame: com.uniformitycomp.capture.DngFrame, evidence: BayerAverage.Evidence? = null) {
+                if(stream?.isFrozen==true) { frame.file.delete(); return }
+                val index = records.length() + 1
+                val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
+                val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
+                val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
+                OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
+                    .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
+                    .put("native", native).put("characteristics", staticMetadata(c))
+                    .put("captureDiagnostics", JSONObject(frame.diagnostics)))
+                if (evidence != null) selection!!.attempts.add(evidence)
                 // Full evidence is in the hashed sidecar; keep logcat below its line limit.
                 android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
                     "diagnostics=${frame.diagnostics["diagnosticsVersion"]} " +
@@ -123,10 +128,35 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 stream?.publish(records.getJSONObject(index-1))
                 progress(if (selection == null) "Saved DNG $index / $count" else
                     "Checked $index attempts; ${selection.accepted().size} / $count usable")
+        }
+        fun drainInspection() {
+            processor?.take()?.let { (frame,evidence) -> recordFrame(frame,evidence) }
+        }
+        fun needsAverage(): Boolean {
+            if (processor!!.isDone || (processor.hasPending && selection!!.accepted().size+1 >= count)) drainInspection()
+            return selection!!.needsMore()
+        }
+        try {
+            val sequence = camera.captureDngOriginals(settings, count, directory, cancel,
+                stream?.limit ?: selection?.maxAttempts ?: count,
+                stream?.let { { it.next() } } ?: selection?.let { { needsAverage() } }) { frame ->
+                if (processor == null) recordFrame(frame)
+                else {
+                    drainInspection()
+                    if (!selection!!.needsMore()) frame.file.delete()
+                    else processor.submit {
+                        val started = android.os.SystemClock.elapsedRealtimeNanos()
+                        val evidence = inspectFrame(frame)
+                        frame.copy(diagnostics=frame.diagnostics+mapOf("inspectionStartedElapsedNs" to started,
+                            "inspectionEndedElapsedNs" to android.os.SystemClock.elapsedRealtimeNanos())) to evidence
+                    }
+                }
             }
+            drainInspection()
             if (controlOnly) return reading(sequence.reading, c).put("protocolVersion", 1).put("request", request)
                 .put("camera", cap).put("completedAt", Instant.now().toString()) to null
             if(stream!=null) return stream.finish() to directory
+            val aggregationStarted = System.nanoTime()
             val manifest = JSONObject().put("protocolVersion", 1).put("request", request).put("camera", cap)
                 .put("frames", records).put("startedAt", start).put("completedAt", Instant.now().toString())
                 .put("processing", "Camera2 RAW_SENSOR -> DngCreator; original samples; remaining lens shading map requested where supported, actual metadata in sidecars and DNG; no demosaicing; orientation native")
@@ -162,13 +192,16 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 } else aggregation.put("files", JSONObject())
                 manifest.put("aggregation", aggregation).put("processing", "Camera2 RAW_SENSOR -> DngCreator -> signed black/white normalization -> embedded DNG GainMaps -> fractional Bayer-site means and luma moments; native clipping before gains; no demosaic")
             }
+            manifest.put("completedAt", Instant.now().toString()).put("performance", JSONObject()
+                .put("captureAndInspectionSeconds",(aggregationStarted-captureStarted)/1e9)
+                .put("aggregationAndPackagingSeconds",(System.nanoTime()-aggregationStarted)/1e9))
             OpenCaptureProtocol.saveJson(File(directory, "manifest.json"), manifest)
             return manifest to directory
         } catch (error: Exception) {
             if (directory != null) OpenCaptureProtocol.saveJson(File(directory, "failure.json"), JSONObject()
                 .put("status", if (cancel.get()) "cancelled" else "failed").put("message", error.message ?: "Capture failed"))
             throw error
-        }
+        } finally { processor?.close() }
     }
 
     fun currentReading(): JSONObject = reading(requireNotNull(camera.lastPreviewResult) { "Wait for the camera preview to settle" }, camera.selectedCharacteristics())
@@ -206,7 +239,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("cropRegion", r.get(CaptureResult.SCALER_CROP_REGION)?.toShortString())
             .put("colorCorrectionTransform", r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.toString())
             .put("maximumFocusDiopters", c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f)
-            .put("sensorTimestampSource", c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE))
+            .put("sensorTimestampSource", c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) ?: 0)
             .put("rollingShutterSkewNs", r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW))
             .put("pipelineDepth", r.get(CaptureResult.REQUEST_PIPELINE_DEPTH))
             .put("aeState", r.get(CaptureResult.CONTROL_AE_STATE))

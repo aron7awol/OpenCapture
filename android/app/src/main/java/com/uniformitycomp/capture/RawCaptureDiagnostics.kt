@@ -8,6 +8,20 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 import kotlin.math.sqrt
 
+/** App-clock completion bound plus comparable Camera2 exposure-start evidence. */
+internal object RawTiming {
+    const val POLICY = "fresh-camera2-raw-v1"
+    fun assess(submitted: Long, arrived: Long, exposure: Long, sensor: Long, source: Int): Map<String, Any> {
+        require(submitted > 0 && arrived > 0 && exposure in 1..30_000_000_000L && sensor > 0 && source in 0..1)
+        val tolerance = maxOf(5_000_000L, minOf(50_000_000L, exposure / 50))
+        val findings = mutableListOf<String>()
+        if (arrived < submitted || arrived-submitted+tolerance < exposure) findings.add("image_arrived_before_exposure")
+        if (source == 1 && sensor+tolerance < submitted) findings.add("sensor_start_before_request")
+        return mapOf("policy" to POLICY, "status" to if (findings.isEmpty()) "passed" else "invalid",
+            "toleranceNs" to tolerance, "findings" to findings)
+    }
+}
+
 /** Sparse native samples only. No demosaic, normalization, frame selection or buffer mutation. */
 internal object RawBufferDiagnostics {
     const val POLICY = "raw16-sparse-bayer-blocks-v1"
@@ -110,7 +124,20 @@ internal object DngSampleDiagnostics {
         fun pixel(x: Int, y: Int): Int = reader.get(x, y)
     }
 
-    fun <T> read(file: File, width: Int, height: Int, consume: (Raster) -> T): T = RandomAccessFile(file, "r").use { stream ->
+    class OpenRaster(val raster: Raster, private val stream: RandomAccessFile) : java.io.Closeable {
+        override fun close() = stream.close()
+    }
+
+    fun open(file: File, width: Int, height: Int): OpenRaster {
+        val stream = RandomAccessFile(file, "r")
+        try { return OpenRaster(parse(stream, width, height), stream) }
+        catch (error: Throwable) { stream.close(); throw error }
+    }
+
+    fun <T> read(file: File, width: Int, height: Int, consume: (Raster) -> T): T =
+        open(file, width, height).use { consume(it.raster) }
+
+    private fun parse(stream: RandomAccessFile, width: Int, height: Int): Raster {
         val size = stream.length()
         require(size in 8..MAX_BYTES) { "DNG length is outside diagnostic bounds" }
         fun read(offset: Long, count: Int): ByteArray {
@@ -202,7 +229,7 @@ internal object DngSampleDiagnostics {
         // At most 128 sampled rows are read; cache only the current Bayer row pair.
         val cached = arrayOfNulls<ByteBuffer>(2)
         val cachedY = intArrayOf(-1, -1)
-        consume(Raster(width, height, fields, order, strips, rows) { x, y ->
+        return Raster(width, height, fields, order, strips, rows) { x, y ->
             require(x in 0 until width && y in 0 until height)
             val slot = y % 2
             if (cachedY[slot] != y) {
@@ -211,7 +238,7 @@ internal object DngSampleDiagnostics {
                 cachedY[slot] = y
             }
             cached[slot]!!.getShort(x * 2).toInt() and 65535
-        })
+        }
     }
 
     fun sample(file: File, width: Int, height: Int): Map<String, Any> = read(file, width, height) { raster ->

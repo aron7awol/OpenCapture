@@ -25,7 +25,7 @@ internal object BayerAverage {
     }
 
     data class Evidence(val file: File, val layout: Layout, val rms: Double, val std: Double,
-                        val mean: Double, val clipped: Double, val integrity: String) {
+                        val mean: Double, val clipped: Double, val integrity: String, val timingInvalid: Boolean = false) {
         fun fields(): Map<String, Any> = mapOf("rms" to rms, "spatialStd" to std, "mean" to mean,
             "clippedFraction" to clipped, "integrity" to integrity, "normalization" to layout.fields())
     }
@@ -35,7 +35,7 @@ internal object BayerAverage {
         val maxAttempts = target * 2
         val attempts = mutableListOf<Evidence>()
         fun reasons(): List<String?> {
-            val credible = attempts.filter { it.integrity == "consistent_sampled_path" && it.rms >= .001 }
+            val credible = attempts.filter { !it.timingInvalid && it.integrity == "consistent_sampled_path" && it.rms >= .001 }
             fun median(values: List<Double>): Double {
                 val sorted = values.sorted()
                 return if (sorted.isEmpty()) 0.0 else (sorted[(sorted.size-1)/2] + sorted[sorted.size/2]) / 2
@@ -43,6 +43,7 @@ internal object BayerAverage {
             val rms = median(credible.map { it.rms })
             val std = median(credible.map { it.std })
             return attempts.map { item -> when {
+                item.timingInvalid -> "capture_timing_invalid"
                 item.integrity != "consistent_sampled_path" -> "capture_integrity_not_verified"
                 policy == "dark" -> null
                 item.clipped == 0.0 && item.rms < .001 && item.std < .00025 &&
@@ -90,14 +91,15 @@ internal object BayerAverage {
         return Layout(r.width, r.height, area, black, white, cfa, maps)
     }
 
-    private fun block(r: DngSampleDiagnostics.Raster, l: Layout, x: Int, y: Int, out: FloatArray): Boolean {
+    private fun block(r: DngSampleDiagnostics.Raster, l: Layout, x: Int, y: Int, out: FloatArray,
+                      gains: FloatArray? = null, gainOffset: Int = 0): Boolean {
         var clip = false
         var luma = 0f
         for (site in 0..3) {
             val native = r.pixel(l.area[1]+2*x+site%2, l.area[0]+2*y+site/2)
             val value = ((native.toFloat()-l.black[site].toFloat())/(l.white.toFloat()-l.black[site].toFloat()))
             require(value.isFinite() && value in -1f..2f) { "Normalized RAW samples outside supported range" }
-            out[site] = value * l.gain(site,2*x+site%2,2*y+site/2)
+            out[site] = value * (gains?.get(gainOffset+site) ?: l.gain(site,2*x+site%2,2*y+site/2))
             luma += out[site] * .25f
             if (value >= .995f) clip = true
         }
@@ -105,9 +107,11 @@ internal object BayerAverage {
         return clip
     }
 
-    fun inspect(file: File, width: Int, height: Int, integrity: String, check: () -> Unit): Evidence =
+    fun inspect(file: File, width: Int, height: Int, integrity: String,
+                timingInvalid: Boolean = false, check: () -> Unit): Evidence =
         DngSampleDiagnostics.read(file, width, height) { r ->
             val l = layout(r)
+            if (timingInvalid) return@read Evidence(file,l,0.0,0.0,0.0,0.0,integrity,true)
             var n = 0L
             var mean = 0.0
             var m2 = 0.0
@@ -130,10 +134,19 @@ internal object BayerAverage {
     /** Strip-wise Welford moments, bounded independently of burst length. */
     fun write(frames: List<Evidence>, directory: File, check: () -> Unit) {
         require(frames.size in 1..32)
+        check()
         val l = frames.first().layout
         require(frames.all { it.layout == l }) { "DNG normalization changed during burst" }
         val moments = File(directory, "average.f32")
         val clipping = File(directory, "average-clips.u8")
+        val readers = mutableListOf<DngSampleDiagnostics.OpenRaster>()
+        try {
+        for (frame in frames) {
+            check()
+            val reader = DngSampleDiagnostics.open(frame.file,l.rawWidth,l.rawHeight)
+            readers.add(reader)
+            require(layout(reader.raster) == l) { "DNG normalization changed during averaging" }
+        }
         moments.outputStream().buffered().use { output -> clipping.outputStream().buffered().use { clipped ->
             for (start in 0 until l.height step 32) {
                 check()
@@ -142,15 +155,18 @@ internal object BayerAverage {
                 val means = DoubleArray(pixels*5)
                 val m2 = DoubleArray(pixels)
                 val clips = ByteArray(pixels)
-                frames.forEachIndexed { frameIndex, frame ->
-                    DngSampleDiagnostics.read(frame.file, l.rawWidth, l.rawHeight) { r ->
-                        require(layout(r) == l)
+                val gains = if (l.gainMaps.isEmpty()) null else FloatArray(pixels*4) { i ->
+                    val site=i%4; val pixel=i/4
+                    l.gain(site,2*(pixel%l.width)+site%2,2*(start+pixel/l.width)+site/2)
+                }
+                readers.forEachIndexed { frameIndex, reader ->
+                        val r = reader.raster
                         val values = FloatArray(5)
                         for (y in 0 until rows) {
                             check()
                             for (x in 0 until l.width) {
                                 val i = y*l.width+x
-                                if (block(r, l, x, start+y, values)) clips[i] = (clips[i]+1).toByte()
+                                if (block(r, l, x, start+y, values,gains,i*4)) clips[i] = (clips[i]+1).toByte()
                                 for (site in 0..4) {
                                     val delta = values[site]-means[i*5+site]
                                     means[i*5+site] += delta/(frameIndex+1)
@@ -158,7 +174,6 @@ internal object BayerAverage {
                                 }
                             }
                         }
-                    }
                 }
                 val bytes = ByteBuffer.allocate(pixels*24).order(ByteOrder.LITTLE_ENDIAN)
                 for (i in 0 until pixels) {
@@ -169,5 +184,6 @@ internal object BayerAverage {
                 clipped.write(clips)
             }
         } }
+        } finally { readers.forEach { it.close() } }
     }
 }

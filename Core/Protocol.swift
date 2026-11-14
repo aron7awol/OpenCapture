@@ -43,6 +43,7 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public var context: [String: String] = [:]
     public var averaging: AveragingOptions? = nil
     public var streaming: StreamingOptions? = nil
+    public var includePreview: Bool? = nil
 
     public init(id: String = UUID().uuidString.lowercased()) { self.id = id }
 
@@ -98,7 +99,7 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> CaptureRequest {
         guard data.count <= 16384,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging", "streaming"]) else {
+              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging", "streaming", "includePreview"]) else {
             throw CaptureError.invalid("Malformed request or unknown field")
         }
         if let wb = object["whiteBalance"] as? [String: Any], Set(wb.keys) != ["red", "green", "blue"] {
@@ -151,6 +152,7 @@ public struct CameraCapabilities: Codable, Sendable {
     public var platform: String? = nil
     public var frameAveragingModes: [String]? = nil
     public var captureStreamingModes: [String]? = nil
+    public var optionalPhotoPreview: Bool? = nil
 }
 
 public struct CameraControlResult: Codable, Sendable {
@@ -199,6 +201,7 @@ public struct CaptureManifest: Codable, Sendable {
     public var processing: String
     public var aggregation: BayerAggregation? = nil
     public var streaming: StreamSelection? = nil
+    public var performance: [String: Double]? = nil
 }
 
 public struct StreamingOptions: Codable, Equatable, Sendable {

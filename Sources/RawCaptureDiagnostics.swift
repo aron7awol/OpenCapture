@@ -51,9 +51,9 @@ enum RawCaptureDiagnostics {
     }
 
     static func finish(before: NativeRawSnapshot, after: NativeRawSnapshot, data: Data, file: URL,
-                       stage: URL?, start: UInt64, encoded: UInt64) throws -> [String:Any] {
+                       encodedReceipt: CapturedFile, stage: URL?, start: UInt64, encoded: UInt64) throws -> [String:Any] {
         let fileReceipt = try BayerAverage.receipt(file,media:"image/dng")
-        let encodedHash = SHA256.hash(data:data).map {String(format:"%02x",$0)}.joined()
+        let encodedHash = encodedReceipt.sha256
         let same = before.hash == after.hash && before.width == after.width && before.height == after.height && before.format == after.format
         let written = fileReceipt.sha256 == encodedHash && fileReceipt.bytes == data.count
         var diagnostic: [String:Any] = ["diagnosticsVersion":3,"platform":"ios","rawBeforeDng":before.fields,"rawAfterDng":after.fields,

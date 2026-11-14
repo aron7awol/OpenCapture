@@ -83,18 +83,31 @@ class CameraController(private val context: Context) {
         val reader = requireNotNull(rawReader) { "No supported RAW size" }
         val surface = requireNotNull(previewSurface) { "Start the aiming preview first" }
         registerCapture(cancel) { cancel.set(true) }
-        previewSession?.close()
-        previewSession = null
+        val configured = requireNotNull(previewSession) { "Preview session is not ready" }
         previewReady = false
+        var succeeded = false
         try {
-            val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true)
+            val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
+                existingSession = configured, previousLocked = dngPreviewControls)
                 .run(settings, count, directory, onFrame, maxAttempts, needsMore)
             dngPreviewControls = sequence.locked
+            succeeded = true
             return sequence
         } finally {
             activeCaptureCancel = null
             activeCaptureCleanup = null
-            cameraHandler.post { if (cameraDevice === camera) previewView?.takeIf { it.isAvailable }?.let { startPreview(it) } }
+            cameraHandler.post {
+                if (cameraDevice === camera) {
+                    if (succeeded && previewSession === configured && previewSurface === surface) {
+                        runCatching { repeatPreview(configured, surface) }.onFailure {
+                            previewReady = false; onConnectionLost?.invoke()
+                        }
+                    } else {
+                        dngPreviewControls = null
+                        previewView?.takeIf { it.isAvailable }?.let { startPreview(it) }
+                    }
+                }
+            }
         }
     }
 
@@ -185,7 +198,7 @@ class CameraController(private val context: Context) {
             previewSession = null
             previewSurface?.release()
             previewSurface = surface
-            camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+            camera.createCaptureSession(listOf(surface, requireNotNull(rawReader).surface), object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     if (previewSurface !== surface) {
                         session.close()
@@ -193,26 +206,7 @@ class CameraController(private val context: Context) {
                     }
                     previewSession = session
                     try {
-                        val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                        builder.addTarget(surface)
-                        builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                        val modes = selectedCharacteristics().get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
-                        val previewAfMode = listOf(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
-                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO, CaptureRequest.CONTROL_AF_MODE_AUTO,
-                            CaptureRequest.CONTROL_AF_MODE_OFF).firstOrNull { it in modes }
-                            ?: error("Camera advertises no supported preview focus mode")
-                        builder.set(CaptureRequest.CONTROL_AF_MODE, previewAfMode)
-                        dngPreviewControls?.let { DngCapture.applyLocked(builder, it, selectedCharacteristics(), reportLensShading = true) }
-                        session.setRepeatingRequest(builder.build(), object : CameraCaptureSession.CaptureCallback() {
-                            override fun onCaptureCompleted(
-                                session: CameraCaptureSession,
-                                request: CaptureRequest,
-                                result: TotalCaptureResult
-                            ) {
-                                lastPreviewResult = result
-                            }
-                        }, cameraHandler)
-                        previewReady = true
+                        repeatPreview(session, surface)
                     } catch (e: Exception) {
                         onError(e.message ?: "preview request failed")
                     }
@@ -236,12 +230,36 @@ class CameraController(private val context: Context) {
         }
     }
 
+    private fun repeatPreview(session: CameraCaptureSession, surface: Surface) {
+        val builder = requireNotNull(cameraDevice).createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+        builder.addTarget(surface)
+        builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+        val modes = selectedCharacteristics().get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
+        val previewAfMode = listOf(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO, CaptureRequest.CONTROL_AF_MODE_AUTO,
+            CaptureRequest.CONTROL_AF_MODE_OFF).firstOrNull { it in modes }
+            ?: error("Camera advertises no supported preview focus mode")
+        builder.set(CaptureRequest.CONTROL_AF_MODE, previewAfMode)
+        dngPreviewControls?.let { DngCapture.applyLocked(builder, it, selectedCharacteristics(), reportLensShading = true) }
+        session.setRepeatingRequest(builder.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                lastPreviewResult = result
+            }
+        }, cameraHandler)
+        previewReady = true
+    }
+
     fun cancelCurrentCapture() {
         activeCaptureCancel?.set(true)
         activeCaptureCleanup?.invoke()
     }
 
     fun close() {
+        dngPreviewControls = null
         lastPreviewResult = null
         previewReady = false
         pendingOpenCancel?.set(true)

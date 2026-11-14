@@ -48,6 +48,18 @@ class BayerAverageTest {
         assertEquals(listOf(0),s.accepted()); assertTrue(s.needsMore())
         s.attempts.add(evidence(0.0,0.0)); assertFalse(s.needsMore())
     }
+    @Test fun invalidTimingCannotCountAsADarkOrIlluminatedExposure() {
+        for (policy in listOf("dark","relative","illuminated")) {
+            val selection=BayerAverage.Selection(2,policy)
+            selection.attempts.add(evidence().copy(timingInvalid=true))
+            selection.attempts.add(evidence())
+            assertEquals(listOf(1),selection.accepted())
+            assertEquals("capture_timing_invalid",selection.reasons()[0])
+            assertTrue(selection.needsMore())
+            selection.attempts.add(evidence())
+            assertFalse(selection.needsMore())
+        }
+    }
     @Test fun relativePolicyReclassifiesInitialDropoutButNotAllDarkBurst() {
         val s=BayerAverage.Selection(3,"relative")
         s.attempts.add(evidence(.0001,0.0)); assertEquals(listOf(0),s.accepted())

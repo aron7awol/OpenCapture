@@ -24,6 +24,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let output = AVCapturePhotoOutput()
     private let video = AVCaptureVideoDataOutput()
     private let imageContext = CIContext(options: [.cacheIntermediates: false])
+    private let photoContext = CIContext(options: [.cacheIntermediates: false])
+    private var preparedKey: CaptureControlKey?
+    private var preparedActualKey: CaptureControlKey?
+    private var preparationTiming: [String:UInt64] = [:]
     private var device: AVCaptureDevice?
     private var delegate: StillDelegate?
     private var previewTime = 0.0
@@ -53,6 +57,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         guard granted else { throw CaptureError.unavailable("Camera permission is disabled. Enable it in Settings.") }
         return try await onQueue { [self] in
             guard delegate == nil else { throw CaptureError.unavailable("A photo is still in flight") }
+            preparedKey=nil; preparedActualKey=nil; preparationTiming=[:]
             session.stopRunning()
             session.beginConfiguration()
             do {
@@ -124,7 +129,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             proRAWMaxPhotoHeight: proRAW ? proRAWDimensions.map { Int($0.height) } : nil,
             platform:"ios", frameAveragingModes: raw && Int64(standardDimensions.width)*Int64(standardDimensions.height) <= 13_000_000 &&
                 output.availableRawPhotoPixelFormatTypes.contains(where:{RawCaptureDiagnostics.formats[$0] != nil}) ? [BayerAverage.mode] : [],
-            captureStreamingModes:["originals-v1"])
+            captureStreamingModes:["originals-v1"], optionalPhotoPreview:true)
     }
 
     func reading() async throws -> DeviceReading {
@@ -142,7 +147,32 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     func prepare(_ request: CaptureRequest) async throws {
         try request.validate()
+        let started=RawCaptureDiagnostics.now
+        let key=CaptureControlKey(request)
+        func reusable(_ d: AVCaptureDevice, _ key: CaptureControlKey) -> Bool {
+            let reading=Self.read(d)
+            return !d.isAdjustingExposure && !d.isAdjustingFocus && !d.isAdjustingWhiteBalance &&
+                (d.exposureMode == .custom || d.exposureMode == .locked) && d.focusMode == .locked &&
+                d.whiteBalanceMode == .locked && key.honors(exposure:reading.exposure,iso:reading.iso,
+                    focus:reading.focus,whiteBalance:reading.whiteBalance)
+        }
+        let canReuse=try await onQueue { [self] in
+            guard let key, let d=device, session.isRunning,
+                  key == preparedKey || key == preparedActualKey else { return false }
+            return reusable(d,key)
+        }
+        if canReuse {
+            // Physical pattern settling remains independent of control reuse.
+            try await Task.sleep(nanoseconds:UInt64(max(250,request.settleMilliseconds))*1_000_000)
+            let valid=try await onQueue { [self] in
+                guard let key, let d=device, session.isRunning, reusable(d,key) else { return false }
+                preparationTiming=["preparationStartedElapsedNs":started,"controlsLockedElapsedNs":RawCaptureDiagnostics.now,"controlsReused":1]
+                return true
+            }
+            if valid { return }
+        }
         try await onQueue { [self] in
+            preparedKey=nil; preparedActualKey=nil
             guard let d = device, session.isRunning else { throw CaptureError.unavailable("Camera is not running") }
             if request.format == .bayerRAW && !output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) {
                 throw CaptureError.unavailable("This camera configuration does not support Bayer RAW")
@@ -213,6 +243,15 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if d.isWhiteBalanceModeSupported(.locked) { d.whiteBalanceMode = .locked }
         }
         try await Task.sleep(nanoseconds: UInt64(max(250, request.settleMilliseconds)) * 1_000_000)
+        try await onQueue { [self] in
+            guard let d=device, session.isRunning else { throw CaptureError.unavailable("Camera stopped during preparation") }
+            let actual=Self.read(d)
+            var observed=request
+            observed.exposureSeconds=actual.exposure; observed.iso=actual.iso
+            observed.focusPosition=actual.focus; observed.whiteBalance=actual.whiteBalance
+            preparedKey=key; preparedActualKey=CaptureControlKey(observed)
+            preparationTiming=["preparationStartedElapsedNs":started,"controlsLockedElapsedNs":RawCaptureDiagnostics.now,"controlsReused":0]
+        }
     }
 
     func photo(request: CaptureRequest, index: Int, directory: URL) async throws -> FrameRecord {
@@ -235,13 +274,17 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     settings.maxPhotoDimensions = request.format == .appleProRAW ? (proRAWDimensions ?? standardDimensions) : standardDimensions
                     settings.photoQualityPrioritization = request.quality == .speed ? .speed : .quality
                     if output.supportedFlashModes.contains(.off) { settings.flashMode = .off }
-                    if let previewType = settings.availablePreviewPhotoPixelFormatTypes.first {
+                    if request.includePreview != false, let previewType = settings.availablePreviewPhotoPixelFormatTypes.first {
                         settings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: previewType,
                             kCVPixelBufferWidthKey as String: 640, kCVPixelBufferHeightKey as String: 480]
                     }
                     let capture = StillDelegate(directory: directory, index: index, format: request.format,
-                        averaging:request.averaging != nil, reading: { Self.read(d) }) { [weak self] result in
-                        self?.queue.async { self?.delegate = nil }
+                        averaging:request.averaging != nil, context:photoContext, preparation:preparationTiming,
+                        reading: { Self.read(d) }) { [weak self] result in
+                        self?.queue.async {
+                            self?.delegate = nil
+                            if case .failure = result { self?.preparedKey=nil; self?.preparedActualKey=nil }
+                        }
                         continuation.resume(with: result)
                     }
                     delegate = capture
@@ -264,7 +307,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         previewLock.lock(); defer { previewLock.unlock() }; return previewData
     }
 
-    func stop() { queue.async { self.session.stopRunning() } }
+    func stop() { queue.async { self.preparedKey=nil; self.preparedActualKey=nil; self.session.stopRunning() } }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         previewLock.lock(); let paused = previewPaused; previewLock.unlock()
@@ -284,15 +327,20 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private let index: Int
     private let format: CaptureFormat
     private let averaging: Bool
+    private let context: CIContext
+    private let preparation: [String:UInt64]
+    private let submitted = RawCaptureDiagnostics.now
     private let reading: () -> DeviceReading
     private var atShutter: DeviceReading?
     private let lock = NSLock()
     private var completion: ((Result<FrameRecord, Error>) -> Void)?
     private var outcome: Result<FrameRecord, Error>?
 
-    init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, reading: @escaping () -> DeviceReading,
+    init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, context: CIContext,
+         preparation: [String:UInt64], reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<FrameRecord, Error>) -> Void) {
         self.directory = directory; self.index = index; self.format = format; self.averaging = averaging
+        self.context=context; self.preparation=preparation
         self.reading = reading; self.completion = completion
     }
 
@@ -329,7 +377,10 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
                 do {
                     var diagnostics = try RawCaptureDiagnostics.finish(before:before,
                         after:RawCaptureDiagnostics.snapshot(buffer,retain:false),data:data,file:directory.appendingPathComponent(file.name),
-                        stage:averaging ? directory.appendingPathComponent(base+".raw16") : nil,start:start,encoded:encoded)
+                        encodedReceipt:file, stage:averaging ? directory.appendingPathComponent(base+".raw16") : nil,start:start,encoded:encoded)
+                    diagnostics["requestSubmittedElapsedNs"]=submitted
+                    diagnostics["imageArrivedElapsedNs"]=start
+                    for (key,value) in preparation { diagnostics[key]=value }
                     diagnostics["photoTimestampSeconds"] = photo.timestamp.seconds
                     diagnostics["resolvedSettingsID"] = photo.resolvedSettings.uniqueID
                     metadataObject["captureDiagnostics"] = diagnostics
@@ -344,7 +395,6 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             var previewFile: CapturedFile?
             if let buffer = photo.previewPixelBuffer {
                 let image = CIImage(cvPixelBuffer: buffer)
-                let context = CIContext(options: [.cacheIntermediates: false])
                 if let cg = context.createCGImage(image, from: image.extent), let jpeg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.85) {
                     previewFile = try write(jpeg, name: base + ".preview.jpg", mediaType: "image/jpeg")
                 }

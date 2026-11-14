@@ -75,9 +75,15 @@ public enum BayerAverage {
         }
         return CapturedFile(name:url.lastPathComponent, bytes:count, sha256:hash.finalize().map {String(format:"%02x",$0)}.joined(), mediaType:media)
     }
-    private static func blocks(_ file: URL, _ layout: BayerLayout, start: Int, rows: Int, body: (Int,[Float],Bool) throws -> Void) throws {
-        let handle = try FileHandle(forReadingFrom:file); defer { try? handle.close() }
-        guard try handle.seekToEnd() == UInt64(layout.width*layout.height*8) else { throw CaptureError.invalid("Invalid staged Bayer raster size") }
+    private static func open(_ file: URL, _ layout: BayerLayout) throws -> FileHandle {
+        let handle=try FileHandle(forReadingFrom:file)
+        do {
+            guard try handle.seekToEnd() == UInt64(layout.width*layout.height*8) else { throw CaptureError.invalid("Invalid staged Bayer raster size") }
+            return handle
+        } catch { try? handle.close(); throw error }
+    }
+    private static func blocks(_ handle: FileHandle, _ layout: BayerLayout, start: Int, rows: Int,
+                               gains: [Float]? = nil, body: (Int,[Float],Bool) throws -> Void) throws {
         try handle.seek(toOffset:UInt64(start*layout.width*8))
         let count = rows*layout.width*8
         guard let data = try handle.read(upToCount:count), data.count == count else { throw CaptureError.invalid("Truncated staged Bayer raster") }
@@ -93,7 +99,10 @@ public enum BayerAverage {
                     let v = (Float(native)-Float(layout.blackLevels[site]))/(Float(layout.whiteLevel)-Float(layout.blackLevels[site]))
                     guard v.isFinite, (-1...2).contains(v) else { throw CaptureError.invalid("Native Bayer units disagree with DNG levels") }
                     clipped = clipped || v >= 0.995
-                    let corrected = v * (try layout.gain(x:2*x+site%2,y:2*(start+y)+site/2))
+                    let gain: Float
+                    if let gains { gain=gains[(y*layout.width+x)*4+site] }
+                    else { gain=try layout.gain(x:2*x+site%2,y:2*(start+y)+site/2) }
+                    let corrected = v * gain
                     values[site] = corrected
                     values[4] += corrected * 0.25
                 }
@@ -102,9 +111,10 @@ public enum BayerAverage {
         }
     }
     public static func inspect(file: URL, layout: BayerLayout, integrity: String) throws -> BayerEvidence {
+        let handle=try open(file,layout); defer { try? handle.close() }
         var n = 0, mean = 0.0, m2 = 0.0, clipped = 0
         for start in stride(from:0,to:layout.height,by:32) {
-            try blocks(file,layout,start:start,rows:min(32,layout.height-start)) { _, values, clip in
+            try blocks(handle,layout,start:start,rows:min(32,layout.height-start)) { _, values, clip in
                 n += 1; let value = Double(values[4]), delta = value-mean
                 mean += delta/Double(n); m2 += delta*(value-mean)
                 if clip { clipped += 1 }
@@ -117,6 +127,9 @@ public enum BayerAverage {
         guard (1...32).contains(frames.count), let layout = frames.first?.layout, frames.allSatisfy({$0.layout == layout}) else {
             throw CaptureError.invalid("DNG normalization changed during burst")
         }
+        var handles: [FileHandle] = []
+        defer { for handle in handles { try? handle.close() } }
+        for frame in frames { handles.append(try open(frame.file,layout)) }
         let moments = directory.appendingPathComponent("average.f32"), clipping = directory.appendingPathComponent("average-clips.u8")
         try Data().write(to:moments); try Data().write(to:clipping)
         let output = try FileHandle(forWritingTo:moments), clipOutput = try FileHandle(forWritingTo:clipping)
@@ -125,8 +138,12 @@ public enum BayerAverage {
             try Task.checkCancellation()
             let rows = min(32,layout.height-start), pixels = rows*layout.width
             var means = [Double](repeating:0,count:pixels*5), variance = [Double](repeating:0,count:pixels), clips = [UInt8](repeating:0,count:pixels)
-            for (f,frame) in frames.enumerated() {
-                try blocks(frame.file,layout,start:start,rows:rows) { i, values, clip in
+            let gains: [Float]? = layout.radialGain.isEmpty ? nil : try (0..<pixels*4).map { i in
+                let site=i%4, pixel=i/4
+                return try layout.gain(x:2*(pixel%layout.width)+site%2,y:2*(start+pixel/layout.width)+site/2)
+            }
+            for (f,handle) in handles.enumerated() {
+                try blocks(handle,layout,start:start,rows:rows,gains:gains) { i, values, clip in
                     if clip { clips[i] += 1 }
                     for site in 0..<5 {
                         let delta = Double(values[site])-means[i*5+site]
