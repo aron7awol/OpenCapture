@@ -15,6 +15,19 @@ object PreviewGeometry {
             kotlin.math.round(height * scale).toInt().coerceAtLeast(1))
     }
 
+    /** Rebase the view's transform for a surface copy stretched to thumbnail bounds. */
+    fun thumbnailTransform(transform: FloatArray, viewWidth: Int, viewHeight: Int,
+                           bitmapWidth: Int, bitmapHeight: Int): FloatArray {
+        require(transform.size == 9 && transform.all { it.isFinite() })
+        require(minOf(viewWidth, viewHeight, bitmapWidth, bitmapHeight) > 0)
+        val sx = bitmapWidth.toFloat() / viewWidth
+        val sy = bitmapHeight.toFloat() / viewHeight
+        return floatArrayOf(
+            transform[0], transform[1] * sx / sy, transform[2] * sx,
+            transform[3] * sy / sx, transform[4], transform[5] * sy,
+            transform[6] / sx, transform[7] / sy, transform[8])
+    }
+
     fun choose(sizes: List<Size>, photoWidth: Int, photoHeight: Int): Size? {
         val bounded = sizes.filter { it.width <= 1920 && it.height <= 1080 }.ifEmpty { sizes }
         val ratio = photoWidth.toDouble() / photoHeight.coerceAtLeast(1)

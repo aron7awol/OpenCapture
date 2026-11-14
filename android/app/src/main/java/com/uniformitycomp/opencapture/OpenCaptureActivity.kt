@@ -8,7 +8,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
 import android.net.ConnectivityManager
@@ -74,23 +77,33 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
                 val ip = lanAddress()
                 if (ip != address) stopServer()
                 if (camera.previewReady && server == null && ip != null) startServer(ip)
-                if (camera.previewReady && texture.isAvailable) {
-                    // Read at the view's dimensions, where its orientation/fit
-                    // matrix is defined, then resize uniformly for the browser.
-                    texture.bitmap?.let { original ->
-                        val size = PreviewGeometry.thumbnailSize(original.width, original.height)
-                        val bitmap = Bitmap.createScaledBitmap(original, size.width, size.height, true)
-                        val stream = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
-                        previewBytes = stream.toByteArray()
-                        if (bitmap !== original) bitmap.recycle()
-                        original.recycle()
-                    }
-                }
+                if (camera.previewReady && texture.isAvailable) updatePreviewJpeg()
                 if (camera.previewReady && ip == null) message("Waiting for Wi-Fi")
             }
             ui.postDelayed(this, 1000)
         }
+    }
+    private fun updatePreviewJpeg() {
+        if (texture.width <= 0 || texture.height <= 0) return
+        val size = PreviewGeometry.thumbnailSize(texture.width, texture.height)
+        val source = texture.getBitmap(size.width, size.height) ?: return
+        try {
+            // getBitmap copies the surface, not the view's fit/rotation transform.
+            // Apply that transform once, in thumbnail coordinates, without UI guides.
+            val values = FloatArray(9).also { texture.getTransform(Matrix()).getValues(it) }
+            val transform = Matrix().apply { setValues(PreviewGeometry.thumbnailTransform(values,
+                texture.width, texture.height, size.width, size.height)) }
+            val bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+            try {
+                Canvas(bitmap).apply {
+                    drawColor(Color.BLACK)
+                    drawBitmap(source, transform, Paint(Paint.FILTER_BITMAP_FLAG))
+                }
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                previewBytes = stream.toByteArray()
+            } finally { bitmap.recycle() }
+        } finally { source.recycle() }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

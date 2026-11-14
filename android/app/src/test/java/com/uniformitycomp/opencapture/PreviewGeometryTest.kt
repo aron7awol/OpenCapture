@@ -8,6 +8,25 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 class PreviewGeometryTest {
+    @Test fun remoteThumbnailRebasesTheActualViewTransformInAllOrientations() {
+        for ((vw, vh) in listOf(1080 to 2010, 1878 to 948, 320 to 200))
+            for (sensor in listOf(0, 90, 180, 270))
+                for (rotation in listOf(0, 90, 180, 270)) {
+                    val original = PreviewGeometry.textureFit(1440, 1080, vw, vh, sensor, rotation)
+                    val size = PreviewGeometry.thumbnailSize(vw, vh)
+                    val thumbnail = PreviewGeometry.thumbnailTransform(original, vw, vh, size.width, size.height)
+                    val sx = size.width.toDouble() / vw; val sy = size.height.toDouble() / vh
+                    for ((x, y) in listOf(0 to 0, vw to 0, 0 to vh, vw to vh, vw / 3 to vh / 4)) {
+                        val expectedX = (original[0] * x + original[1] * y + original[2]) * sx
+                        val expectedY = (original[3] * x + original[4] * y + original[5]) * sy
+                        assertEquals(expectedX, thumbnail[0] * x * sx + thumbnail[1] * y * sy + thumbnail[2], .001)
+                        assertEquals(expectedY, thumbnail[3] * x * sx + thumbnail[4] * y * sy + thumbnail[5], .001)
+                    }
+                }
+        assertThrows(IllegalArgumentException::class.java) { PreviewGeometry.thumbnailTransform(FloatArray(8), 1, 1, 1, 1) }
+        assertThrows(IllegalArgumentException::class.java) { PreviewGeometry.thumbnailTransform(FloatArray(9), 0, 1, 1, 1) }
+        assertThrows(IllegalArgumentException::class.java) { PreviewGeometry.thumbnailTransform(FloatArray(9) { Float.NaN }, 1, 1, 1, 1) }
+    }
     @Test fun remoteThumbnailUsesUniformScaleIncludingTallPortraitViews() {
         for((w,h) in listOf(1080 to 675,1080 to 2400,2400 to 1080,320 to 200)) {
             val size=PreviewGeometry.thumbnailSize(w,h)
