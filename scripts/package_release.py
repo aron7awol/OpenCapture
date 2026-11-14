@@ -39,7 +39,7 @@ def package(app, output, repository):
         "versions": [{"version": version, "buildVersion": build,
                       "date": datetime.now(timezone.utc).isoformat(), "downloadURL": base + "/OpenCapture.ipa",
                       "size": ipa.stat().st_size, "sha256": digest, "minOSVersion": info.get("MinimumOSVersion", "17.0"),
-                      "localizedDescription": "Original bursts can overlap up to two unfinished photos. Verified unchanged manual controls can be reused, and optional Bayer averaging overlaps saved-frame inspection with the next exposure. A compatible desktop controller can omit unused photo thumbnails. Bayer RAW, Apple ProRAW and JPEG retain their original formats and receipts. Actual phone speed and image quality still need device testing; keep the app open on a trusted LAN."}],
+                      "localizedDescription": "Original bursts, including original-frame streaming, can overlap up to two unfinished photos. Verified unchanged manual controls can be reused, and optional Bayer averaging overlaps saved-frame inspection with the next exposure. Use a matching updated desktop controller for the new capture evidence and optional photo thumbnails. Bayer RAW, Apple ProRAW and JPEG retain their original formats and receipts. Actual phone speed and image quality still need device testing; keep the app open on a trusted LAN."}],
         "appPermissions": {"entitlements": [], "privacy": {key: value for key, value in info.items() if key.startswith("NS") and key.endswith("UsageDescription")}}}
     source = {"name": "OpenCapture", "website": f"https://github.com/{repository}", "apps": [app_entry], "news": []}
     (output / "altstore.json").write_text(json.dumps(source, indent=2) + "\n", encoding="utf-8")
