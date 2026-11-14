@@ -9,16 +9,19 @@ import kotlin.math.sqrt
 
 /** No demosaic or integer rounding. All coordinates are native, before geometric rendering. */
 internal object BayerAverage {
-    const val MODE = "bayer-mean-v1"
-    const val DOMAIN = "black_subtracted_bayer_site_relative_signal"
+    const val MODE = "bayer-mean-v3"
+    const val DOMAIN = "black_subtracted_dng_corrected_bayer_site_relative_signal"
 
     data class Layout(val rawWidth: Int, val rawHeight: Int, val area: List<Int>,
-                      val black: List<Double>, val white: Double, val cfa: List<Int>) {
+                      val black: List<Double>, val white: Double, val cfa: List<Int>,
+                      val gainMaps: List<DngGainMaps.Map> = emptyList()) {
         val width get() = (area[3] - area[1]) / 2
         val height get() = (area[2] - area[0]) / 2
         fun fields(): Map<String, Any> = mapOf("rawWidth" to rawWidth, "rawHeight" to rawHeight,
             "width" to width, "height" to height, "activeArea" to area, "blackLevels" to black,
-            "whiteLevel" to white, "cfa" to cfa, "domain" to DOMAIN)
+            "whiteLevel" to white, "cfa" to cfa, "domain" to DOMAIN, "gainMaps" to gainMaps.map { it.fields() })
+        private val siteMaps = List(4) { site -> gainMaps.firstOrNull { it.area.take(2) == listOf(site/2,site%2) } }
+        fun gain(site: Int, x: Int, y: Int) = siteMaps[site]?.gain(x,y,width*2,height*2) ?: 1f
     }
 
     data class Evidence(val file: File, val layout: Layout, val rms: Double, val std: Double,
@@ -56,7 +59,7 @@ internal object BayerAverage {
         require(r.width.toLong()*r.height <= 13_000_000) { "On-device averaging supports RAW up to 13 MP" }
         require(listOf(50712, 50715, 50716).none { it in f }) { "DNG linearization/spatial black levels need desktop originals" }
         require(f[50718]?.map { it.toDouble() } in listOf(null, listOf(1.0, 1.0))) { "Unsupported DNG default scale" }
-        for (tag in listOf(51008, 51009, 51022)) f[tag]?.let { values ->
+        for (tag in listOf(51008, 51022)) f[tag]?.let { values ->
             val bytes = ByteArray(values.size) { values[it].toByte() }
             val b = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
             require(bytes.size >= 4) { "Truncated DNG opcode list" }
@@ -83,7 +86,8 @@ internal object BayerAverage {
         val black = List(4) { levels[if (levels.size == 1) 0 else it] }
         val white = requireNotNull(f[50717]?.singleOrNull()).toDouble()
         require(white in 1.0..65535.0 && black.all { it.isFinite() && it >= 0 && it < white })
-        return Layout(r.width, r.height, area, black, white, cfa)
+        val maps = DngGainMaps.parse(f[51009],area[3]-area[1],area[2]-area[0])
+        return Layout(r.width, r.height, area, black, white, cfa, maps)
     }
 
     private fun block(r: DngSampleDiagnostics.Raster, l: Layout, x: Int, y: Int, out: FloatArray): Boolean {
@@ -93,8 +97,8 @@ internal object BayerAverage {
             val native = r.pixel(l.area[1]+2*x+site%2, l.area[0]+2*y+site/2)
             val value = ((native.toFloat()-l.black[site].toFloat())/(l.white.toFloat()-l.black[site].toFloat()))
             require(value.isFinite() && value in -1f..2f) { "Normalized RAW samples outside supported range" }
-            out[site] = value
-            luma += value * .25f
+            out[site] = value * l.gain(site,2*x+site%2,2*y+site/2)
+            luma += out[site] * .25f
             if (value >= .995f) clip = true
         }
         out[4] = luma

@@ -43,7 +43,8 @@ internal class DngCapture(
     private val preview: Surface,
     private val characteristics: CameraCharacteristics,
     private val handler: Handler,
-    private val cancel: AtomicBoolean
+    private val cancel: AtomicBoolean,
+    private val reportLensShading: Boolean = false
 ) {
     private val failure = AtomicReference<Throwable?>()
     private data class RawArrival(val image: Image, val elapsedNs: Long,
@@ -147,7 +148,7 @@ internal class DngCapture(
                 else -> CaptureRequest.CONTROL_AF_MODE_OFF
             }
             auto.set(CaptureRequest.CONTROL_AF_MODE, autoFocusMode)
-            applySupportedProcessing(auto, characteristics)
+            applySupportedProcessing(auto, characteristics, reportLensShading)
             // A fully specified job never meters a new exposure on the next display pattern.
             settings.exposureNs?.let { auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF); auto.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
             settings.iso?.let { auto.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
@@ -184,7 +185,7 @@ internal class DngCapture(
                 gains, requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)) { "Missing color transform" })
             val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             manual.addTarget(preview)
-            applyLocked(manual, locked, characteristics)
+            applyLocked(manual, locked, characteristics, reportLensShading)
             active.stopRepeating()
             results.clear()
             active.setRepeatingRequest(manual.build(), callback, handler)
@@ -212,7 +213,7 @@ internal class DngCapture(
                     check()
                     val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                     request.addTarget(reader.surface)
-                    applyLocked(request, locked, characteristics)
+                    applyLocked(request, locked, characteristics, reportLensShading)
                     request.setTag(index)
                     val timing = ConcurrentHashMap<String, Any>()
                     timing["diagnosticsVersion"] = 2
@@ -305,7 +306,8 @@ internal class DngCapture(
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG,
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR)
 
-        fun applyLocked(builder: CaptureRequest.Builder, value: DngLockedSettings, c: CameraCharacteristics) {
+        fun applyLocked(builder: CaptureRequest.Builder, value: DngLockedSettings, c: CameraCharacteristics,
+                        reportLensShading: Boolean = false) {
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, value.exposureNs)
@@ -316,23 +318,36 @@ internal class DngCapture(
             builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
             builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, value.gains)
             builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, value.transform)
-            applySupportedProcessing(builder, c)
+            applySupportedProcessing(builder, c, reportLensShading)
         }
 
-        private fun applySupportedProcessing(builder: CaptureRequest.Builder, c: CameraCharacteristics) {
+        fun lensShadingMode(c: CameraCharacteristics): Int? {
+            if (!c.availableCaptureRequestKeys.contains(CaptureRequest.SHADING_MODE) ||
+                !c.availableCaptureRequestKeys.contains(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE) ||
+                c.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)
+                    ?.contains(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON) != true) return null
+            val modes = c.get(CameraCharacteristics.SHADING_AVAILABLE_MODES) ?: intArrayOf()
+            return listOf(CaptureRequest.SHADING_MODE_HIGH_QUALITY, CaptureRequest.SHADING_MODE_FAST).firstOrNull { it in modes }
+        }
+
+        private fun applySupportedProcessing(builder: CaptureRequest.Builder, c: CameraCharacteristics, reportLensShading: Boolean) {
             fun mode(key: CaptureRequest.Key<Int>, available: CameraCharacteristics.Key<IntArray>, wanted: Int) {
                 if (c.availableCaptureRequestKeys.contains(key) && c.get(available)?.contains(wanted) == true) builder.set(key, wanted)
             }
             mode(CaptureRequest.NOISE_REDUCTION_MODE, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
             mode(CaptureRequest.HOT_PIXEL_MODE, CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES, CaptureRequest.HOT_PIXEL_MODE_OFF)
             mode(CaptureRequest.EDGE_MODE, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES, CaptureRequest.EDGE_MODE_OFF)
-            mode(CaptureRequest.SHADING_MODE, CameraCharacteristics.SHADING_AVAILABLE_MODES, CaptureRequest.SHADING_MODE_OFF)
+            val shading = if (reportLensShading) lensShadingMode(c) else null
+            mode(CaptureRequest.SHADING_MODE, CameraCharacteristics.SHADING_AVAILABLE_MODES, shading ?: CaptureRequest.SHADING_MODE_OFF)
             mode(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES, CaptureRequest.DISTORTION_CORRECTION_MODE_OFF)
             mode(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
             mode(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            // Do not add a manufacturer lens-gain map. Hardware RAW shading may
-            // already be applied; SENSOR_INFO_LENS_SHADING_APPLIED records that.
-            mode(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES, CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_OFF)
+            // OFF shading can yield an identity map. With FAST/HQ, Camera2
+            // reports the remaining RAW correction, including on devices that
+            // already apply some shading. DngCreator embeds it; never bake it
+            // into original samples here. Legacy callers retain the old policy.
+            mode(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES,
+                if (shading != null) CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON else CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_OFF)
         }
     }
 }

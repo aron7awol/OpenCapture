@@ -11,7 +11,9 @@ the lens and capture settings from your computer.
   APK from [Releases](https://github.com/aron7awol/OpenCapture/releases).
 
 Development source can be newer than the published app. The workflow below
-describes version 0.4.1 and requires a compatible desktop controller.
+describes the 0.4.x foreground server and requires a compatible desktop controller.
+Android 0.4.3 adds [RAW lens shading metadata](docs/lens-shading.md)
+and `bayer-mean-v3` averages; install a compatible desktop controller.
 
 ## Use
 

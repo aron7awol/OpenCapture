@@ -1,7 +1,8 @@
 # Optional On-Device Bayer Averaging
 
-Version 0.4.1 adds optional averaging on both platforms: Android advertises
-`bayer-mean-v1`; supported iOS Bayer cameras advertise `bayer-mean-v2`.
+Published 0.4.1/0.4.2 Android apps advertise `bayer-mean-v1`; supported iOS
+Bayer cameras advertise `bayer-mean-v2`. Android 0.4.3/build 10
+advertises `bayer-mean-v3` with embedded DNG lens shading gains.
 Source may precede a published release. The phone UI remains a foreground
 camera server; the controller chooses averaging, not a phone-side menu.
 
@@ -50,13 +51,22 @@ must still validate actual controls, clipping, geometry and measurement quality.
 
 ## Processing
 
-Both modes support RGB Bayer up to 13 MP. Android v1 supports only uncompressed
+All modes support RGB Bayer up to 13 MP. Android v1/v3 support only uncompressed
 unsigned RAW16 DNGs.
 The reader is bounded and uses the DNG active area, 1x1/2x2 black levels and
 scalar white level. Unsupported linearization, spatial black levels, non-square
-default scale, radiometric opcodes or incompatible crops fail explicitly. A
+default scale or incompatible crops fail explicitly. Android v1 rejects
+radiometric opcodes; v3 supports the bounded DngCreator GainMaps described below. A
 validated optional common-plane WarpRectilinear rendering opcode is permitted
 but NOT applied. Lens shading already present in RAW remains present.
+
+Android v3 applies four embedded DNG OpcodeList2 `GainMap` operations at native
+Bayer sites after signed black normalization and before binning. The actual
+Camera2 map must match the embedded map; its values describe the remaining
+correction, including when hardware already shades RAW. Native clipping is
+measured before gains. All contributing DNG gain maps/normalization must agree
+within the burst. See [lens shading](lens-shading.md) for coordinates, bounds,
+actual metadata and physical verification requirements.
 
 iOS v2 reads the native `AVCapturePhoto.pixelBuffer` (supported 14-bit Bayer
 formats in unsigned little-endian 16-bit storage). It preserves original
@@ -123,6 +133,17 @@ Phone-native source values are bounded to [-1,2], radial gains to [0.125,16].
 v2 payload bounds are consequently [-16,32] for means and [0,1152] for variance;
 consumers may impose stricter downstream measurement bounds. Protocol version
 remains 1. A v1-only consumer must refuse v2 rather than silently ignore gain.
+
+For Android v3 use `version:3`, `mode:bayer-mean-v3`, the v2 corrected domain and
+binary payload/bounds, and replace `radialGain` with `gainMaps`. Each entry has
+exactly `id:9`, `version:"1.3.0.0"`, integer `flags` 0..3,
+`area:[top,left,bottom,right]`, `plane:0`, `planes:1`, `pitch:[2,2]`,
+`points:[rows,columns]`, `spacing:[vertical,horizontal]`, `origin:[0,0]`,
+`mapPlanes:1`, and row-major `gains`. There are zero or four entries; the
+[bounded layout](lens-shading.md#bounded-processing) is mandatory. v3 uses the
+same Android checkpoint diagnostics as v1, not iOS native-buffer diagnostics.
+v3 does not change protocolVersion or diagnostic version. Older controllers
+must refuse an unrecognized mode rather than interpret it as v1.
 
 The accepted/rejected lists must partition all attempts. A complete result has
 exactly the requested accepted count. An insufficient result has exhausted the

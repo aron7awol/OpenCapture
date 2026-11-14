@@ -15,11 +15,13 @@ of this repository. `context` is opaque controller-owned string metadata.
 - Preserve original DNG/JPEG bytes. Metadata distinguishes actual EXIF values
   from device readings at shutter time and requested settings.
 - Auto controls settle and lock once per burst, not once per frame.
-- Optional Bayer averaging uses the camera's advertised mode (Android v1,
-  iOS v2), exact usable counts, and a 2*N total attempt cap. Preserve native
+- Optional Bayer averaging uses the camera's advertised mode (Android 0.4.3 v3,
+  Android 0.4.2 v1, iOS v2), exact usable counts, and a 2*N total attempt cap. Preserve native
   clipping, signed noise, sample variance and unchanged source receipts.
   iOS native-buffer/file-byte diagnostics are not decoded-DNG pixel checks.
   Read docs/frame-averaging.md and docs/raw-diagnostics.md before changes.
+  Read docs/lens-shading.md for Camera2 remaining-map semantics, DNG GainMap
+  coordinates and v3 parity; factory gains do not establish radiometric calibration.
 - Don't claim untouched sensor data, linear JPEG measurements, or calibrated
   accuracy. Preview and thumbnails are explicitly processed.
 - Frame dimensions and support are device-dependent. Never assume 48 MP RAW.

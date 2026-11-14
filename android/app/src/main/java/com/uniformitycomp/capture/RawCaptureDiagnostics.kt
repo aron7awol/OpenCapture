@@ -152,8 +152,9 @@ internal object DngSampleDiagnostics {
                     val unit = when (type) { 1, 7 -> 1; 3 -> 2; 4, 13 -> 4; 5 -> 8; else -> error("Unsupported diagnostic TIFF field type") }
                     require(type != 5 || tag in setOf(50714, 50715, 50716, 50718)) { "Unexpected rational TIFF field" }
                     require(tag !in setOf(51008, 51009, 51022) || type == 7) { "Invalid opcode field type" }
-                    require(length in 1..65536 && length * unit <= 262144) { "DNG field is too large" }
-                    metadataItems += length
+                    val limit = if (tag in setOf(51008,51009,51022)) 131072L else 65536L
+                    require(length in 1..limit && length * unit <= 262144) { "DNG field is too large" }
+                    metadataItems += if (tag in setOf(51008,51009,51022)) 0 else length
                     metadataBytes += length * unit
                     require(metadataItems <= 65536 && metadataBytes <= 524288) { "Excessive total diagnostic metadata" }
                     val bytes = (length * unit).toInt()

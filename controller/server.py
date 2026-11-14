@@ -87,7 +87,7 @@ def validate_request(request):
         average = request["averaging"]
         if (request["format"] != "bayerRaw" or request.get("operation") == "applyControls" or
                 not isinstance(average, dict) or set(average) != {"mode", "emptyFramePolicy", "keepOriginals"} or
-                average["mode"] not in ("bayer-mean-v1", "bayer-mean-v2") or average["emptyFramePolicy"] not in ("relative", "illuminated", "dark") or
+                average["mode"] not in ("bayer-mean-v1", "bayer-mean-v2", "bayer-mean-v3") or average["emptyFramePolicy"] not in ("relative", "illuminated", "dark") or
                 type(average["keepOriginals"]) is not bool):
             raise Invalid("Invalid on-device averaging request")
     if 'streaming' in request and (request['streaming'] != {'mode': 'originals-v1'} or
@@ -150,6 +150,35 @@ def stream_selection(manifest):
     return s
 
 
+def validate_gain_maps(ops, width, height):
+    """Validate the v3 bounded DngCreator map descriptor, not its image accuracy."""
+    if not isinstance(ops,list) or len(ops) not in (0,4):
+        raise Invalid('Expected zero or four DNG Bayer GainMaps')
+    parities = set()
+    keys = {'id','version','flags','area','plane','planes','pitch','points','spacing','origin','mapPlanes','gains'}
+    for op in ops:
+        if (not isinstance(op,dict) or set(op) != keys or
+                any(type(op[k]) is not int for k in ('id','flags','plane','planes','mapPlanes')) or
+                op['id'] != 9 or op['version'] != '1.3.0.0' or not 0 <= op['flags'] <= 3 or
+                op['plane'] != 0 or op['planes'] != 1 or op['mapPlanes'] != 1 or
+                not isinstance(op['area'],list) or len(op['area']) != 4 or
+                any(type(v) is not int for v in op['area']) or
+                op['area'][0] not in (0,1) or op['area'][1] not in (0,1) or op['area'][2:] != [height,width] or
+                not isinstance(op['pitch'],list) or op['pitch'] != [2,2] or any(type(v) is not int for v in op['pitch']) or
+                not isinstance(op['points'],list) or len(op['points']) != 2 or
+                any(type(v) is not int or not 1 <= v <= 64 for v in op['points']) or
+                not isinstance(op['spacing'],list) or len(op['spacing']) != 2 or
+                any(not number(v,1/63,1) for v in op['spacing']) or
+                any(abs(op['spacing'][i]-1/max(1,op['points'][i]-1)) > 1e-12 for i in (0,1)) or
+                not isinstance(op['origin'],list) or len(op['origin']) != 2 or any(not number(v,0,0) for v in op['origin']) or
+                not isinstance(op['gains'],list) or len(op['gains']) != op['points'][0]*op['points'][1] or
+                any(not number(v,1,16) for v in op['gains'])):
+            raise Invalid('Invalid DNG GainMap descriptor')
+        parities.add(tuple(op['area'][:2]))
+    if ops and len(parities) != 4:
+        raise Invalid('Overlapping/missing Bayer GainMaps')
+
+
 def manifest_files(manifest):
     """Validate transfer structure, including provenance-only averaged originals."""
     required = {"protocolVersion", "request", "camera", "frames", "startedAt", "completedAt", "processing"}
@@ -173,9 +202,11 @@ def manifest_files(manifest):
         keys = {"version", "mode", "status", "targetFrames", "attemptedFrames", "acceptedIndices", "referenceIndex",
                 "retainedOriginalIndices", "rejected", "files", "domain", "rawWidth", "rawHeight", "width", "height",
                 "activeArea", "blackLevels", "whiteLevel", "cfa"}
-        version = 2 if request['averaging']['mode'] == 'bayer-mean-v2' else 1
+        version = int(request['averaging']['mode'][-1])
         if version == 2:
             keys.add('radialGain')
+        if version == 3:
+            keys.add('gainMaps')
         if (not isinstance(a, dict) or set(a) != keys or type(a["version"]) is not int or
                 a["version"] != version or a["mode"] != request['averaging']['mode']):
             raise Invalid("Invalid aggregation descriptor")
@@ -224,7 +255,9 @@ def manifest_files(manifest):
                 any(type(i) is not int for i in area) or not 0 <= area[0] < area[2] <= a["rawHeight"] or
                 not 0 <= area[1] < area[3] <= a["rawWidth"] or area[2]-area[0] != 2*a["height"] or area[3]-area[1] != 2*a["width"]):
             raise Invalid("Invalid average active area")
-        domain = 'black_subtracted_dng_corrected_bayer_site_relative_signal' if version == 2 else 'black_subtracted_bayer_site_relative_signal'
+        if version == 3:
+            validate_gain_maps(a['gainMaps'],2*a['width'],2*a['height'])
+        domain = 'black_subtracted_dng_corrected_bayer_site_relative_signal' if version in (2,3) else 'black_subtracted_bayer_site_relative_signal'
         if (a["domain"] != domain or not number(a["whiteLevel"], 1, 65535) or
                 not isinstance(a["blackLevels"], list) or len(a["blackLevels"]) != 4 or
                 any(not number(v, 0, a["whiteLevel"]-1e-9) for v in a["blackLevels"]) or

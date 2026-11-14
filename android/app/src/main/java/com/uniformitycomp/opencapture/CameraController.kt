@@ -87,7 +87,7 @@ class CameraController(private val context: Context) {
         previewSession = null
         previewReady = false
         try {
-            val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel)
+            val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true)
                 .run(settings, count, directory, onFrame, maxAttempts, needsMore)
             dngPreviewControls = sequence.locked
             return sequence
@@ -202,7 +202,7 @@ class CameraController(private val context: Context) {
                             CaptureRequest.CONTROL_AF_MODE_OFF).firstOrNull { it in modes }
                             ?: error("Camera advertises no supported preview focus mode")
                         builder.set(CaptureRequest.CONTROL_AF_MODE, previewAfMode)
-                        dngPreviewControls?.let { DngCapture.applyLocked(builder, it, selectedCharacteristics()) }
+                        dngPreviewControls?.let { DngCapture.applyLocked(builder, it, selectedCharacteristics(), reportLensShading = true) }
                         session.setRepeatingRequest(builder.build(), object : CameraCaptureSession.CaptureCallback() {
                             override fun onCaptureCompleted(
                                 session: CameraCaptureSession,

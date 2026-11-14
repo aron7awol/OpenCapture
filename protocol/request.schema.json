@@ -18,7 +18,7 @@
     "averaging": {
       "type": "object", "additionalProperties": false, "required": ["mode", "emptyFramePolicy", "keepOriginals"],
       "properties": {
-        "mode": {"enum": ["bayer-mean-v1", "bayer-mean-v2"]},
+        "mode": {"enum": ["bayer-mean-v1", "bayer-mean-v2", "bayer-mean-v3"]},
         "emptyFramePolicy": {"enum": ["relative", "illuminated", "dark"]},
         "keepOriginals": {"type": "boolean"}
       }

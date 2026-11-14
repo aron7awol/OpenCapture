@@ -15,6 +15,10 @@ Update failures show a persistent error with Retry. Internet access to GitHub
 is separate from the trusted-LAN camera connection.
 
 Captures contain 1..32 original Bayer DNG files and actual Camera2 metadata.
+Version 0.4.3/build 10 requests supported lens shading maps and preserves
+them in the sidecar and DNG. Optional corrected averages advertise
+`bayer-mean-v3`; install a compatible controller. See
+[lens shading](../docs/lens-shading.md) for processing and device checks.
 Files are temporary on the phone: the computer verifies receipt, then the phone
 clears them. Failed downloads retry during the active session. Stop,
 backgrounding, disconnect or expiry cancels work and clears remaining staging.

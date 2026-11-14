@@ -20,6 +20,7 @@ class DngSampleDiagnosticsTest {
 
     internal fun fixture(width: Int = 8, height: Int = 6, rows: Int = 2,
                         order: ByteOrder = ByteOrder.LITTLE_ENDIAN, subIfd: Boolean = false,
+                        activeArea: List<Int> = listOf(0,0,height,width), opcode2: ByteArray? = null,
                         value: (Int, Int) -> Int = { x, y -> 256 + y * 8 + x }): Fixture {
         val data = ByteBuffer.allocate(16384).order(order)
         data.put(0, if (order == ByteOrder.LITTLE_ENDIAN) 73.toByte() else 77.toByte())
@@ -29,7 +30,7 @@ class DngSampleDiagnosticsTest {
             data.putShort(offset, fields.size.toShort())
             fields.sortedBy { it.first }.forEachIndexed { index, (tag, type, values) ->
                 val start = offset + 2 + index * 12
-                val unit = when (type) { 1 -> 1; 3 -> 2; 5 -> 8; else -> 4 }
+                val unit = when (type) { 1,7 -> 1; 3 -> 2; 5 -> 8; else -> 4 }
                 val count = if (type == 5) values.size / 2 else values.size
                 data.putShort(start, tag.toShort()); data.putShort(start + 2, type.toShort())
                 data.putInt(start + 4, count)
@@ -56,7 +57,8 @@ class DngSampleDiagnosticsTest {
             Triple(339, 3, listOf(1)), Triple(50706, 1, listOf(1, 4, 0, 0)),
             Triple(33421, 3, listOf(2, 2)), Triple(33422, 1, listOf(0, 1, 1, 2)),
             Triple(50713, 3, listOf(2, 2)), Triple(50714, 5, listOf(512, 2, 513, 2, 514, 2, 515, 2)),
-            Triple(50717, 4, listOf(4095)), Triple(50829, 4, listOf(0, 0, height, width))))
+            Triple(50717, 4, listOf(4095)), Triple(50829, 4, activeArea)) +
+            (opcode2?.let { listOf(Triple(51009,7,it.map { value -> value.toInt() and 255 })) } ?: emptyList()))
         for (y in 0 until height) for (x in 0 until width) {
             data.putShort(offsets[y / rows] + ((y % rows) * width + x) * 2, value(x, y).toShort())
         }

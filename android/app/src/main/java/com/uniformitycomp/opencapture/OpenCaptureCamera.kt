@@ -37,7 +37,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("manualWhiteBalance", usable).put("maxWhiteBalanceGain", 64)
             .put("maxPhotoWidth", selected?.width ?: 0).put("maxPhotoHeight", selected?.height ?: 0)
             .put("rawSizes", JSONArray(sizes.map { "${it.width}x${it.height}" }))
-            .put("rawLensShadingApplied", c.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED))
+            .put("rawLensShadingApplied", c.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED) ?: JSONObject.NULL)
+            .put("rawShadingPolicy", "camera2-dng-gain-map-v1")
+            .put("lensShadingMapRequested", DngCapture.lensShadingMode(c) != null)
             .put("osVersion", "Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}")
             .put("appVersion", BuildConfig.VERSION_NAME).put("appBuild", BuildConfig.VERSION_CODE.toString())
             .put("deviceID", deviceId).put("operations", JSONArray(if (usable) listOf("capture", "applyControls") else emptyList<String>()))
@@ -88,14 +90,26 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 if(stream?.isFrozen==true) { frame.file.delete(); return@captureDngOriginals }
                 val index = records.length() + 1
                 val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
-                selection?.attempts?.add(BayerAverage.inspect(frame.file, frame.width, frame.height,
-                    integrity?.get("assessment") as? String ?: "incomplete_diagnostics", ::checkCancelled))
                 val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
                 val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
                 OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
                     .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
                     .put("native", native).put("characteristics", staticMetadata(c))
                     .put("captureDiagnostics", JSONObject(frame.diagnostics)))
+                if (selection != null) {
+                    val evidence = BayerAverage.inspect(frame.file, frame.width, frame.height,
+                        integrity?.get("assessment") as? String ?: "incomplete_diagnostics", ::checkCancelled)
+                    val map = frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+                    require(!cap.getBoolean("lensShadingMapRequested") || (map != null &&
+                        frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_MAP_MODE) == 1 &&
+                        frame.result.get(CaptureResult.SHADING_MODE) in setOf(1,2))) { "Camera omitted requested lens shading metadata" }
+                    if (map != null) {
+                        val gains = FloatArray(map.gainFactorCount).also { map.copyGainFactors(it,0) }
+                        DngGainMaps.verify(evidence.layout.gainMaps,map.rowCount,map.columnCount,
+                            gains.map { it.toDouble() },evidence.layout.cfa)
+                    } else require(evidence.layout.gainMaps.isEmpty()) { "DNG gains have no Camera2 provenance" }
+                    selection.attempts.add(evidence)
+                }
                 // Full evidence is in the hashed sidecar; keep logcat below its line limit.
                 android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
                     "diagnostics=${frame.diagnostics["diagnosticsVersion"]} " +
@@ -115,7 +129,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             if(stream!=null) return stream.finish() to directory
             val manifest = JSONObject().put("protocolVersion", 1).put("request", request).put("camera", cap)
                 .put("frames", records).put("startedAt", start).put("completedAt", Instant.now().toString())
-                .put("processing", "Camera2 RAW_SENSOR -> DngCreator; individual originals, no averaging or demosaicing; lens shading map requested off; vendor RAW shading declared in capabilities; orientation native")
+                .put("processing", "Camera2 RAW_SENSOR -> DngCreator; original samples; remaining lens shading map requested where supported, actual metadata in sidecars and DNG; no demosaicing; orientation native")
             if (selection != null) {
                 val accepted = selection.accepted()
                 val reasons = selection.reasons()
@@ -133,7 +147,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                     records.getJSONObject(i).put("metadataFile", OpenCaptureProtocol.receipt(sidecar))
                 }
                 val aggregation = JSONObject(selection.attempts[reference].layout.fields())
-                    .put("version", 1).put("mode", BayerAverage.MODE).put("status", if (complete) "complete" else "insufficient")
+                    .put("version", 3).put("mode", BayerAverage.MODE).put("status", if (complete) "complete" else "insufficient")
                     .put("targetFrames", count).put("attemptedFrames", records.length())
                     .put("acceptedIndices", JSONArray(accepted.map { it+1 })).put("referenceIndex", reference+1)
                     .put("retainedOriginalIndices", JSONArray(retained.map { it+1 }))
@@ -146,7 +160,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                     aggregation.put("files", JSONObject().put("moments", OpenCaptureProtocol.receipt(File(directory, "average.f32")))
                         .put("clipping", OpenCaptureProtocol.receipt(File(directory, "average-clips.u8"))))
                 } else aggregation.put("files", JSONObject())
-                manifest.put("aggregation", aggregation).put("processing", "Camera2 RAW_SENSOR -> DngCreator -> black/white normalization -> fractional Bayer-site means and luma moments; native coordinates; no demosaic or radiometric DNG opcodes")
+                manifest.put("aggregation", aggregation).put("processing", "Camera2 RAW_SENSOR -> DngCreator -> signed black/white normalization -> embedded DNG GainMaps -> fractional Bayer-site means and luma moments; native clipping before gains; no demosaic")
             }
             OpenCaptureProtocol.saveJson(File(directory, "manifest.json"), manifest)
             return manifest to directory
@@ -202,6 +216,14 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("blackLevelLocked", r.get(CaptureResult.BLACK_LEVEL_LOCK))
             .put("dynamicWhiteLevel", r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL))
             .put("dynamicBlackLevel", r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.let { JSONArray(it.toList()) })
+        val map = r.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+        data.put("lensShadingMap", if (map == null) JSONObject.NULL else {
+            require(map.rowCount in 1..64 && map.columnCount in 1..64) { "Oversized Camera2 lens shading map" }
+            val gains = FloatArray(map.gainFactorCount).also { map.copyGainFactors(it,0) }
+            JSONObject().put("rows",map.rowCount).put("columns",map.columnCount)
+                .put("channelOrder",JSONArray(listOf("R","G_even","G_odd","B")))
+                .put("gains",JSONArray(gains.map { it.toDouble() }))
+        })
         // Often empty for logical-only outputs; never substitute logical readings.
         @Suppress("DEPRECATION")
         val physical = if (Build.VERSION.SDK_INT >= 31) r.physicalCameraTotalResults else r.physicalCameraResults
@@ -222,7 +244,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("deviceBuild", JSONObject().put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL)
                 .put("hardware", Build.HARDWARE).put("buildID", Build.ID).put("androidRelease", Build.VERSION.RELEASE)
                 .put("securityPatch", Build.VERSION.SECURITY_PATCH).put("apiLevel", Build.VERSION.SDK_INT))
-            .put("lensShadingApplied", c.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED))
+            .put("lensShadingApplied", c.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED) ?: JSONObject.NULL)
             .put("cfa", c.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT))
             .put("whiteLevel", c.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL))
             .put("blackLevelPattern", black?.let { JSONArray(listOf(it.getOffsetForIndex(0, 0), it.getOffsetForIndex(1, 0), it.getOffsetForIndex(0, 1), it.getOffsetForIndex(1, 1))) })

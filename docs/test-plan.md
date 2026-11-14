@@ -282,6 +282,20 @@ simulator layout and URL-policy tests do not prove multicast reachability.
 9. Add the AltStore source, publish a higher build, check for updates, and
    install. Verify captures/settings survive. Export first as a precaution.
 
+## Android Lens Shading (0.4.3, Build 10)
+
+Local standalone APK compilation, lint, 80 debug and 80 release JVM tests passed
+for this implementation. The generic controller has 36 passing tests. The
+Android/Python shared fixtures produce identical moments and clipping; actual
+Pixel map delivery, stability and optical effect still require a device test.
+Release builds preserve the established Android signing key; CI keys are test-only.
+
+Use the short physical test in [lens shading](lens-shading.md#physical-verification)
+before relying on 0.4.3's corrected originals or `bayer-mean-v3` averages.
+Synthetic Kotlin/Python golden moments and a real LibRaw decode of synthetic
+DNG bytes cover arithmetic and interpretation, not the phone's factory map
+accuracy. Keep the original DNGs for the initial parity test.
+
 ## Acceptance before calibration integration
 
 Repeat fixed-geometry dark/baseline/synthetic-pattern runs at identical manual

@@ -112,6 +112,10 @@ the mean of the two native greens; both greens remain in the sidecar.
 `rawSizes` optionally lists advertised normal RAW dimensions as `WxH` strings.
 `rawLensShadingApplied` optionally records the camera's declaration that some
 lens shading correction is already applied to RAW pixels by the device.
+Development Android clients add `rawShadingPolicy:camera2-dng-gain-map-v1`,
+`lensShadingMapRequested`, and actual per-frame `native.lensShadingMap` in
+sidecars. See [lens shading](lens-shading.md) for the DNG representation,
+remaining-correction semantics and the distinct `bayer-mean-v3` averaging mode.
 None of these additions change the numeric request schema or iOS behavior.
 
 The controls-complete body contains exactly `protocolVersion`, `request`,

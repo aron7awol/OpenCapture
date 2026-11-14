@@ -1,6 +1,8 @@
 OpenCapture: GPL-3.0-only
 Source: https://github.com/aron7awol/OpenCapture
 
+This product includes DNG technology under license by Adobe.
+
 NanoHTTPD 2.3.1
 https://github.com/NanoHttpd/nanohttpd
 Copyright (c) 2012-2013 by Paul S. Hawke,

@@ -1,5 +1,7 @@
 # Third-party notices
 
+This product includes DNG technology under license by Adobe.
+
 OpenCapture Android is GPL-3.0-only. Its source license is in the repository
 root. Kotlin standard library and AndroidX Core are Apache-2.0 components;
 their original copyright/license notices remain in their distributed artifacts.

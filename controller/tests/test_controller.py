@@ -43,6 +43,26 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_android_v3_gain_map_contract_preserves_original_transfer_subset(self):
+        m,_=average_manifest()
+        m['request']['averaging']['mode']='bayer-mean-v3'
+        m['camera']['frameAveragingModes']=['bayer-mean-v3']
+        ops=[dict(id=9,version='1.3.0.0',flags=1,area=[s//2,s%2,8,8],plane=0,planes=1,pitch=[2,2],
+                  points=[2,2],spacing=[1.,1.],origin=[0.,0.],mapPlanes=1,gains=[1.,1.5,1.25,1.75]) for s in range(4)]
+        m['aggregation'].update(version=3,mode='bayer-mean-v3',gainMaps=ops,
+            domain='black_subtracted_dng_corrected_bayer_site_relative_signal')
+        files=server.manifest_files(m)
+        self.assertIn('average.f32',files);self.assertNotIn('frame-0003.dng',files)
+        for field,value in [('area',[0,0,10,8]),('gains',[float('nan')]*4),('gains',[17.]*4),('points',[2**32,2]),
+                            ('plane',True),('pitch',[1,2]),('spacing',[0,1]),('origin',[.5,0]),('id',3)]:
+            changed=copy.deepcopy(m);changed['aggregation']['gainMaps'][0][field]=value
+            with self.subTest(field=field),self.assertRaises(server.Invalid):server.manifest_files(changed)
+        for maps in (None,ops[:3],ops+[ops[0]],[ops[0]]*4):
+            changed=copy.deepcopy(m);changed['aggregation']['gainMaps']=maps
+            with self.assertRaises(server.Invalid):server.manifest_files(changed)
+        m['aggregation']['gainMaps']=[]
+        self.assertIn('average.f32',server.manifest_files(m))
+
     def test_streamed_originals_preserve_all_judged_receipts_and_exact_partition(self):
         m,_=average_manifest();del m['aggregation'];del m['request']['averaging']
         m['request']['streaming']={'mode':'originals-v1'}
