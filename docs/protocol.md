@@ -86,6 +86,13 @@ Formats: `bayerRaw`, `appleProRaw` or `jpeg`. Only request formats in the
 camera's capabilities. Quality: `speed` or `quality`; Bayer RAW requires
 speed, Apple ProRAW requires quality. 1...32 frames, 0...10000 ms additional settling. Schema and runtime
 validation bound numbers; the camera additionally enforces hardware limits.
+On cameras advertising `optionalPhotoPreview:true`, a controller may include
+`includePreview:false` to omit per-photo processed JPEG thumbnails. Omission
+preserves existing behavior; this does not disable the separate aiming preview
+or change original DNG/JPEG bytes. iOS source 0.4.3 implements this capability.
+Capture manifests may add `performance`, an object of at most 16 named finite
+nonnegative durations in seconds (each at most 86400; keys at most 64 characters).
+Timings are diagnostic and never substitute for actual capture controls.
 Context limits are measured in UTF-8 bytes by the runtime (JSON Schema string
 length alone is not sufficient for multibyte content).
 

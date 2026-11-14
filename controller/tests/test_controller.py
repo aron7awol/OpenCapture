@@ -43,6 +43,20 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_optional_preview_and_performance_contract(self):
+        for value in (True, False):
+            server.validate_request(dict(request(),includePreview=value))
+        for value in (None, 0, 'false'):
+            with self.assertRaises(server.Invalid):
+                server.validate_request(dict(request(),includePreview=value))
+        m,_=average_manifest()
+        m['performance']={'captureAndInspectionSeconds':1.2,'aggregationAndPackagingSeconds':.3}
+        m['aggregation']['rejected'][0]['reason']='capture_timing_invalid'
+        self.assertIn('frame-0002.dng',server.manifest_files(m))
+        for value in ({'seconds':float('nan')},{'seconds':-1},{'seconds':True},[],{str(i):0 for i in range(17)}):
+            with self.assertRaises(server.Invalid):
+                server.manifest_files(dict(m,performance=value))
+
     def test_android_v3_gain_map_contract_preserves_original_transfer_subset(self):
         m,_=average_manifest()
         m['request']['averaging']['mode']='bayer-mean-v3'

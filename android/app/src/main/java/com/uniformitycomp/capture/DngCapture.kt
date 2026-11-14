@@ -149,49 +149,49 @@ internal class DngCapture(
             val locked: DngLockedSettings
             if (reused != null) locked = reused
             else {
-            val auto = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            auto.addTarget(preview)
-            auto.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-            val modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
-            val autoFocusMode = when {
-                modes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-                modes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
-                else -> CaptureRequest.CONTROL_AF_MODE_OFF
-            }
-            auto.set(CaptureRequest.CONTROL_AF_MODE, autoFocusMode)
-            applySupportedProcessing(auto, characteristics, reportLensShading)
-            // A fully specified job never meters a new exposure on the next display pattern.
-            settings.exposureNs?.let { auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF); auto.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
-            settings.iso?.let { auto.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
-            settings.focusFraction?.let {
-                auto.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                auto.set(CaptureRequest.LENS_FOCUS_DISTANCE, it * minFocus)
-            }
-            active.setRepeatingRequest(auto.build(), callback, handler)
-            if (settings.focusFraction == null && autoFocusMode == CaptureRequest.CONTROL_AF_MODE_AUTO) {
-                auto.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-                active.capture(auto.build(), callback, handler)
-            }
-            val settleStart = System.nanoTime()
-            do {
-                observed = await(results)
-                val ae = observed.get(CaptureResult.CONTROL_AE_STATE)
-                val af = observed.get(CaptureResult.CONTROL_AF_STATE)
-                val awb = observed.get(CaptureResult.CONTROL_AWB_STATE)
-                val ready = (settings.exposureNs != null || ae == CaptureResult.CONTROL_AE_STATE_CONVERGED || ae == CaptureResult.CONTROL_AE_STATE_LOCKED) &&
-                    (settings.focusFraction != null || minFocus == 0f || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED || af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED) &&
-                    (settings.whiteBalance != null || awb == CaptureResult.CONTROL_AWB_STATE_CONVERGED || awb == CaptureResult.CONTROL_AWB_STATE_LOCKED)
-                val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - settleStart)
-                if (ready && elapsed >= settings.settleMs.coerceAtLeast(250)) break
-                check(elapsed < 30_000) { "Auto controls did not settle; choose manual settings" }
-            } while (true)
-            val gains = settings.whiteBalance?.let { RggbChannelVector(it[0], it[1], it[1], it[2]) }
-                ?: requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_GAINS)) { "Missing actual white balance gains" }
-            locked = DngLockedSettings(
-                settings.exposureNs ?: requireNotNull(observed.get(CaptureResult.SENSOR_EXPOSURE_TIME)),
-                settings.iso ?: requireNotNull(observed.get(CaptureResult.SENSOR_SENSITIVITY)),
-                settings.focusFraction?.times(minFocus) ?: requireNotNull(observed.get(CaptureResult.LENS_FOCUS_DISTANCE)),
-                gains, requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)) { "Missing color transform" })
+                val auto = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                auto.addTarget(preview)
+                auto.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                val modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
+                val autoFocusMode = when {
+                    modes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                    modes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
+                    else -> CaptureRequest.CONTROL_AF_MODE_OFF
+                }
+                auto.set(CaptureRequest.CONTROL_AF_MODE, autoFocusMode)
+                applySupportedProcessing(auto, characteristics, reportLensShading)
+                // A fully specified job never meters a new exposure on the next display pattern.
+                settings.exposureNs?.let { auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF); auto.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
+                settings.iso?.let { auto.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
+                settings.focusFraction?.let {
+                    auto.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                    auto.set(CaptureRequest.LENS_FOCUS_DISTANCE, it * minFocus)
+                }
+                active.setRepeatingRequest(auto.build(), callback, handler)
+                if (settings.focusFraction == null && autoFocusMode == CaptureRequest.CONTROL_AF_MODE_AUTO) {
+                    auto.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+                    active.capture(auto.build(), callback, handler)
+                }
+                val settleStart = System.nanoTime()
+                do {
+                    observed = await(results)
+                    val ae = observed.get(CaptureResult.CONTROL_AE_STATE)
+                    val af = observed.get(CaptureResult.CONTROL_AF_STATE)
+                    val awb = observed.get(CaptureResult.CONTROL_AWB_STATE)
+                    val ready = (settings.exposureNs != null || ae == CaptureResult.CONTROL_AE_STATE_CONVERGED || ae == CaptureResult.CONTROL_AE_STATE_LOCKED) &&
+                        (settings.focusFraction != null || minFocus == 0f || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED || af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED) &&
+                        (settings.whiteBalance != null || awb == CaptureResult.CONTROL_AWB_STATE_CONVERGED || awb == CaptureResult.CONTROL_AWB_STATE_LOCKED)
+                    val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - settleStart)
+                    if (ready && elapsed >= settings.settleMs.coerceAtLeast(250)) break
+                    check(elapsed < 30_000) { "Auto controls did not settle; choose manual settings" }
+                } while (true)
+                val gains = settings.whiteBalance?.let { RggbChannelVector(it[0], it[1], it[1], it[2]) }
+                    ?: requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_GAINS)) { "Missing actual white balance gains" }
+                locked = DngLockedSettings(
+                    settings.exposureNs ?: requireNotNull(observed.get(CaptureResult.SENSOR_EXPOSURE_TIME)),
+                    settings.iso ?: requireNotNull(observed.get(CaptureResult.SENSOR_SENSITIVITY)),
+                    settings.focusFraction?.times(minFocus) ?: requireNotNull(observed.get(CaptureResult.LENS_FOCUS_DISTANCE)),
+                    gains, requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)) { "Missing color transform" })
             }
             val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             manual.addTarget(preview)

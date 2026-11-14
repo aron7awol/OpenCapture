@@ -3,6 +3,49 @@
 iOS and Android have different native capture APIs and therefore different
 diagnostic scopes. Do not relabel one platform's checks as the other's.
 
+## Timing Integrity And Stage Timings (Unreleased)
+
+Android source 0.4.4 adds `timingPolicy:"fresh-camera2-raw-v1"` and
+`timingIntegrity` to generic manual RAW diagnostics. Original DNGs remain
+unchanged. Optional phone averaging and the desktop original selector exclude
+`capture_timing_invalid` attempts, including dark references, within the same
+N usable / 2*N attempts limit. Batch original capture still preserves every
+attempt; the measurement consumer decides whether to reject or replace it.
+
+The policy checks two independent bounds using actual result exposure:
+
+- Image arrival minus request submission must cover the exposure, allowing
+  `max(5 ms, min(50 ms, exposure / 50))` tolerance. These two timestamps use
+  `SystemClock.elapsedRealtimeNanos()` and do not require a sensor-clock offset.
+- Sensor exposure start must not precede submission beyond that tolerance,
+  but only when `sensorTimestampSource` is Camera2 REALTIME (1). UNKNOWN (0)
+  does not permit comparing sensor time to the app clock.
+
+An early `onCaptureStarted` callback alone is never grounds for rejection.
+The [sensor timestamp](https://developer.android.com/reference/android/hardware/camera2/CaptureResult#SENSOR_TIMESTAMP)
+is the start of first-row exposure, and only
+[REALTIME](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_INFO_TIMESTAMP_SOURCE)
+guarantees the comparable timebase. The app requests ZSL off where supported;
+this policy is for its fresh manual RAW requests, not buffered or fused photos.
+The tolerance is an application integrity bound, not an Android accuracy
+guarantee or a diagnosis of the Pixel driver. Physical verification is pending.
+
+Consumers recompute the assessment from hashed sidecar values. A declared
+policy with malformed evidence fails validation. Older sidecars without this
+policy are unassessed; do not retroactively label them passing. iOS source
+0.4.3 records submission/processing-arrival times but does not declare this
+Camera2 policy or apply its rejection rule to Apple RAW/ProRAW.
+
+Android also records preparation start, session ready, controls locked,
+`sessionReused`/`controlsReused`, and optional averaging inspection start/end.
+iOS records preparation start/lock/reuse and averaging inspection start/end,
+and retains its existing encoding
+and saved-file readback timings. Capture manifests may include `performance`
+durations in seconds for preparation, capture/inspection and aggregation/
+packaging; names depend on the platform. Streaming results keep their frozen
+completion semantics. These are overlapping stage measurements, not sums that
+establish end-to-end latency or Wi-Fi throughput.
+
 ## iOS 0.4.1
 
 Bayer captures automatically add `captureDiagnostics.diagnosticsVersion:3`

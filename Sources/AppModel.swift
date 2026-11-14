@@ -242,7 +242,7 @@ private struct CameraServerInfo: Encodable {
         var files: [String: URL] = [:]
         var previousSamples: String?
         var selection = try request.averaging.map { try BayerSelection(target:request.frameCount,policy:$0.emptyFramePolicy) }
-        let inspector=FrameProcessor<BayerEvidence>()
+        let inspector=FrameProcessor<(BayerEvidence,UInt64,UInt64)>()
         var pendingFrame: FrameRecord?
         func publish(_ frame: FrameRecord) throws {
             frames.append(frame)
@@ -252,8 +252,18 @@ private struct CameraServerInfo: Encodable {
             try stream?.publish(frame)
         }
         func drainInspection() async throws {
-            if let evidence=try await inspector.take(), let frame=pendingFrame {
-                selection!.attempts.append(evidence)
+            if let inspected=try await inspector.take(), var frame=pendingFrame {
+                let file=directory.appendingPathComponent(frame.metadataFile.name)
+                guard var metadata=try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any],
+                      var diagnostics=metadata["captureDiagnostics"] as? [String:Any] else {
+                    throw CaptureError.invalid("Missing inspection diagnostics")
+                }
+                diagnostics["inspectionStartedElapsedNs"]=inspected.1
+                diagnostics["inspectionEndedElapsedNs"]=inspected.2
+                metadata["captureDiagnostics"]=diagnostics
+                try JSONSerialization.data(withJSONObject:metadata,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
+                frame.metadataFile=try BayerAverage.receipt(file,media:"application/json")
+                selection!.attempts.append(inspected.0)
                 try publish(frame)
                 pendingFrame=nil
                 status="Checked \(selection!.attempts.count) attempts; \(selection!.accepted.count) / \(request.frameCount) usable"
@@ -261,48 +271,50 @@ private struct CameraServerInfo: Encodable {
             }
         }
         do {
-        for index in 1...attemptLimit {
-            try Task.checkCancellation()
-            if inspector.hasPending, selection!.accepted.count+1 >= request.frameCount { try await drainInspection() }
-            if let selection, !selection.needsMore { break }
-            if let stream, !(try await stream.next()) { break }
-            status = "Frame \(index) of \(request.frameCount)"
-            var frame = try await camera.photo(request: request, index: index, directory: directory)
-            if request.format == .bayerRAW {
-                let file = directory.appendingPathComponent(frame.metadataFile.name)
-                if var sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any],
-                   var diagnostics = sidecar["captureDiagnostics"] as? [String:Any],
-                   let samples = (diagnostics["rawBeforeDng"] as? [String:Any])?["sha256"] as? String {
-                    if let previousSamples { diagnostics["sameSamplesAsPreviousFrame"] = previousSamples == samples }
-                    previousSamples = samples
-                    sidecar["captureDiagnostics"] = diagnostics
-                    try JSONSerialization.data(withJSONObject:sidecar,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
-                    frame.metadataFile = try BayerAverage.receipt(file,media:"application/json")
+            for index in 1...attemptLimit {
+                try Task.checkCancellation()
+                if inspector.hasPending, selection!.accepted.count+1 >= request.frameCount { try await drainInspection() }
+                if let selection, !selection.needsMore { break }
+                if let stream, !(try await stream.next()) { break }
+                status = "Frame \(index) of \(request.frameCount)"
+                var frame = try await camera.photo(request: request, index: index, directory: directory)
+                if request.format == .bayerRAW {
+                    let file = directory.appendingPathComponent(frame.metadataFile.name)
+                    if var sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any],
+                       var diagnostics = sidecar["captureDiagnostics"] as? [String:Any],
+                       let samples = (diagnostics["rawBeforeDng"] as? [String:Any])?["sha256"] as? String {
+                        if let previousSamples { diagnostics["sameSamplesAsPreviousFrame"] = previousSamples == samples }
+                        previousSamples = samples
+                        sidecar["captureDiagnostics"] = diagnostics
+                        try JSONSerialization.data(withJSONObject:sidecar,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
+                        frame.metadataFile = try BayerAverage.receipt(file,media:"application/json")
+                    }
                 }
+                if selection != nil {
+                    try await drainInspection()
+                    if !selection!.needsMore {
+                        for file in [frame.file,frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
+                            try? FileManager.default.removeItem(at:directory.appendingPathComponent(file.name))
+                        }
+                        try? FileManager.default.removeItem(at:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)))
+                        break
+                    }
+                    pendingFrame=frame
+                    let frame=frame
+                    try inspector.submit {
+                        let started=RawCaptureDiagnostics.now
+                        guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(frame.metadataFile.name))) as? [String:Any],
+                              let diagnostics = sidecar["captureDiagnostics"] as? [String:Any], let fields = diagnostics["normalization"] else {
+                            throw CaptureError.invalid("Missing native Bayer normalization")
+                        }
+                        let layout = try JSONDecoder().decode(BayerLayout.self,from:JSONSerialization.data(withJSONObject:fields))
+                        let assessment = (diagnostics["sampleIntegrity"] as? [String:Any])?["assessment"] as? String ?? "incomplete_diagnostics"
+                        let evidence=try BayerAverage.inspect(file:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)),layout:layout,integrity:assessment)
+                        return (evidence,started,RawCaptureDiagnostics.now)
+                    }
+                } else { try publish(frame) }
             }
-            if selection != nil {
-                try await drainInspection()
-                if !selection!.needsMore {
-                    for file in [frame.file,frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
-                        try? FileManager.default.removeItem(at:directory.appendingPathComponent(file.name))
-                    }
-                    try? FileManager.default.removeItem(at:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)))
-                    break
-                }
-                pendingFrame=frame
-                let frame=frame
-                try inspector.submit {
-                    guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(frame.metadataFile.name))) as? [String:Any],
-                          let diagnostics = sidecar["captureDiagnostics"] as? [String:Any], let fields = diagnostics["normalization"] else {
-                        throw CaptureError.invalid("Missing native Bayer normalization")
-                    }
-                    let layout = try JSONDecoder().decode(BayerLayout.self,from:JSONSerialization.data(withJSONObject:fields))
-                    let assessment = (diagnostics["sampleIntegrity"] as? [String:Any])?["assessment"] as? String ?? "incomplete_diagnostics"
-                    return try BayerAverage.inspect(file:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)),layout:layout,integrity:assessment)
-                }
-            } else { try publish(frame) }
-        }
-        try await drainInspection()
+            try await drainInspection()
         } catch {
             await inspector.cancelAndWait()
             throw error

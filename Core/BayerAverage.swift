@@ -124,12 +124,13 @@ public enum BayerAverage {
                              mean:mean,clippedFraction:Double(clipped)/Double(n),integrity:integrity)
     }
     public static func write(_ frames: [BayerEvidence], directory: URL) throws -> [String:CapturedFile] {
+        try Task.checkCancellation()
         guard (1...32).contains(frames.count), let layout = frames.first?.layout, frames.allSatisfy({$0.layout == layout}) else {
             throw CaptureError.invalid("DNG normalization changed during burst")
         }
         var handles: [FileHandle] = []
         defer { for handle in handles { try? handle.close() } }
-        for frame in frames { handles.append(try open(frame.file,layout)) }
+        for frame in frames { try Task.checkCancellation(); handles.append(try open(frame.file,layout)) }
         let moments = directory.appendingPathComponent("average.f32"), clipping = directory.appendingPathComponent("average-clips.u8")
         try Data().write(to:moments); try Data().write(to:clipping)
         let output = try FileHandle(forWritingTo:moments), clipOutput = try FileHandle(forWritingTo:clipping)

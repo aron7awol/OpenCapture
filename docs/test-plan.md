@@ -1,5 +1,26 @@
 # Verification and Device Test Plan
 
+## Capture Performance Follow-Up (Unreleased)
+
+Use identical actual controls and scene for six- and eighteen-frame original
+and optional-average comparisons. Record app/build, thermal state, per-frame
+timings, stage durations and payload bytes. Software parity and simulator
+navigation do not establish physical speed, fresh sensor timing or calibration.
+
+- Verify first preparation, identical fully manual reuse, small intentional
+  control changes, auto controls, lens changes, failure and resume. Retain scene
+  settling and confirm actual readings for every accepted frame.
+- On Android, check persistent preview/RAW sessions, REALTIME and UNKNOWN
+  timestamp handling, long and short actual exposures, and dark/illuminated
+  timing-invalid replacement. An early start callback with a valid image passes.
+- For optional averaging, compare the same accepted originals against desktop
+  results; verify N/2*N, ordered publication and cancellation during inspection
+  and accumulation. Cleanup must wait for all readers to stop.
+- Verify optional iOS thumbnails, unchanged aiming preview/original receipts,
+  independent saved-DNG hash verification and ProRAW behavior separately.
+- Measure inspection, aggregation and transfer independently. Neither a frozen
+  streaming result nor a completed photo proves the camera writer has drained.
+
 ## Original Streaming And Remote Preview (0.4.2, 2026-11-13)
 
 Read [original streaming](original-streaming.md). This opt-in path is separate

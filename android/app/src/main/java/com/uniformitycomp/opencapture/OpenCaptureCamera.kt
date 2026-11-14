@@ -90,44 +90,44 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val processor = if (selection == null) null else FrameProcessor<Pair<com.uniformitycomp.capture.DngFrame,BayerAverage.Evidence>>()
         fun inspectFrame(frame: com.uniformitycomp.capture.DngFrame): BayerAverage.Evidence {
             val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
-                    val evidence = BayerAverage.inspect(frame.file, frame.width, frame.height,
-                        integrity?.get("assessment") as? String ?: "incomplete_diagnostics", check = ::checkCancelled,
-                        timingInvalid = (frame.diagnostics["timingIntegrity"] as? Map<*, *>)?.get("status") == "invalid")
-                    val map = frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
-                    require(!cap.getBoolean("lensShadingMapRequested") || (map != null &&
-                        frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_MAP_MODE) == 1 &&
-                        frame.result.get(CaptureResult.SHADING_MODE) in setOf(1,2))) { "Camera omitted requested lens shading metadata" }
-                    if (map != null) {
-                        val gains = FloatArray(map.gainFactorCount).also { map.copyGainFactors(it,0) }
-                        DngGainMaps.verify(evidence.layout.gainMaps,map.rowCount,map.columnCount,
-                            gains.map { it.toDouble() },evidence.layout.cfa)
-                    } else require(evidence.layout.gainMaps.isEmpty()) { "DNG gains have no Camera2 provenance" }
-                    return evidence
+            val evidence = BayerAverage.inspect(frame.file, frame.width, frame.height,
+                integrity?.get("assessment") as? String ?: "incomplete_diagnostics", check = ::checkCancelled,
+                timingInvalid = (frame.diagnostics["timingIntegrity"] as? Map<*, *>)?.get("status") == "invalid")
+            val map = frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+            require(!cap.getBoolean("lensShadingMapRequested") || (map != null &&
+                frame.result.get(CaptureResult.STATISTICS_LENS_SHADING_MAP_MODE) == 1 &&
+                frame.result.get(CaptureResult.SHADING_MODE) in setOf(1,2))) { "Camera omitted requested lens shading metadata" }
+            if (map != null) {
+                val gains = FloatArray(map.gainFactorCount).also { map.copyGainFactors(it,0) }
+                DngGainMaps.verify(evidence.layout.gainMaps,map.rowCount,map.columnCount,
+                    gains.map { it.toDouble() },evidence.layout.cfa)
+            } else require(evidence.layout.gainMaps.isEmpty()) { "DNG gains have no Camera2 provenance" }
+            return evidence
         }
         fun recordFrame(frame: com.uniformitycomp.capture.DngFrame, evidence: BayerAverage.Evidence? = null) {
-                if(stream?.isFrozen==true) { frame.file.delete(); return }
-                val index = records.length() + 1
-                val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
-                val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
-                val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
-                OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
-                    .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
-                    .put("native", native).put("characteristics", staticMetadata(c))
-                    .put("captureDiagnostics", JSONObject(frame.diagnostics)))
-                if (evidence != null) selection!!.attempts.add(evidence)
-                // Full evidence is in the hashed sidecar; keep logcat below its line limit.
-                android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
-                    "diagnostics=${frame.diagnostics["diagnosticsVersion"]} " +
-                    "assessment=${integrity?.get("assessment")} findings=${integrity?.get("findings")}")
-                records.put(reading(frame.result, c).put("index", index)
-                    .put("actualExposureSeconds", native.getDouble("exposureTimeNs") / 1e9)
-                    .put("actualISO", native.getInt("iso"))
-                    .put("file", OpenCaptureProtocol.receipt(frame.file)).put("metadataFile", OpenCaptureProtocol.receipt(sidecar))
-                    .put("width", frame.width).put("height", frame.height)
-                    .put("timestampSeconds", native.getDouble("sensorTimestampNs") / 1e9).put("isBayerRAW", true))
-                stream?.publish(records.getJSONObject(index-1))
-                progress(if (selection == null) "Saved DNG $index / $count" else
-                    "Checked $index attempts; ${selection.accepted().size} / $count usable")
+            if(stream?.isFrozen==true) { frame.file.delete(); return }
+            val index = records.length() + 1
+            val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
+            val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
+            val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
+            OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
+                .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
+                .put("native", native).put("characteristics", staticMetadata(c))
+                .put("captureDiagnostics", JSONObject(frame.diagnostics)))
+            if (evidence != null) selection!!.attempts.add(evidence)
+            // Full evidence is in the hashed sidecar; keep logcat below its line limit.
+            android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
+                "diagnostics=${frame.diagnostics["diagnosticsVersion"]} " +
+                "assessment=${integrity?.get("assessment")} findings=${integrity?.get("findings")}")
+            records.put(reading(frame.result, c).put("index", index)
+                .put("actualExposureSeconds", native.getDouble("exposureTimeNs") / 1e9)
+                .put("actualISO", native.getInt("iso"))
+                .put("file", OpenCaptureProtocol.receipt(frame.file)).put("metadataFile", OpenCaptureProtocol.receipt(sidecar))
+                .put("width", frame.width).put("height", frame.height)
+                .put("timestampSeconds", native.getDouble("sensorTimestampNs") / 1e9).put("isBayerRAW", true))
+            stream?.publish(records.getJSONObject(index-1))
+            progress(if (selection == null) "Saved DNG $index / $count" else
+                "Checked $index attempts; ${selection.accepted().size} / $count usable")
         }
         fun drainInspection() {
             processor?.take()?.let { (frame,evidence) -> recordFrame(frame,evidence) }

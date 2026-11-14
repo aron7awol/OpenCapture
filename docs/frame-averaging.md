@@ -23,6 +23,11 @@ original-file path. It is invalid on `applyControls`, JPEG or ProRAW requests.
 `frameCount` (1..32) means **usable contributing frames**, not attempts.
 The phone meters/locks once, captures one DNG at a time, closes its image, and
 checks the saved samples. It takes replacements in that same locked session.
+Unreleased Android 0.4.4 and iOS 0.4.3 allow one saved-frame inspection to run
+while the next photo is exposed. Publication and selection remain ordered,
+with at most one inspection worker and one photo in flight. Before a possible
+final contributing frame, the worker is drained to avoid an unnecessary tail
+exposure. Cancellation joins the worker before staging cleanup.
 Maximum total attempts are `2 * frameCount` (at most 64), including failed
 attempts. For example, 4 requested means at most 8 attempts; 10 means 20.
 Camera disconnects, unsupported formats, cancellation and I/O failures are
@@ -42,6 +47,8 @@ Policies:
 
 All policies exclude attempts without the platform's matching integrity
 checkpoints. Android compares acquisition/prewrite/postwrite/saved-DNG samples.
+New Android captures also exclude `capture_timing_invalid`, independently of
+signal level; see [timing integrity](raw-diagnostics.md#timing-integrity-and-stage-timings-unreleased).
 iOS compares native samples before/after encoding and encoded/saved file bytes;
 the desktop additionally compares retained accepted DNGs' decoded pixels with
 the native samples. Matching sparse hashes do NOT establish useful
@@ -97,6 +104,11 @@ After selection, staged DNGs (Android) or native rasters (iOS) are read in strip
 accumulation preserves fractional means and sample variance of per-frame luma,
 including the covariance between Bayer sites. Working image memory is bounded
 independently of frame count. Temporary disk usage still scales with attempts.
+The optimized implementation opens each contributing raster once (at most 32),
+reuses its validated layout and computes a gain strip once for all contributors.
+It retains the same Float64 interpolation, Float32 gain/normalization rounding,
+Welford order, signed noise and native clipping rules. It never retains a full
+burst of decoded image arrays in memory.
 This mode primarily reduces transfer volume for larger bursts; short bursts
 can transfer as much or more than originals due to diagnostic/reference overhead.
 
