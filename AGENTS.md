@@ -25,8 +25,12 @@ of this repository. `context` is opaque controller-owned string metadata.
 - Don't claim untouched sensor data, linear JPEG measurements, or calibrated
   accuracy. Preview and thumbnails are explicitly processed.
 - Frame dimensions and support are device-dependent. Never assume 48 MP RAW.
-- One photo is in flight at a time. Keep captures on disk rather than retaining
-  all full-resolution frame buffers. Originals are transient active-session
+- Original bursts may have at most two unfinished photos under the owner's
+  bounded exposure-overlap policy; phone averaging remains sequential. Read
+  `docs/exposure-overlap.md`. Reserve in-flight attempts before submission,
+  preserve per-frame metadata identity, and drain writers before cleanup.
+  Keep captures on disk rather than retaining an entire burst in memory.
+  Originals are transient active-session
   staging, not a permanent archive; preserve them only for bounded retries.
 - Cancellation is cooperative; backgrounding cancels jobs. No background
   camera entitlement, hidden recording, or private iOS APIs.

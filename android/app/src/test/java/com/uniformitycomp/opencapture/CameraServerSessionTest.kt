@@ -22,7 +22,7 @@ class CameraServerSessionTest {
             val image=File(dir,"frame-0001.dng").apply { writeText("original") }
             val meta=File(dir,"frame-0001.json").apply { writeText("{}") }
             record=JSONObject().put("index",1).put("file",OpenCaptureProtocol.receipt(image)).put("metadataFile",OpenCaptureProtocol.receipt(meta))
-            stream.publish(record!!);published.countDown()
+            check(stream.next());check(stream.tryNext());stream.publish(record!!);published.countDown()
             check(release.await(3,TimeUnit.SECONDS))
             error("Discarded lookahead failed")
         })
@@ -52,7 +52,7 @@ class CameraServerSessionTest {
                 val image=File(dir,"frame-0001.dng").apply { writeText("original") }
                 val meta=File(dir,"frame-0001.json").apply { writeText("{}") }
                 record=JSONObject().put("index",1).put("file",OpenCaptureProtocol.receipt(image)).put("metadataFile",OpenCaptureProtocol.receipt(meta))
-                stream.publish(record!!);published.countDown()
+                check(stream.next());check(stream.tryNext());stream.publish(record!!);published.countDown()
                 check(release.await(3,TimeUnit.SECONDS))
                 assertTrue(cancel.get());assertTrue(image.exists())
                 error("Cancelled while draining")
@@ -83,7 +83,7 @@ class CameraServerSessionTest {
             val image=File(dir,"frame-0001.dng").apply { writeText("original") }
             val meta=File(dir,"frame-0001.json").apply { writeText("{}") }
             record=JSONObject().put("index",1).put("file",OpenCaptureProtocol.receipt(image)).put("metadataFile",OpenCaptureProtocol.receipt(meta))
-            stream.publish(record!!);published.countDown()
+            check(stream.next());check(stream.tryNext());stream.publish(record!!);published.countDown()
             release.await(3,TimeUnit.SECONDS)
             assertTrue("ACK must not delete files under the writer",image.exists())
             stream.finish() to dir

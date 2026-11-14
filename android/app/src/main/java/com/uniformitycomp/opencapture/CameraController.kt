@@ -75,12 +75,15 @@ class CameraController(private val context: Context) {
 
     fun previewDimensions(): Size? = previewSize
 
-    /** Sequential original DNG capture; the caller retains each completed file. */
+    /** Ordered original DNG capture with optional exposure overlap; the caller retains completed files. */
     fun captureDngOriginals(settings: DngSettings, count: Int, directory: java.io.File?, cancel: AtomicBoolean,
                             maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
+                            overlap: Boolean = false, tryReserveNext: (() -> Boolean)? = null,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
-        val reader = requireNotNull(rawReader) { "No supported RAW size" }
+        val size = requireNotNull(rawSize) { "No supported RAW size" }
+        val reader = rawReader ?: ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 4)
+            .also { rawReader = it }
         val surface = requireNotNull(previewSurface) { "Start the aiming preview first" }
         registerCapture(cancel) { cancel.set(true) }
         val configured = requireNotNull(previewSession) { "Preview session is not ready" }
@@ -89,10 +92,18 @@ class CameraController(private val context: Context) {
         try {
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
                 existingSession = configured, previousLocked = dngPreviewControls)
-                .run(settings, count, directory, onFrame, maxAttempts, needsMore)
-            dngPreviewControls = sequence.locked
+                .run(settings, count, directory, onFrame, maxAttempts, needsMore,
+                    overlap = overlap, tryReserveNext = tryReserveNext)
+            if (cameraDevice === camera && !cancel.get()) dngPreviewControls = sequence.locked
             succeeded = true
             return sequence
+        } catch (error: Exception) {
+            dngPreviewControls = null
+            // A failed/cancelled lookahead can deliver a late buffer. Never let
+            // that buffer enter the next job's reader or metadata matcher.
+            reader.close()
+            if (rawReader === reader) rawReader = null
+            throw error
         } finally {
             activeCaptureCancel = null
             activeCaptureCleanup = null
@@ -164,7 +175,7 @@ class CameraController(private val context: Context) {
 
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
-                    if (cameraDevice === camera) cameraDevice = null
+                    if (cameraDevice === camera) { cameraDevice = null; dngPreviewControls = null }
                     if (pendingOpenCancel === openCancel) pendingOpenCancel = null
                     reportOpened(false)
                     onConnectionLost?.invoke()
@@ -172,7 +183,7 @@ class CameraController(private val context: Context) {
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
-                    if (cameraDevice === camera) cameraDevice = null
+                    if (cameraDevice === camera) { cameraDevice = null; dngPreviewControls = null }
                     if (pendingOpenCancel === openCancel) pendingOpenCancel = null
                     reportOpened(false)
                     onConnectionLost?.invoke()

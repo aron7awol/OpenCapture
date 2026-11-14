@@ -251,6 +251,22 @@ private struct CameraServerInfo: Encodable {
             }
             try stream?.publish(frame)
         }
+        func annotate(_ captured: FrameRecord) throws -> FrameRecord {
+            var frame = captured
+            if request.format == .bayerRAW {
+                let file = directory.appendingPathComponent(frame.metadataFile.name)
+                if var sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any],
+                   var diagnostics = sidecar["captureDiagnostics"] as? [String:Any],
+                   let samples = (diagnostics["rawBeforeDng"] as? [String:Any])?["sha256"] as? String {
+                    if let previousSamples { diagnostics["sameSamplesAsPreviousFrame"] = previousSamples == samples }
+                    previousSamples = samples
+                    sidecar["captureDiagnostics"] = diagnostics
+                    try JSONSerialization.data(withJSONObject:sidecar,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
+                    frame.metadataFile = try BayerAverage.receipt(file,media:"application/json")
+                }
+            }
+            return frame
+        }
         func drainInspection() async throws {
             if let inspected=try await inspector.take(), var frame=pendingFrame {
                 let file=directory.appendingPathComponent(frame.metadataFile.name)
@@ -270,27 +286,28 @@ private struct CameraServerInfo: Encodable {
                 transfers?.progress(request.id,status)
             }
         }
-        do {
-            for index in 1...attemptLimit {
-                try Task.checkCancellation()
-                if inspector.hasPending, selection!.accepted.count+1 >= request.frameCount { try await drainInspection() }
-                if let selection, !selection.needsMore { break }
-                if let stream, !(try await stream.next()) { break }
+        if selection == nil {
+            let pipeline = ExposurePipeline<FrameRecord>()
+            try await pipeline.run(limit: attemptLimit, overlap: true, reserve: { wait in
+                guard let stream else { return true }
+                if wait { return try await stream.next() }
+                return try stream.tryNext()
+            }, finished: { stream?.frozen == true }, capture: { [camera] index, exposed in
+                try await camera.photo(request: request, index: index, directory: directory, exposureFinished: exposed)
+            }, consume: { [self] index, frame in
                 status = "Frame \(index) of \(request.frameCount)"
-                var frame = try await camera.photo(request: request, index: index, directory: directory)
-                if request.format == .bayerRAW {
-                    let file = directory.appendingPathComponent(frame.metadataFile.name)
-                    if var sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any],
-                       var diagnostics = sidecar["captureDiagnostics"] as? [String:Any],
-                       let samples = (diagnostics["rawBeforeDng"] as? [String:Any])?["sha256"] as? String {
-                        if let previousSamples { diagnostics["sameSamplesAsPreviousFrame"] = previousSamples == samples }
-                        previousSamples = samples
-                        sidecar["captureDiagnostics"] = diagnostics
-                        try JSONSerialization.data(withJSONObject:sidecar,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
-                        frame.metadataFile = try BayerAverage.receipt(file,media:"application/json")
-                    }
-                }
-                if selection != nil {
+                try publish(annotate(frame))
+                return true
+            })
+        } else {
+            do {
+                for index in 1...attemptLimit {
+                    try Task.checkCancellation()
+                    if inspector.hasPending, selection!.accepted.count+1 >= request.frameCount { try await drainInspection() }
+                    if !selection!.needsMore { break }
+                    status = "Frame \(index) of \(request.frameCount)"
+                    let captured = try await camera.photo(request: request, index: index, directory: directory)
+                    let frame = try annotate(captured)
                     try await drainInspection()
                     if !selection!.needsMore {
                         for file in [frame.file,frame.metadataFile] + (frame.previewFile.map { [$0] } ?? []) {
@@ -300,7 +317,6 @@ private struct CameraServerInfo: Encodable {
                         break
                     }
                     pendingFrame=frame
-                    let frame=frame
                     try inspector.submit {
                         let started=RawCaptureDiagnostics.now
                         guard let sidecar = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent(frame.metadataFile.name))) as? [String:Any],
@@ -312,12 +328,12 @@ private struct CameraServerInfo: Encodable {
                         let evidence=try BayerAverage.inspect(file:directory.appendingPathComponent(String(format:"frame-%04d.raw16",index)),layout:layout,integrity:assessment)
                         return (evidence,started,RawCaptureDiagnostics.now)
                     }
-                } else { try publish(frame) }
+                }
+                try await drainInspection()
+            } catch {
+                await inspector.cancelAndWait()
+                throw error
             }
-            try await drainInspection()
-        } catch {
-            await inspector.cancelAndWait()
-            throw error
         }
         if let stream { return try await stream.finish() }
         let aggregationStarted=ProcessInfo.processInfo.systemUptime

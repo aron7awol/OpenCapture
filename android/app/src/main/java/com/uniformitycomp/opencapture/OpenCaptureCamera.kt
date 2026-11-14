@@ -139,7 +139,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         try {
             val sequence = camera.captureDngOriginals(settings, count, directory, cancel,
                 stream?.limit ?: selection?.maxAttempts ?: count,
-                stream?.let { { it.next() } } ?: selection?.let { { needsAverage() } }) { frame ->
+                stream?.let { { it.next() } } ?: selection?.let { { needsAverage() } },
+                overlap = selection == null && (count > 1 || stream != null),
+                tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->
                 if (processor == null) recordFrame(frame)
                 else {
                     drainInspection()

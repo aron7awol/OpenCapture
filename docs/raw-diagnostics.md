@@ -78,6 +78,64 @@ genuinely dark, stale, or otherwise unusable. Preserve originals for investigati
 New iOS native-buffer behavior requires physical-device verification; macOS core
 tests and simulator navigation cannot establish sensor behavior.
 
+## Android Manual Setup Follow-Up (Source Only)
+
+The source after 0.4.3/build 10 adds optional `captureSetup` evidence inside
+Android diagnostics v2. It is now merged with the performance implementation;
+physical verification remains pending and it does not identify a published APK.
+
+OpenCapture can reuse a previously established color transform and locked
+controls when the next job explicitly repeats identical exposure, ISO, focus
+and WB on the same open camera. The first preview request is then manual,
+without an intervening automatic-WB phase. Initial/changed/partly automatic
+requests retain auto-then-lock setup. Camera close, lens change, camera error,
+disconnect and capture failure clear cached state. Omitted controls never mean
+"reuse the last manual value." The legacy capture caller does not opt in.
+
+Each original's `captureSetup` contains:
+
+- `policy`: `auto-then-lock-v1` or `manual-reuse-identical-controls-v1`.
+- `sessionRecreated` and `previousLockedAvailable`. The merged performance
+  implementation reuses the compatible RAW+preview session between healthy jobs.
+- `advertisedPartialResultCount` and `advertisedPipelineMaxDepth`, when reported.
+- Monotonic `setupStartedElapsedNs`, `sessionRequestedElapsedNs`,
+  `sessionConfiguredElapsedNs`, `manualRequestSubmittedElapsedNs`,
+  `manualFirstResultElapsedNs`, `manualSettledElapsedNs` and `manualResultsSeen`.
+  Session request/configuration times appear only for a new session; reused
+  sessions instead record `sessionReusedElapsedNs`.
+- For the automatic path only: `autoRequestSubmittedElapsedNs`,
+  `autoFirstResultElapsedNs`, `autoSettledElapsedNs`, `autoResultsSeen`.
+- `autoFirstResult`, `autoSettledResult`, `manualFirstResult` and
+  `manualSettledResult` when that phase exists. These small actual-result
+  snapshots include controls, frame/sensor time, color transform, shading modes
+  and map dimensions/SHA-256 where reported. Map hash bytes are Camera2 gains in
+  row-major R/G_even/G_odd/B order, IEEE float32 little-endian.
+
+Manual-phase selection requires the current request tag and actual exposure,
+ISO, focus and WB to match the locked controls within the existing tolerances.
+Each snapshot separately records actual values returned by the camera. Missing result
+keys remain absent, not invented. Existing per-still native metadata and the
+DNG map remain authoritative. Setup maps are never substituted for a still's
+own map or used to force apparent map stability.
+
+Compare repeated identical-manual bursts with the seed/automatic path at the
+same settings. Check map hashes within and between bursts, actual controls and
+setup durations. Exercise cancellation, close/reopen, changed/omitted controls
+and lens changes before accepting the fast path. Do not subtract sensor clocks
+from monotonic clocks, or call all setup duration removable overhead. Keep
+session reuse constant while comparing exposure overlap; neither change proves
+that per-frame lens-shading maps will be stable.
+
+The per-frame diagnostics additionally record `partialResultCount`, first/last
+partial-result monotonic times, `firstPartialResultKeys`, and the first
+`partialShadingMapElapsedNs` if a partial result contains a map. Absent partial
+callbacks leave these fields absent. These are timing observations only;
+original writing and sidecars still use the timestamp-matched full result.
+The subsequent [exposure-overlap change](exposure-overlap.md) uses these timings
+to evaluate the source-only bounded capture pipeline. It also records Android
+overlap policy/submission state and iOS `captureTiming` alongside the existing
+per-frame diagnostic checkpoints.
+
 ## Android 0.4.1
 
 Android source 0.4.1/build 7 adds automatic, phone-side diagnostics for frames

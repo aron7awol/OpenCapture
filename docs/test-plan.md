@@ -1,5 +1,22 @@
 # Verification and Device Test Plan
 
+## Exposure Overlap (Unreleased, 2026-11-14)
+
+Read [the bounded overlap design and verification checklist](exposure-overlap.md).
+Android original bursts can submit the next exposure after RAW image arrival;
+iOS uses exposure completion plus output readiness. Initial source preparation
+on the display PC lacked mobile toolchains. After merging the performance
+changes on the build PC, Android compilation, lint, 83 debug and 83 release
+tests passed, together with 37 controller tests. Prior release checks below
+do not verify these changes; iOS requires CI on the combined source revision.
+
+Run the new Swift pipeline tests, updated Android/Swift stream reservation and
+session-lifetime fixtures, normal platform builds/lint and exported-source
+builds on the equipped PCs. Physical N=1/6/18 original/streamed tests must verify
+actual overlap, identity, counts, reader/buffer integrity and post-cancellation
+recovery. Averaging and legacy Android keep sequential exposures; averaging
+may overlap inspection of one saved frame with the following exposure.
+
 ## Capture Performance Follow-Up (Unreleased)
 
 Use identical actual controls and scene for six- and eighteen-frame original

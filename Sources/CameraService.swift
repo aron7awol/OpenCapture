@@ -29,7 +29,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var preparedActualKey: CaptureControlKey?
     private var preparationTiming: [String:UInt64] = [:]
     private var device: AVCaptureDevice?
-    private var delegate: StillDelegate?
+    private var delegates: [Int64: StillDelegate] = [:]
     private var previewTime = 0.0
     private let previewLock = NSLock()
     private var previewData: Data?
@@ -56,7 +56,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let granted = await AVCaptureDevice.requestAccess(for: .video)
         guard granted else { throw CaptureError.unavailable("Camera permission is disabled. Enable it in Settings.") }
         return try await onQueue { [self] in
-            guard delegate == nil else { throw CaptureError.unavailable("A photo is still in flight") }
+            guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
             preparedKey=nil; preparedActualKey=nil; preparationTiming=[:]
             session.stopRunning()
             session.beginConfiguration()
@@ -157,6 +157,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     focus:reading.focus,whiteBalance:reading.whiteBalance)
         }
         let canReuse=try await onQueue { [self] in
+            guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
             guard let key, let d=device, session.isRunning,
                   key == preparedKey || key == preparedActualKey else { return false }
             return reusable(d,key)
@@ -165,6 +166,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             // Physical pattern settling remains independent of control reuse.
             try await Task.sleep(nanoseconds:UInt64(max(250,request.settleMilliseconds))*1_000_000)
             let valid=try await onQueue { [self] in
+                guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
                 guard let key, let d=device, session.isRunning, reusable(d,key) else { return false }
                 preparationTiming=["preparationStartedElapsedNs":started,"controlsLockedElapsedNs":RawCaptureDiagnostics.now,"controlsReused":1]
                 return true
@@ -172,6 +174,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if valid { return }
         }
         try await onQueue { [self] in
+            guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
             preparedKey=nil; preparedActualKey=nil
             guard let d = device, session.isRunning else { throw CaptureError.unavailable("Camera is not running") }
             if request.format == .bayerRAW && !output.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) {
@@ -254,12 +257,26 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    func photo(request: CaptureRequest, index: Int, directory: URL) async throws -> FrameRecord {
+    func photo(request: CaptureRequest, index: Int, directory: URL,
+               exposureFinished: @escaping @Sendable () -> Void = {}) async throws -> FrameRecord {
+        try Task.checkCancellation()
+        let readinessDeadline = ProcessInfo.processInfo.systemUptime + max(60, (request.exposureSeconds ?? 30) * 4 + 15)
+        while true {
+            let ready = try await onQueue { [self] in
+                guard device != nil, session.isRunning else { throw CaptureError.unavailable("Camera is stopped") }
+                return delegates.count < 2 && output.captureReadiness == .ready
+            }
+            if ready { break }
+            guard ProcessInfo.processInfo.systemUptime < readinessDeadline else {
+                throw CaptureError.unavailable("Camera did not become ready for the next photo")
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
         try Task.checkCancellation()
         return try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 do {
-                    guard let d = device, session.isRunning, delegate == nil else { throw CaptureError.unavailable("Camera is busy or stopped") }
+                    guard let d = device, session.isRunning, delegates.count < 2 else { throw CaptureError.unavailable("Camera is busy or stopped") }
                     let settings: AVCapturePhotoSettings
                     if request.format != .jpeg {
                         let query: (OSType) -> Bool = request.format == .appleProRAW
@@ -278,21 +295,26 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                         settings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: previewType,
                             kCVPixelBufferWidthKey as String: 640, kCVPixelBufferHeightKey as String: 480]
                     }
+                    let id = settings.uniqueID
                     let capture = StillDelegate(directory: directory, index: index, format: request.format,
-                        averaging:request.averaging != nil, context:photoContext, preparation:preparationTiming,
+                        averaging:request.averaging != nil, requestID: id, exposureFinished: exposureFinished,
+                        context:photoContext, preparation:preparationTiming,
                         reading: { Self.read(d) }) { [weak self] result in
-                        self?.queue.async {
-                            self?.delegate = nil
-                            if case .failure = result { self?.preparedKey=nil; self?.preparedActualKey=nil }
+                        guard let self else { continuation.resume(with: result); return }
+                        self.queue.async {
+                            self.delegates.removeValue(forKey: id)
+                            if case .failure = result { self.preparedKey=nil; self.preparedActualKey=nil }
+                            continuation.resume(with: result)
                         }
-                        continuation.resume(with: result)
                     }
-                    delegate = capture
+                    delegates[id] = capture
                     output.capturePhoto(with: settings, delegate: capture)
                     queue.asyncAfter(deadline: .now() + max(60, d.exposureDuration.seconds * 4 + 15)) { [weak self, weak capture] in
-                        guard let self, let capture, self.delegate === capture else { return }
+                        guard let self, let capture, self.delegates[id] === capture else { return }
                         self.session.stopRunning()
-                        capture.fail(CaptureError.unavailable("Photo timed out; reconnect the camera before retrying"))
+                        for pending in Array(self.delegates.values) {
+                            pending.fail(CaptureError.unavailable("Photo timed out; reconnect the camera before retrying"))
+                        }
                     }
                 } catch { continuation.resume(throwing: error) }
             }
@@ -307,7 +329,13 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         previewLock.lock(); defer { previewLock.unlock() }; return previewData
     }
 
-    func stop() { queue.async { self.preparedKey=nil; self.preparedActualKey=nil; self.session.stopRunning() } }
+    func stop() {
+        queue.async {
+            self.preparedKey=nil; self.preparedActualKey=nil
+            self.session.stopRunning()
+            for pending in Array(self.delegates.values) { pending.fail(CancellationError()) }
+        }
+    }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         previewLock.lock(); let paused = previewPaused; previewLock.unlock()
@@ -327,27 +355,57 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private let index: Int
     private let format: CaptureFormat
     private let averaging: Bool
+    private let requestID: Int64
+    private let exposureFinished: @Sendable () -> Void
+    private let submittedElapsedNs = RawCaptureDiagnostics.now
+    private var exposureStartedElapsedNs: UInt64?
+    private var exposureEndedElapsedNs: UInt64?
     private let context: CIContext
     private let preparation: [String:UInt64]
-    private let submitted = RawCaptureDiagnostics.now
     private let reading: () -> DeviceReading
     private var atShutter: DeviceReading?
     private let lock = NSLock()
     private var completion: ((Result<FrameRecord, Error>) -> Void)?
     private var outcome: Result<FrameRecord, Error>?
+    private var processing = false
+    private var captureEnded = false
+    private var forcedError: Error?
 
-    init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, context: CIContext,
+    init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, requestID: Int64,
+         exposureFinished: @escaping @Sendable () -> Void, context: CIContext,
          preparation: [String:UInt64], reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<FrameRecord, Error>) -> Void) {
         self.directory = directory; self.index = index; self.format = format; self.averaging = averaging
+        self.requestID = requestID; self.exposureFinished = exposureFinished
         self.context=context; self.preparation=preparation
         self.reading = reading; self.completion = completion
     }
 
-    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) { atShutter = reading() }
+    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
+        guard resolvedSettings.uniqueID == requestID else { fail(CaptureError.invalid("Photo request identity mismatch")); return }
+        lock.lock(); atShutter = reading(); exposureStartedElapsedNs = RawCaptureDiagnostics.now; lock.unlock()
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
+        guard resolvedSettings.uniqueID == requestID else { fail(CaptureError.invalid("Photo request identity mismatch")); return }
+        lock.lock()
+        let notify = completion != nil && exposureEndedElapsedNs == nil && forcedError == nil
+        exposureEndedElapsedNs = RawCaptureDiagnostics.now
+        lock.unlock()
+        if notify { exposureFinished() }
+    }
 
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        lock.lock()
+        guard completion != nil, !processing, !captureEnded else { lock.unlock(); return }
+        processing = true
+        lock.unlock()
+        defer {
+            lock.lock(); processing = false; lock.unlock()
+            finishIfReady()
+        }
         do {
+            guard photo.resolvedSettings.uniqueID == requestID else { throw CaptureError.invalid("Photo request identity mismatch") }
             if let error { throw error }
             let expectedRAW = format != .jpeg
             let start = RawCaptureDiagnostics.now
@@ -372,13 +430,14 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             let base = String(format: "frame-%04d", index)
             let encoded = RawCaptureDiagnostics.now
             let file = try write(data, name: base + (expectedRAW ? ".dng" : ".jpg"), mediaType: expectedRAW ? "image/dng" : "image/jpeg")
+            let originalWrittenElapsedNs = RawCaptureDiagnostics.now
             var metadataObject = jsonValue(photo.metadata) as? [String:Any] ?? [:]
             if let before, let buffer = photo.pixelBuffer {
                 do {
                     var diagnostics = try RawCaptureDiagnostics.finish(before:before,
                         after:RawCaptureDiagnostics.snapshot(buffer,retain:false),data:data,file:directory.appendingPathComponent(file.name),
                         encodedReceipt:file, stage:averaging ? directory.appendingPathComponent(base+".raw16") : nil,start:start,encoded:encoded)
-                    diagnostics["requestSubmittedElapsedNs"]=submitted
+                    diagnostics["requestSubmittedElapsedNs"]=submittedElapsedNs
                     diagnostics["imageArrivedElapsedNs"]=start
                     for (key,value) in preparation { diagnostics[key]=value }
                     diagnostics["photoTimestampSeconds"] = photo.timestamp.seconds
@@ -390,6 +449,14 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
                 metadataObject["captureDiagnostics"] = ["diagnosticsVersion":3,"platform":"ios",
                     "sampleIntegrity":["assessment":"incomplete_diagnostics","findings":[diagnosticError]]]
             }
+            lock.lock()
+            metadataObject["captureTiming"] = ["policy": averaging ? "sequential-v1" : "two-photo-after-exposure-v1",
+                "requestID": requestID, "submittedElapsedNs": submittedElapsedNs,
+                "exposureStartedElapsedNs": exposureStartedElapsedNs.map { $0 as Any } ?? NSNull(),
+                "exposureEndedElapsedNs": exposureEndedElapsedNs.map { $0 as Any } ?? NSNull(),
+                "processingCallbackElapsedNs": start, "encodedElapsedNs": encoded,
+                "originalWrittenElapsedNs": originalWrittenElapsedNs]
+            lock.unlock()
             let metadata = try JSONSerialization.data(withJSONObject:metadataObject, options:[.prettyPrinted,.sortedKeys])
             let metadataFile = try write(metadata, name: base + ".json", mediaType: "application/json")
             var previewFile: CapturedFile?
@@ -413,14 +480,25 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
-        if let error { fail(error) }
-        else { finish(outcome ?? .failure(CaptureError.unavailable("Camera returned no photo"))) }
+        guard resolvedSettings.uniqueID == requestID else { fail(CaptureError.invalid("Photo request identity mismatch")); return }
+        lock.lock(); captureEnded = true
+        if let error { forcedError = error }
+        lock.unlock()
+        finishIfReady()
     }
 
-    func fail(_ error: Error) { finish(.failure(error)) }
-    private func finish(_ result: Result<FrameRecord, Error>) {
-        lock.lock(); let callback = completion; completion = nil; lock.unlock()
-        callback?(result)
+    func fail(_ error: Error) {
+        lock.lock(); forcedError = error; captureEnded = true; lock.unlock()
+        finishIfReady()
+    }
+    private func finishIfReady() {
+        lock.lock()
+        guard captureEnded, !processing, let callback = completion else { lock.unlock(); return }
+        let result = forcedError.map { Result<FrameRecord, Error>.failure($0) }
+            ?? outcome ?? .failure(CaptureError.unavailable("Camera returned no photo"))
+        completion = nil
+        lock.unlock()
+        callback(result)
     }
 
     private func write(_ data: Data, name: String, mediaType: String) throws -> CapturedFile {

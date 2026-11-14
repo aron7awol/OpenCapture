@@ -18,6 +18,7 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
     private var frozen: JSONObject? = null
     private var lastProgress = System.nanoTime()
     private var publishedBytes = 0L
+    private var reservedAttempts = 0
     init { require(maximumBytes in 1..4L*1024*1024*1024) }
     val limit = request.getInt("frameCount") * 2
     val isFrozen: Boolean get() = synchronized(lock) { frozen != null }
@@ -31,15 +32,23 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
         check(!cancel.get()) { "Capture cancelled" }
         check(System.nanoTime()-lastProgress < 240_000_000_000L) { "Controller frame verdict timed out" }
     }
-    fun next(): Boolean = synchronized(lock) {
-        while (frozen == null && frames.size-verdicts.size >= 2) { checkLive(); lock.wait(50) }
+    fun next(): Boolean = reserve(wait = true)
+    fun tryNext(): Boolean = reserve(wait = false)
+    private fun reserve(wait: Boolean): Boolean = synchronized(lock) {
+        while (frozen == null && reservedAttempts-verdicts.size >= 2) {
+            checkLive()
+            if (!wait) return@synchronized false
+            lock.wait(50)
+        }
         checkLive()
-        frozen == null && frames.size < limit
+        if (frozen != null || reservedAttempts >= limit) return@synchronized false
+        reservedAttempts++
+        true
     }
     fun publish(frame: JSONObject) = synchronized(lock) {
         val receipts = listOf(frame.getJSONObject("file"), frame.getJSONObject("metadataFile")) +
             listOfNotNull(frame.optJSONObject("previewFile"))
-        check(frame.getInt("index") == frames.size+1 && frames.size < limit && (frozen != null || frames.size-verdicts.size < 2))
+        check(frame.getInt("index") == frames.size+1 && frames.size < reservedAttempts && frames.size < limit)
         require(receipts.map { it.getString("name") }.toSet().size == receipts.size)
         for (r in receipts) {
             val name=r.getString("name"); val file=File(directory,name)

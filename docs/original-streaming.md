@@ -1,8 +1,9 @@
 # Original streaming v1
 
 Optional extension to the foreground camera-server transport. The generic
-phone keeps one photo in flight and permits transfer of an earlier finalized
-original during the next exposure. The controller owns frame selection. No
+phone permits transfer of an earlier finalized original during the next
+exposure. Current source also supports [bounded exposure overlap](exposure-overlap.md)
+with at most two unfinished photos. The controller owns frame selection. No
 camera/display calibration or scene interpretation is performed by this mode.
 
 ## Negotiation and publication
@@ -26,8 +27,11 @@ serve those published names while the job is still running. No partial file or
 arbitrary path is exposed. Re-downloads use the same bytes.
 
 There may be at most two unjudged attempts, counting the in-flight exposure:
-the frame being transferred and one capture ahead. A new exposure starts only
-when the published count minus verdict count is less than two. Capture order
+the frame being transferred and one capture ahead. Current source reserves each
+exposure before submission; a new exposure starts only when the reserved count
+minus verdict count is less than two. Unpublished photos consume slots too.
+The historical sequential implementation used published count before submission;
+that was valid only with its single unfinished photo. Capture order
 and verdict order are sequential. At most 2*N total attempts are allowed, with
 the existing per-file, manifest and 4 GiB job limits.
 

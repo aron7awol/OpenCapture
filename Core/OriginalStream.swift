@@ -25,8 +25,8 @@ public struct OriginalStreamState: Encodable {
     public let frozen: Bool
 }
 
-/// Camera remains sequential; the controller may transfer the previous frame
-/// during the next exposure. Frozen results do not wait for discarded exposures.
+/// Reserved exposures and published frames share the same two-unjudged bound.
+/// Frozen results do not wait for discarded exposures.
 @MainActor public final class OriginalStream {
     private let request: CaptureRequest
     private let directory: URL
@@ -37,6 +37,7 @@ public struct OriginalStreamState: Encodable {
     private var lastProgress = ProcessInfo.processInfo.systemUptime
     private let maximumBytes: Int
     private var publishedBytes = 0
+    private var reservedAttempts = 0
     public private(set) var result: CameraServerResult?
     public var limit: Int { request.frameCount * 2 }
     public var frozen: Bool { result != nil }
@@ -56,14 +57,20 @@ public struct OriginalStreamState: Encodable {
         }
     }
     public func next() async throws -> Bool {
-        while !frozen && frames.count-verdicts.count >= 2 {
+        while !frozen && reservedAttempts-verdicts.count >= 2 {
             try live(); try await Task.sleep(nanoseconds:50_000_000)
         }
-        try live(); return !frozen && frames.count < limit
+        return try tryNext()
+    }
+    public func tryNext() throws -> Bool {
+        try live()
+        guard !frozen, reservedAttempts < limit, reservedAttempts-verdicts.count < 2 else { return false }
+        reservedAttempts += 1
+        return true
     }
     public func publish(_ frame: FrameRecord) throws {
         let receipts = [frame.file,frame.metadataFile] + (frame.previewFile.map { [$0] } ?? [])
-        guard frame.index==frames.count+1, frames.count<limit, frozen || frames.count-verdicts.count<2,
+        guard frame.index==frames.count+1, frames.count<reservedAttempts, frames.count<limit,
               Set(receipts.map(\.name)).count == receipts.count else {
             throw CameraServerError(409,"Stream publication exceeded lookahead")
         }

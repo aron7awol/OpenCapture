@@ -13,6 +13,10 @@ the default and retains each requested original unchanged.
 
 - `Core/CameraServerSession.swift`: automatic single-PC reservation, bounded
   session/job state, replay protection, result-hash ACK and temporary-file cleanup.
+- `Core/ExposurePipeline.swift`: ordered original-file consumers with at most
+  two unfinished captures, exposure-completion signaling, nonblocking lookahead
+  admission and cancellation drain. See [exposure overlap](exposure-overlap.md)
+  for current source-only verification status on Android and iOS.
 - `Sources/LANHTTPServer.swift`: SwiftNIO HTTP/1 server bound to the private
   Wi-Fi IPv4 interface. Bounded requests/connections; file-region streaming.
 - `Core/RemoteReconnect.swift`: legacy outbound retry policy, retained as a fixture.
@@ -28,7 +32,7 @@ the default and retains each requested original unchanged.
 - `Core/Protocol.swift`: Codable contract, bounded setting validation,
   controller URL policy, numeric release-version comparison. Foundation only.
 - `Sources/CameraService.swift`: physical rear-camera discovery, AVFoundation
-  session, once-per-run control locking, sequential still delegates, exact
+  session, verified manual-control reuse, at most two original-photo delegates, exact
   DNG/JPEG files, metadata sidecars, and throttled processed preview.
 - `Sources/AppModel.swift`: foreground server lifecycle, Bonjour advertisement,
   remote lens/control routing, capture and cancellation into temporary storage.
@@ -55,6 +59,17 @@ the default and retains each requested original unchanged.
 - `scripts/`: deterministic icon renderer, device-IPA packager, macOS build.
 
 ## Capture decisions
+
+Android source after 0.4.3/build 10 reuses a previously established manual state
+only for explicitly identical full-manual jobs on the same open camera. It
+avoids the intervening auto-WB preview, while retaining manual-result settling
+and original metadata. Initial/changed/partly automatic requests still settle
+auto controls. The merged performance implementation keeps the compatible
+RAW+preview session configured, verifies the actual locked controls, and retains
+the setup/partial-result diagnostics. Failed or cancelled bursts replace the RAW
+reader before the next session. Physical verification of the combined changes
+remains pending; see
+[setup diagnostics and test cases](raw-diagnostics.md#android-manual-setup-follow-up-source-only).
 
 Version 0.4.0 reverses the transport: the phone advertises `_oc-camera._tcp`,
 the desktop selects it and reserves a foreground session, then pulls exact
@@ -88,8 +103,8 @@ the user can evaluate its processing. This may cause the system to override
 requested exposure; EXIF is retained and displayed. Exposure/focus/WB lock
 is not proof of radiometric linearity or the absence of sensor processing.
 
-Original frames are sequential still photos, not video-frame grabs, not a
-guarantee of the stock camera's burst cadence. Averaging is explicit and
+Original frames are individual still photos with bounded exposure overlap;
+they do not promise the stock camera's burst cadence. Averaging is explicit and
 capability-gated; never substitute an average of displayed RAW thumbnails.
 
 Metadata records exposure and ISO from photo EXIF when available, and labels

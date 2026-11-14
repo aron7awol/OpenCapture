@@ -80,8 +80,8 @@ class OriginalStreamTest {
         try {
             val stream=OriginalStream(OpenCaptureProtocol.localRequest(1,null,null,null),root,AtomicBoolean(),20)
             stream.begin(JSONObject(),"start","fixture")
-            val first=frame(root,1);stream.publish(first)
-            val second=frame(root,2)
+            val first=frame(root,1);assertTrue(stream.next());stream.publish(first)
+            val second=frame(root,2);assertTrue(stream.tryNext())
             assertThrows(IllegalStateException::class.java) { stream.publish(second) }
             assertNull(stream.file(second.getJSONObject("file").getString("name")))
             assertThrows(IllegalArgumentException::class.java) { stream.verdict(verdict(second,true)) }
@@ -91,6 +91,39 @@ class OriginalStreamTest {
             assertEquals(result,stream.finish().toString())
             assertFalse(File(root,second.getJSONObject("file").getString("name")).exists())
             assertTrue(File(root,first.getJSONObject("file").getString("name")).exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun reservationsCountUnpublishedCapturesAndFreezeStopsAdmission() {
+        val root=Files.createTempDirectory("stream-exposure-overlap").toFile()
+        try {
+            val stream=OriginalStream(OpenCaptureProtocol.localRequest(2,null,null,null),root,AtomicBoolean())
+            stream.begin(JSONObject(),"start","fixture")
+            assertTrue(stream.next()) // Frame 1 has not been published yet.
+            assertTrue(stream.tryNext()) // Frame 2 may expose while 1 awaits metadata.
+            assertFalse(stream.tryNext()) // Both unpublished exposures consume admission.
+            val a=frame(root,1);stream.publish(a)
+            assertFalse(stream.tryNext()) // Publication is not a verdict.
+            stream.verdict(verdict(a,false))
+            assertTrue(stream.tryNext())
+            assertFalse(stream.tryNext())
+            val b=frame(root,2);stream.publish(b);stream.verdict(verdict(b,true))
+            assertTrue(stream.tryNext())
+            val c=frame(root,3);stream.publish(c);stream.verdict(verdict(c,true))
+            val frozen=stream.finish().toString()
+            assertFalse(stream.tryNext())
+            stream.publish(frame(root,4)) // Previously reserved, now discarded.
+            assertEquals(frozen,stream.finish().toString())
+            assertFalse(File(root,"frame-0004.dng").exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun unreservedFrameCannotBePublished() {
+        val root=Files.createTempDirectory("stream-unreserved").toFile()
+        try {
+            val stream=OriginalStream(OpenCaptureProtocol.localRequest(1,null,null,null),root,AtomicBoolean())
+            stream.begin(JSONObject(),"start","fixture")
+            assertThrows(IllegalStateException::class.java) { stream.publish(frame(root,1)) }
         } finally { root.deleteRecursively() }
     }
 }
