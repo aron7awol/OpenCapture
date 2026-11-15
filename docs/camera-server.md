@@ -37,6 +37,15 @@ The PC sends heartbeats during slow captures/downloads. Disconnect, foreground
 exit, or idle expiry cancels work and clears only this session's staging files.
 An interrupted/restarted session cannot silently replay an old capture ID.
 
+Development source preserves the same reservation and staging when only the
+foreground Wi-Fi listener is rebound. This does not reset or extend the
+120-second idle lease without actual controller traffic. Stop/backgrounding
+still end the session. A controller may reconnect idempotently with its existing
+session UUID, verify the same device/lens and retry the same receipts/ACK; it
+must not use a new job to discard an unacknowledged result. Android source also
+keeps the listener during camera loss and bounds automatic reopen attempts.
+These lifecycle changes need new mobile builds and device verification.
+
 POST `/oc/v1/disconnect` releases the reservation. POST `/oc/v1/camera` accepts
 `{"cameraID":"..."}` and returns fresh info after reconfiguration. Unknown IDs
 fail; no silent fallback. Lens changes are refused during capture or pending

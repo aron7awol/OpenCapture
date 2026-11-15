@@ -63,11 +63,14 @@ private struct CameraServerInfo: Encodable {
                 while !Task.isCancelled && foregrounded && enabled {
                     try await transfers?.expire()
                     let ip = LANHTTPServer.wifiAddress()
-                    if address != ip { try await stopNetwork() }
-                    if let ip, server == nil, !configuring { try await startNetwork(ip) }
-                    if server == nil { status = "Waiting for Wi-Fi" }
-                    else if transfers?.owner == nil { status = "Ready at \(address ?? ""):8767" }
-                    else if let job = transfers?.latest, job.status != "running" {
+                    if address != ip { try await stopNetwork(preserveSession: true) }
+                    if let ip, server == nil, !configuring {
+                        do { try await startNetwork(ip) }
+                        catch { status = "Retrying Wi-Fi: \(error.localizedDescription)" }
+                    }
+                    if ip == nil { status = "Waiting for Wi-Fi" }
+                    else if server != nil, transfers?.owner == nil { status = "Ready at \(address ?? ""):8767" }
+                    else if server != nil, let job = transfers?.latest, job.status != "running" {
                         status = job.status == "acknowledged" ? "Connected. Ready" : job.message
                     }
                     try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -123,11 +126,13 @@ private struct CameraServerInfo: Encodable {
             advertisement = service; service.publish()
         } catch { await listener.stop(); throw error }
     }
-    private func stopNetwork() async throws {
+    private func stopNetwork(preserveSession: Bool = false) async throws {
         advertisement?.stop(); advertisement = nil
         let previous = server; server = nil; address = nil
         await previous?.stop()
-        try await transfers?.end()
+        // A transient Wi-Fi rebind is not an operator Stop. The existing idle
+        // lease still bounds staging lifetime while downloads can resume.
+        if !preserveSession { try await transfers?.end() }
     }
     nonisolated func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
         Task { @MainActor in self.status = "Discovery unavailable; \(self.address ?? "Wi-Fi"):8767" }

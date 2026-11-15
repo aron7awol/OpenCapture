@@ -29,6 +29,52 @@ class ManualCaptureStateTest {
             assertNull(next.reused); assertEquals("settings_changed", next.reason)
         }
     }
+    @Test fun exposureAndIsoChangesRetainColorSourceButNeverSkipReadback() {
+        for (capture in listOf(true, false)) {
+            for (changed in listOf(key(exposure=1_000_000_000), key(iso=100), key(exposure=1_000_000_000,iso=100))) {
+                seed()
+                val next = cache.begin(changed, scope, capture)
+                assertNull(next.reused)
+                assertEquals("actual still #42", next.exposureSource)
+                assertEquals(if (capture) "settings_changed" else "fresh_controls_readback_required", next.reason)
+            }
+        }
+    }
+    @Test fun retainedColorNeverCrossesFocusWhiteBalanceAutomaticOrScopeChanges() {
+        val changes = listOf(key(exposure=1,focus=.3f), key(exposure=1,gains=floatArrayOf(3f,1f,2f)),
+            key(exposure=null), key(iso=null), key(focus=null), key(gains=null), key())
+        for (changed in changes) {
+            seed(); assertNull(cache.begin(changed,scope,true).exposureSource)
+        }
+        for (changedScope in listOf(
+            ManualCaptureScope(Any(),scope.session,scope.reader,scope.preview),
+            ManualCaptureScope(scope.camera,Any(),scope.reader,scope.preview),
+            ManualCaptureScope(scope.camera,scope.session,Any(),scope.preview),
+            ManualCaptureScope(scope.camera,scope.session,scope.reader,Any()))) {
+            seed(); assertNull(cache.begin(key(iso=100),changedScope,true).exposureSource)
+        }
+    }
+    @Test fun failedCancelledOrInvalidatedWorkCannotSupplyRetainedColor() {
+        seed(); cache.invalidate("capture_error")
+        assertNull(cache.begin(key(iso=100),scope,true).exposureSource)
+        var cancelled = false
+        val source = cache.begin(key(),scope,true)
+        cache.complete(source,"still","none") { !cancelled }
+        cancelled = true
+        assertNull(cache.begin(key(iso=100),scope,true).exposureSource)
+        seed(); val changed = cache.begin(key(iso=100),scope,true)
+        assertNotNull(changed.exposureSource)
+        cache.complete(changed,null,"readback_failed")
+        assertNull(cache.begin(key(iso=200),scope,true).exposureSource)
+    }
+    @Test fun changedExposureReadbackStillChecksColorGeometryAndLens() {
+        val reference = actual().copy(exposureNs=1_000_000_000,iso=100)
+        assertNull(reference.difference(reference.copy(exposureNs=999_990_000,iso=99),10f))
+        assertEquals("transform_changed",reference.difference(reference.copy(transform=List(9){1.0}),10f))
+        assertEquals("physical_camera_changed",reference.difference(reference.copy(physicalCamera="other"),10f))
+        assertEquals("wb_changed",reference.difference(reference.copy(gains=listOf(3f,1f,1f,2f)),10f))
+        assertEquals("crop_changed",reference.difference(reference.copy(crop=listOf(0,0,4000,3000)),10f))
+    }
     @Test fun automaticOrPartiallySpecifiedRequestsCannotReuseOrSeedManualState() {
         for (automatic in listOf(key(exposure=null),key(iso=null),key(focus=null),key(gains=null))) {
             seed(); val next = cache.begin(automatic,scope,true)

@@ -68,6 +68,38 @@ import XCTest
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(request.id).path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
     }
+    func testReconnectRetainsExactResultAndLeaseStillExpires() async throws {
+        let root = try temporaryRoot()
+        var clock = 0.0
+        var captures = 0
+        let session = try CameraServerSession(root: root, hash: { _ in "receipt" }, clock: { clock }) { request in
+            captures += 1
+            let directory = try CaptureArchiveStore(root: root).create(request.id)
+            let image = directory.appendingPathComponent("frame-0001.dng")
+            try Data("unchanged original".utf8).write(to: image)
+            return CameraServerResult(data: Data("unchanged result".utf8), files: ["frame-0001.dng": image])
+        }
+        let owner = UUID().uuidString.lowercased()
+        try await session.connect(id: owner, client: "PC")
+        let request = CaptureRequest()
+        _ = try session.submit(request)
+        try await wait { try session.state(request.id).status == "complete" }
+        let original = root.appendingPathComponent(request.id).appendingPathComponent("frame-0001.dng")
+        clock = 60
+        try await session.expire()
+        XCTAssertEqual(session.owner, owner)
+        try await session.connect(id: owner, client: "PC")
+        XCTAssertEqual(try session.submit(request).resultSha256, "receipt")
+        XCTAssertEqual(try Data(contentsOf: original), Data("unchanged original".utf8))
+        XCTAssertEqual(captures, 1)
+        clock = 179
+        try await session.expire()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+        clock = 181
+        try await session.expire()
+        XCTAssertNil(session.owner)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: original.path))
+    }
     func testDerivedFilesRequireOptInAndAreCleanedOnAck() async throws {
         let root = try temporaryRoot()
         let session = try CameraServerSession(root:root,hash:{_ in "hash"}) { request in

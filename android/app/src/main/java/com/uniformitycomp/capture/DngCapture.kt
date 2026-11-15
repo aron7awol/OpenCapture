@@ -68,7 +68,8 @@ internal class DngCapture(
     private val existingSession: CameraCaptureSession? = null,
     private val previousLocked: DngLockedSettings? = null,
     private val previousVerified: DngVerifiedState? = null,
-    private val setupFallbackReason: String = "no_verified_still"
+    private val setupFallbackReason: String = "no_verified_still",
+    private val previousExposureState: DngVerifiedState? = null
 ) {
     private val failure = AtomicReference<Throwable?>()
     private data class RawArrival(val image: Image, val elapsedNs: Long,
@@ -159,13 +160,19 @@ internal class DngCapture(
         }
         require(isBayer(characteristics)) { "This camera does not advertise an RGB Bayer sensor" }
         val minFocus = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-        // Reuse a color transform only for the exact, fully manual settings that
-        // established it in this open camera. Omitted controls still mean auto.
+        // Exposure-only changes retain verified manual color state, but must
+        // obtain fresh manual readback. Omitted controls still mean auto.
         val fast = previousVerified?.takeIf { count > 0 && existingSession != null &&
             ManualRequestKey.from(settings.exposureNs, settings.iso, settings.focusFraction, settings.whiteBalance) != null }
-        val reusable = fast?.locked ?: previousLocked?.takeIf { matches(settings, it, minFocus) }
+        val exposureSource = previousExposureState?.takeIf { fast == null && existingSession != null &&
+            ManualRequestKey.from(settings.exposureNs, settings.iso, settings.focusFraction, settings.whiteBalance) != null &&
+            matchesColor(settings, it.locked, minFocus) }
+        val exposureLocked = exposureSource?.locked?.copy(
+            exposureNs = requireNotNull(settings.exposureNs), iso = requireNotNull(settings.iso))
+        val reusable = fast?.locked ?: exposureLocked ?: previousLocked?.takeIf { matches(settings, it, minFocus) }
         val setup = linkedMapOf<String, Any>(
             "policy" to when { fast != null -> "verified-manual-still-reuse-v1"
+                exposureLocked != null -> "manual-exposure-change-locked-color-v1"
                 reusable != null -> "manual-reuse-identical-controls-v1"; else -> "auto-then-lock-v1" },
             "fastPathUsed" to (fast != null), "manualPreviewSkipped" to (fast != null),
             "reason" to if (fast != null) "verified_identical_manual" else setupFallbackReason,
@@ -173,6 +180,10 @@ internal class DngCapture(
             "previousLockedAvailable" to (previousLocked != null),
             "setupStartedElapsedNs" to SystemClock.elapsedRealtimeNanos())
         fast?.let { setup["reusedVerification"] = it.provenance() }
+        exposureSource?.let {
+            setup["retainedColorState"] = it.provenance()
+            setup["automaticColorSetupSkipped"] = true
+        }
         characteristics.get(CameraCharacteristics.REQUEST_PARTIAL_RESULT_COUNT)?.let {
             setup["advertisedPartialResultCount"] = it
         }
@@ -239,6 +250,18 @@ internal class DngCapture(
                     auto.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                     auto.set(CaptureRequest.LENS_FOCUS_DISTANCE, it * minFocus)
                 }
+                // AE may meter a new scene while explicit focus/WB retain the
+                // color transform established by the previous healthy setup.
+                // CameraController clears previousLocked on lifecycle/errors.
+                val meteringColor = previousLocked?.takeIf { existingSession != null &&
+                    matchesColor(settings, it, minFocus) }
+                meteringColor?.let {
+                    auto.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+                    auto.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+                    auto.set(CaptureRequest.COLOR_CORRECTION_GAINS, it.gains)
+                    auto.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, it.transform)
+                    setup["autoExposureRetainedManualColor"] = true
+                }
                 setup["autoRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 active.setRepeatingRequest(auto.build(), callback, handler)
                 if (settings.focusFraction == null && autoFocusMode == CaptureRequest.CONTROL_AF_MODE_AUTO) {
@@ -289,7 +312,9 @@ internal class DngCapture(
                 var manualResults = 0
                 do {
                     observed = await(results)
-                    val isManual = observed.request.tag === lockTag && honors(observed, locked, minFocus)
+                    val retainedStateMatches = exposureSource == null || exposureSource.actual.copy(
+                        exposureNs = locked.exposureNs, iso = locked.iso).difference(stateReading(observed), minFocus) == null
+                    val isManual = observed.request.tag === lockTag && honors(observed, locked, minFocus) && retainedStateMatches
                     if (isManual) {
                         if (manualResults++ == 0) {
                             setup["manualFirstResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
@@ -554,9 +579,13 @@ internal class DngCapture(
 
     companion object {
         private fun matches(settings: DngSettings, locked: DngLockedSettings, maximumFocus: Float): Boolean {
-            val wb = settings.whiteBalance ?: return false
             return settings.exposureNs == locked.exposureNs && settings.iso == locked.iso &&
-                settings.focusFraction != null && settings.focusFraction * maximumFocus == locked.focusDiopters &&
+                matchesColor(settings, locked, maximumFocus)
+        }
+
+        private fun matchesColor(settings: DngSettings, locked: DngLockedSettings, maximumFocus: Float): Boolean {
+            val wb = settings.whiteBalance ?: return false
+            return settings.focusFraction != null && settings.focusFraction * maximumFocus == locked.focusDiopters &&
                 wb.contentEquals(floatArrayOf(locked.gains.red, locked.gains.greenEven, locked.gains.blue)) &&
                 locked.gains.greenEven == locked.gains.greenOdd
         }

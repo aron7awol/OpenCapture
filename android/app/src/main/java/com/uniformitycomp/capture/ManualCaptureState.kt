@@ -5,6 +5,11 @@ package com.uniformitycomp.capture
 internal data class ManualRequestKey(
     val exposureNs: Long, val iso: Int, val focus: Float, val gains: List<Float>
 ) {
+    /** Only exposure/ISO may change while retaining the established manual color state. */
+    fun exposureOnlyChangeFrom(previous: ManualRequestKey): Boolean =
+        focus == previous.focus && gains == previous.gains &&
+            (exposureNs != previous.exposureNs || iso != previous.iso)
+
     companion object {
         fun from(exposure: Long?, iso: Int?, focus: Float?, gains: FloatArray?): ManualRequestKey? {
             if (exposure == null || exposure <= 0 || iso == null || iso <= 0 ||
@@ -29,7 +34,8 @@ internal class ManualCaptureScope(val camera: Any, val session: Any, val reader:
 /** A capture owns a generation, not just a settings tuple. Late completion cannot resurrect a cache. */
 internal class ManualCaptureCache<T> {
     class Ticket<T> internal constructor(val generation: Long, val key: ManualRequestKey?,
-        val scope: ManualCaptureScope, val reused: T?, val reason: String)
+        val scope: ManualCaptureScope, val reused: T?, val reason: String,
+        val exposureSource: T? = null)
     private data class Entry<T>(val key: ManualRequestKey, val scope: ManualCaptureScope, val value: T,
         val stillHealthy: () -> Boolean)
     private var generation = 0L
@@ -40,12 +46,15 @@ internal class ManualCaptureCache<T> {
 
     @Synchronized fun begin(key: ManualRequestKey?, scope: ManualCaptureScope, capture: Boolean): Ticket<T> {
         val old = entry
+        val sourceHealthy = old?.stillHealthy() == true
+        val scopeDifference = old?.scope?.difference(scope)
+        val healthyScope = sourceHealthy && scopeDifference == null
         val fallback = when {
             !capture -> "fresh_controls_readback_required"
             key == null -> "automatic_or_partial_request"
             old == null -> reason
-            !old.stillHealthy() -> "source_capture_cancelled"
-            old.scope.difference(scope) != null -> old.scope.difference(scope)!!
+            !sourceHealthy -> "source_capture_cancelled"
+            scopeDifference != null -> scopeDifference
             key != old.key -> "settings_changed"
             else -> "verified_identical_manual"
         }
@@ -53,7 +62,8 @@ internal class ManualCaptureCache<T> {
         entry = null // Failed work cannot leave the previous verification available.
         reason = "capture_not_verified"
         return Ticket(generation, key, scope,
-            old?.value?.takeIf { fallback == "verified_identical_manual" }, fallback)
+            old?.value?.takeIf { fallback == "verified_identical_manual" }, fallback,
+            old?.takeIf { healthyScope && key?.exposureOnlyChangeFrom(it.key) == true }?.value)
     }
 
     @Synchronized fun current(ticket: Ticket<T>): Boolean = ticket.generation == generation

@@ -1,5 +1,45 @@
 # Verification and Device Test Plan
 
+## Foreground Recovery (November 15 Source; Builds Pending)
+
+On both phones, briefly remove and restore Wi-Fi during a burst, during a file
+download, and after the PC has committed the result but before its ACK arrives.
+The foreground app should rebind its listener while preserving the same
+reservation, job ID and staged bytes. Retry the original receipt/ACK; verify
+exact hashes and no second capture. Test an address change as well as same-IP
+recovery. After 120 seconds without controller traffic, verify normal expiry
+and writer-drained cleanup. Explicit Stop and background must still cancel.
+
+On Android, force a camera disconnect/error while serving, check the listener
+remains reachable, and verify up to three reopen attempts. Verify no stale
+callback closes a replacement camera, no overlapping writers, and preserved
+completed unacknowledged originals. Resume and explicit lens selection reset
+the retry allowance. Change system theme mid-session without recreating the
+activity. On iOS, verify a temporary bind failure retries while foregrounded.
+
+Desktop synthetic recovery/contract tests do not compile Kotlin or Swift.
+Run the normal Android and Mac build/test commands before shipping these changes.
+
+## Android Manual Exposure Changes With Locked Color (Source Only)
+
+After building the source following 0.4.5/build 13, use a fixed scene and retain
+all original DNGs plus their sidecars. Establish one verified fully manual
+burst, repeat it, change only exposure or ISO, and return to the exact original
+request. Changed exposures should use
+`manual-exposure-change-locked-color-v1`, with fresh manual-preview readback,
+AWB OFF and unchanged color transform; automatic-preview fields must be absent.
+Compare each fresh Camera2 shading map with its embedded DNG GainMaps. Compare
+the same-control returns' unshaded RAW fields as well as gain-applied fields;
+stable request controls alone do not establish optical repeatability.
+
+Confirm an identical request retains the existing verified fast path. Changed
+or omitted WB/focus, missing prior verification, cancellation/error and recreated
+camera/session/reader/preview must not inherit exposure-change eligibility.
+`applyControls` must still return fresh readback. Exercise an actual color,
+crop or physical-camera mismatch to verify it cannot masquerade as successful
+manual continuity. No original or shading gain may be replaced with cached data.
+This test is pending a new Android build; controller-only tests do not cover it.
+
 ## Android 0.4.5 Manual Reuse (Development)
 
 Build 13 was initially held; the owner subsequently authorized mobile release

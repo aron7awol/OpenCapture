@@ -61,7 +61,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private var address: String? = null
     @Volatile private var resumed = false
     private var enabled = true
-    private var opening = false
+    private val recovery = CameraRecovery()
     @Volatile private var previewBytes: ByteArray? = null
     private val displayManager by lazy { getSystemService(DISPLAY_SERVICE) as DisplayManager }
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -77,7 +77,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             session.expire()
             if (enabled) {
                 val ip = lanAddress()
-                if (ip != address) stopServer()
+                if (ip != address) stopServer(preserveSession = true)
                 if (camera.previewReady && server == null && ip != null) startServer(ip)
                 if (camera.previewReady && texture.isAvailable) updatePreviewJpeg()
                 if (camera.previewReady && ip == null) message("Waiting for Wi-Fi")
@@ -121,7 +121,43 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             streamCapture=capture::captureStreaming)
         screen = OpenCaptureScreens(this, ::toggle, ::showAbout)
         texture.surfaceTextureListener = this
-        camera.onConnectionLost = { runOnUiThread { stopServer(); camera.close(); opening = false; message("Camera disconnected") } }
+    }
+    private fun closeCamera(resetAttempts: Boolean = false) {
+        recovery.invalidate(resetAttempts)
+        camera.onConnectionLost = null
+        camera.close()
+        previewBytes = null
+    }
+    private fun recoverCamera(failedGeneration: Long) {
+        // Keep the reservation and completed transfers while the failed camera
+        // request drains. A renderer/controller can then resume the same job.
+        if (!resumed || !enabled) return
+        val ticket = recovery.beginRecovery(failedGeneration) ?: return
+        camera.onConnectionLost = null
+        camera.close(); previewBytes = null
+        if (!recovery.pending) {
+            message("Camera recovery failed. Tap Stop, then Resume.")
+            return
+        }
+        val cleanupDeadline = System.nanoTime() + 90_000_000_000L
+        ui.postDelayed(object : Runnable {
+            override fun run() {
+                if (!recovery.current(ticket)) return
+                if (!resumed || !enabled) { recovery.abandonRetry(ticket); return }
+                if (!session.state().optBoolean("cameraReady", false)) {
+                    if (System.nanoTime() < cleanupDeadline) ui.postDelayed(this, 250)
+                    else {
+                        recovery.abandonRetry(ticket)
+                        message("Camera cleanup stalled. Tap Stop, then Resume.")
+                    }
+                    return
+                }
+                if (recovery.takeRetry(ticket)) {
+                    message("Reopening camera (${recovery.attempts}/3)")
+                    openCamera()
+                }
+            }
+        }, 1000)
     }
     private fun message(text: String) = runOnUiThread {
         screen.status.text = if (text == "Ready" && address != null) "Ready at $address:8767" else text
@@ -144,8 +180,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         enabled = !enabled; screen.serving(enabled)
         keepAwake()
         logLifecycle("toggle")
-        if (enabled) { openCamera(); message("Opening camera") }
-        else { stopServer(); camera.close(); opening = false; message("Stopped") }
+        if (enabled) { recovery.invalidate(resetAttempts = true); openCamera(); message("Opening camera") }
+        else { stopServer(); closeCamera(); message("Stopped") }
     }
     private fun lanAddress(): String? {
         val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -180,7 +216,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         runOnUiThread {
             try {
                 check(resumed && enabled) { "Camera server stopped" }
-                camera.close(); opening = false; previewBytes = null; camera.selectRawCamera(id); openCamera()
+                closeCamera(resetAttempts = true)
+                previewBytes = null; camera.selectRawCamera(id); openCamera()
             } catch (error: Exception) { failure = error }
             finally { ready.countDown() }
         }
@@ -209,16 +246,19 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             }
             nsd.registerService(advertised, NsdManager.PROTOCOL_DNS_SD, registration)
             message("Ready at $ip:8767")
-        } catch (error: Exception) { stopServer(); message(error.message ?: "Server unavailable") }
+        } catch (error: Exception) { stopServer(preserveSession = true); message(error.message ?: "Server unavailable") }
     }
-    private fun stopServer() {
-        server?.stop(); server = null; address = null; session.end(); previewBytes = null
+    private fun stopServer(preserveSession: Boolean = false) {
+        server?.stop(); server = null; address = null
+        if (!preserveSession) session.end()
+        previewBytes = null
         registration?.let { runCatching { (getSystemService(NSD_SERVICE) as NsdManager).unregisterService(it) } }
         registration = null
     }
     override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
     override fun onResume() {
         super.onResume(); resumed = true; keepAwake()
+        if (!recovery.opening) recovery.invalidate(resetAttempts = true)
         logLifecycle("resume")
         if (enabled) openCamera()
         ui.removeCallbacks(tick); ui.post(tick)
@@ -228,22 +268,26 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         keepAwake()
         logLifecycle("stop")
         stopServer(); updateCancel.set(true); updater?.close(); ui.removeCallbacks(tick)
-        camera.close(); opening = false; super.onStop()
+        closeCamera(); super.onStop()
     }
     override fun onDestroy() { session.close(); camera.shutdown(); updates.shutdown(); super.onDestroy() }
     private fun openCamera() {
-        if (!resumed || !enabled || opening || !texture.isAvailable) return
+        if (!resumed || !enabled || recovery.opening || recovery.pending || !texture.isAvailable) return
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 1); return
         }
         if (camera.rawCameraChoices().isEmpty()) { message("No supported rear RAW camera"); return }
-        opening = true
+        val ticket = recovery.beginOpen() ?: return
+        camera.onConnectionLost = { runOnUiThread { recoverCamera(ticket) } }
         camera.open { success -> runOnUiThread {
+            if (!recovery.current(ticket)) return@runOnUiThread
             if (success && resumed && enabled) {
-                camera.startPreview(texture, ::message); transformPreview()
+                camera.startPreview(texture) { error -> runOnUiThread {
+                    if (recovery.current(ticket)) { message(error); recoverCamera(ticket) }
+                } }; transformPreview()
                 screen.cameraInfo.text = camera.rawCameraChoices().firstOrNull { it.first == camera.cameraID() }?.second ?: "OpenCapture"
                 message("Starting camera server")
-            } else { opening = false; message("Camera unavailable") }
+            } else { if (resumed && enabled) recoverCamera(ticket) else message("Camera unavailable") }
         } }
     }
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
@@ -253,7 +297,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) { openCamera() }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) { transformPreview() }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { stopServer(); camera.close(); opening = false; return true }
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { stopServer(); closeCamera(); return true }
     override fun onConfigurationChanged(configuration: Configuration) { super.onConfigurationChanged(configuration); texture.post { transformPreview() } }
     private fun transformPreview() {
         val size = camera.previewDimensions() ?: return
@@ -313,7 +357,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun installUpdate(release: OpenCaptureUpdates.Release) {
         if (!updating.compareAndSet(false, true)) return
-        enabled = false; screen.serving(false); stopServer(); camera.close(); opening = false
+        enabled = false; screen.serving(false); stopServer(); closeCamera()
         keepAwake()
         val client = OpenCaptureUpdates(); updater = client
         val cancelled = AtomicBoolean(false); updateCancel = cancelled

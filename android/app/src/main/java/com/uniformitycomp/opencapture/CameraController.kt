@@ -88,6 +88,7 @@ class CameraController(private val context: Context) {
                             overlap: Boolean = false, tryReserveNext: (() -> Boolean)? = null,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
+        val connectionLost = onConnectionLost
         val size = requireNotNull(rawSize) { "No supported RAW size" }
         val reader = requireNotNull(rawReader) { "RAW reader is not ready" }
         check(reader.width == size.width && reader.height == size.height) { "RAW stream changed" }
@@ -101,7 +102,8 @@ class CameraController(private val context: Context) {
         try {
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
                 existingSession = configured, previousLocked = dngPreviewControls,
-                previousVerified = ticket.reused, setupFallbackReason = ticket.reason)
+                previousVerified = ticket.reused, setupFallbackReason = ticket.reason,
+                previousExposureState = ticket.exposureSource)
                 .run(settings, count, directory, onFrame, maxAttempts, needsMore,
                     overlap = overlap, tryReserveNext = tryReserveNext)
             synchronized(this) {
@@ -129,7 +131,7 @@ class CameraController(private val context: Context) {
                     if (succeeded && previewSession === configured && previewSurface === surface) {
                         runCatching { repeatPreview(configured, surface) }.onFailure {
                             invalidateManualState("preview_error")
-                            previewReady = false; onConnectionLost?.invoke()
+                            previewReady = false; connectionLost?.invoke()
                         }
                     } else {
                         previewView?.takeIf { it.isAvailable }?.let { startPreview(it) }
@@ -141,6 +143,7 @@ class CameraController(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun open(onOpened: (Boolean) -> Unit) {
+        val connectionLost = onConnectionLost
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             onOpened(false)
             return
@@ -197,7 +200,7 @@ class CameraController(private val context: Context) {
                     if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_disconnected") }
                     if (pendingOpenCancel === openCancel) pendingOpenCancel = null
                     reportOpened(false)
-                    if (current) onConnectionLost?.invoke()
+                    if (current) connectionLost?.invoke()
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
@@ -206,7 +209,7 @@ class CameraController(private val context: Context) {
                     if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_error") }
                     if (pendingOpenCancel === openCancel) pendingOpenCancel = null
                     reportOpened(false)
-                    if (current) onConnectionLost?.invoke()
+                    if (current) connectionLost?.invoke()
                 }
             }, cameraHandler)
         } catch (e: Exception) {
@@ -216,6 +219,7 @@ class CameraController(private val context: Context) {
     }
 
     fun startPreview(textureView: TextureView, onError: (String) -> Unit = {}) {
+        val connectionLost = onConnectionLost
         invalidateManualState("session_recreated")
         previewReady = false
         previewView = textureView
@@ -248,6 +252,7 @@ class CameraController(private val context: Context) {
                     } catch (e: Exception) {
                         invalidateManualState("preview_error")
                         onError(e.message ?: "preview request failed")
+                        connectionLost?.invoke()
                     }
                 }
 
@@ -258,6 +263,7 @@ class CameraController(private val context: Context) {
                         previewSurface = null
                         surface.release()
                         onError("preview session configure failed")
+                        connectionLost?.invoke()
                     }
                 }
                 override fun onClosed(session: CameraCaptureSession) {
@@ -275,10 +281,12 @@ class CameraController(private val context: Context) {
                 surface.release()
             }
             onError(e.message ?: "preview failed")
+            connectionLost?.invoke()
         }
     }
 
     private fun repeatPreview(session: CameraCaptureSession, surface: Surface) {
+        val connectionLost = onConnectionLost
         val camera = requireNotNull(cameraDevice)
         val generation = ++previewRequestGeneration
         val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
@@ -304,7 +312,7 @@ class CameraController(private val context: Context) {
                 if (previewSession === session && previewRequestGeneration == generation && activeCaptureCancel == null) {
                     invalidateManualState("preview_capture_failed")
                     previewReady = false
-                    onConnectionLost?.invoke()
+                    connectionLost?.invoke()
                 }
             }
         }, cameraHandler)
