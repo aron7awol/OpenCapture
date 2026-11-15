@@ -21,6 +21,11 @@ exposure timing. Use a matching updated desktop controller; see
 [capture timing](docs/raw-diagnostics.md) and [exposure overlap](docs/exposure-overlap.md).
 Physical phone speed remains device-dependent and requires testing.
 
+Android 0.4.6 and iOS 0.4.5 preserve active transfers through brief foreground
+Wi-Fi interruptions. Android also adds bounded camera recovery and retains
+verified manual color across exposure-only changes. Stop/background still end
+the session. Physical camera/shading behavior still needs device verification.
+
 ## Use
 
 1. Put the phone and computer on the same **trusted private LAN**.

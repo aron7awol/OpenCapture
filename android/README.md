@@ -29,6 +29,10 @@ identical requests verified by a completed still in the same healthy session.
 It preserves scene settling, actual still metadata and per-frame shading maps;
 mismatches invalidate reuse. Info/state now include optional battery percentage
 and charging state. Physical verification of the new fast path remains pending.
+Version 0.4.6/build 14 retains verified manual color during exposure-only changes,
+preserves active sessions through foreground Wi-Fi rebinding, and adds bounded
+camera recovery with stale-callback protection. Software/emulator tests passed;
+physical camera-error recovery and shading stability remain unverified.
 Files are temporary on the phone: the computer verifies receipt, then the phone
 clears them. Failed downloads retry during the active session. Stop,
 backgrounding, disconnect or expiry cancels work and clears remaining staging.

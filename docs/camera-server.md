@@ -37,7 +37,7 @@ The PC sends heartbeats during slow captures/downloads. Disconnect, foreground
 exit, or idle expiry cancels work and clears only this session's staging files.
 An interrupted/restarted session cannot silently replay an old capture ID.
 
-Development source preserves the same reservation and staging when only the
+Android 0.4.6 and iOS 0.4.5 preserve the same reservation and staging when only the
 foreground Wi-Fi listener is rebound. This does not reset or extend the
 120-second idle lease without actual controller traffic. Stop/backgrounding
 still end the session. A controller may reconnect idempotently with its existing
@@ -47,8 +47,8 @@ keeps the listener during camera loss and bounds automatic reopen attempts.
 Camera callbacks and delayed retries are scoped to their opening generation;
 Stop/background, surface loss and explicit lens selection invalidate old work.
 Listener rebinding during an existing session does not wait for the aiming
-preview, which pauses during a RAW burst. These lifecycle changes are development
-source, not a published update; physical-device verification remains required.
+preview, which pauses during a RAW burst. Physical-device verification remains
+required; recovery does not survive app termination or an expired session.
 
 POST `/oc/v1/disconnect` releases the reservation. POST `/oc/v1/camera` accepts
 `{"cameraID":"..."}` and returns fresh info after reconfiguration. Unknown IDs
