@@ -132,6 +132,10 @@ class CameraServerSessionTest {
             val id = request.getString("id")
             session.submit(request)
             waitFor { session.jobState(id).getString("status") == "complete" }
+            val beforeReconnect = session.result(id)
+            session.connect(connection(owner))
+            fault(409) { session.connect(connection(UUID.randomUUID().toString())) }
+            assertArrayEquals(beforeReconnect, session.result(id))
             session.submit(JSONObject(request.toString()))
             assertEquals(1, calls.get())
             assertEquals("original", session.file(id, "frame-0001.dng").readText())

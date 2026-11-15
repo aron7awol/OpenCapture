@@ -44,7 +44,11 @@ still end the session. A controller may reconnect idempotently with its existing
 session UUID, verify the same device/lens and retry the same receipts/ACK; it
 must not use a new job to discard an unacknowledged result. Android source also
 keeps the listener during camera loss and bounds automatic reopen attempts.
-These lifecycle changes need new mobile builds and device verification.
+Camera callbacks and delayed retries are scoped to their opening generation;
+Stop/background, surface loss and explicit lens selection invalidate old work.
+Listener rebinding during an existing session does not wait for the aiming
+preview, which pauses during a RAW burst. These lifecycle changes are development
+source, not a published update; physical-device verification remains required.
 
 POST `/oc/v1/disconnect` releases the reservation. POST `/oc/v1/camera` accepts
 `{"cameraID":"..."}` and returns fresh info after reconfiguration. Unknown IDs

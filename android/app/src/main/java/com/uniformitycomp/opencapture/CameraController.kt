@@ -53,6 +53,7 @@ class CameraController(private val context: Context) {
     @Volatile private var activeCaptureCleanup: (() -> Unit)? = null
     @Volatile private var pendingOpenCancel: AtomicBoolean? = null
     @Volatile var onConnectionLost: (() -> Unit)? = null
+    val captureDrained: Boolean get() = activeCaptureCancel == null
 
     private fun selectBestCamera(): String {
         val id = rawCameraChoices().firstOrNull()?.first ?: error("No rear RAW camera is available")
@@ -142,7 +143,7 @@ class CameraController(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun open(onOpened: (Boolean) -> Unit) {
+    @Synchronized fun open(onOpened: (Boolean) -> Unit) {
         val connectionLost = onConnectionLost
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             onOpened(false)
@@ -184,30 +185,39 @@ class CameraController(private val context: Context) {
 
             cameraManager.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
-                    if (openCancel.get()) {
-                        camera.close()
-                        reportOpened(false)
-                        return
+                    val accepted = synchronized(this@CameraController) {
+                        if (openCancel.get() || pendingOpenCancel !== openCancel) {
+                            camera.close()
+                            false
+                        } else {
+                            cameraDevice = camera
+                            pendingOpenCancel = null
+                            true
+                        }
                     }
-                    cameraDevice = camera
-                    if (pendingOpenCancel === openCancel) pendingOpenCancel = null
-                    reportOpened(true)
+                    reportOpened(accepted)
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
-                    val current = cameraDevice === camera || pendingOpenCancel === openCancel
-                    if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_disconnected") }
-                    if (pendingOpenCancel === openCancel) pendingOpenCancel = null
+                    val current = synchronized(this@CameraController) {
+                        val owns = cameraDevice === camera || pendingOpenCancel === openCancel
+                        if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_disconnected") }
+                        if (pendingOpenCancel === openCancel) pendingOpenCancel = null
+                        owns
+                    }
                     reportOpened(false)
                     if (current) connectionLost?.invoke()
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
-                    val current = cameraDevice === camera || pendingOpenCancel === openCancel
-                    if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_error") }
-                    if (pendingOpenCancel === openCancel) pendingOpenCancel = null
+                    val current = synchronized(this@CameraController) {
+                        val owns = cameraDevice === camera || pendingOpenCancel === openCancel
+                        if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_error") }
+                        if (pendingOpenCancel === openCancel) pendingOpenCancel = null
+                        owns
+                    }
                     reportOpened(false)
                     if (current) connectionLost?.invoke()
                 }
@@ -325,7 +335,7 @@ class CameraController(private val context: Context) {
         activeCaptureCleanup?.invoke()
     }
 
-    fun close() {
+    @Synchronized fun close() {
         invalidateManualState("camera_closed_or_backgrounded")
         lastPreviewResult = null
         previewReady = false

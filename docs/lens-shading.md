@@ -65,6 +65,15 @@ the pixels of originals that were not transferred.
 
 ## Physical Verification
 
+Source after Android 0.4.5/build 13 retains verified manual color state across
+fully specified exposure/ISO-only changes in the same healthy camera session.
+It performs fresh manual readback instead of briefly enabling automatic white
+balance again. This does **not** cache, freeze, scale or replace a shading map;
+every original still carries its actual result. See the
+[setup policy](raw-diagnostics.md#manual-color-continuity-across-exposure-changes-source-only).
+The change requires a new Android build and physical verification; factory-map
+stability or optical correctness is not established by this source change.
+
 Software tests cover spatial/channel interpolation, odd active-area margins,
 both TIFF byte orders, unchanged original decoding, signed noise, native
 clipping, malformed metadata and Android/desktop moment parity. They do not

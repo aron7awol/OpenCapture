@@ -78,7 +78,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             if (enabled) {
                 val ip = lanAddress()
                 if (ip != address) stopServer(preserveSession = true)
-                if (camera.previewReady && server == null && ip != null) startServer(ip)
+                if (server == null && ip != null && CameraRecovery.canBindListener(
+                        camera.previewReady, session.state().optBoolean("connected"))) startServer(ip)
                 if (camera.previewReady && texture.isAvailable) updatePreviewJpeg()
                 if (camera.previewReady && ip == null) message("Waiting for Wi-Fi")
             }
@@ -258,7 +259,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
     override fun onResume() {
         super.onResume(); resumed = true; keepAwake()
-        if (!recovery.opening) recovery.invalidate(resetAttempts = true)
+        recovery.resetAttempts()
         logLifecycle("resume")
         if (enabled) openCamera()
         ui.removeCallbacks(tick); ui.post(tick)
@@ -278,17 +279,29 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         }
         if (camera.rawCameraChoices().isEmpty()) { message("No supported rear RAW camera"); return }
         val ticket = recovery.beginOpen() ?: return
-        camera.onConnectionLost = { runOnUiThread { recoverCamera(ticket) } }
-        camera.open { success -> runOnUiThread {
-            if (!recovery.current(ticket)) return@runOnUiThread
-            if (success && resumed && enabled) {
-                camera.startPreview(texture) { error -> runOnUiThread {
-                    if (recovery.current(ticket)) { message(error); recoverCamera(ticket) }
-                } }; transformPreview()
-                screen.cameraInfo.text = camera.rawCameraChoices().firstOrNull { it.first == camera.cameraID() }?.second ?: "OpenCapture"
-                message("Starting camera server")
-            } else { if (resumed && enabled) recoverCamera(ticket) else message("Camera unavailable") }
-        } }
+        val cleanupDeadline = System.nanoTime() + 90_000_000_000L
+        ui.post(object : Runnable {
+            override fun run() {
+                if (!recovery.current(ticket) || !resumed || !enabled) return
+                // Stop/Resume may arrive before the previous capture has unwound.
+                if (!camera.captureDrained) {
+                    if (System.nanoTime() < cleanupDeadline) ui.postDelayed(this, 250)
+                    else { recovery.invalidate(); message("Camera cleanup stalled. Tap Stop, then Resume.") }
+                    return
+                }
+                camera.onConnectionLost = { runOnUiThread { recoverCamera(ticket) } }
+                camera.open { success -> runOnUiThread {
+                    if (!recovery.current(ticket)) return@runOnUiThread
+                    if (success && resumed && enabled) {
+                        camera.startPreview(texture) { error -> runOnUiThread {
+                            if (recovery.current(ticket)) { message(error); recoverCamera(ticket) }
+                        } }; transformPreview()
+                        screen.cameraInfo.text = camera.rawCameraChoices().firstOrNull { it.first == camera.cameraID() }?.second ?: "OpenCapture"
+                        message("Starting camera server")
+                    } else { if (resumed && enabled) recoverCamera(ticket) else message("Camera unavailable") }
+                } }
+            }
+        })
     }
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, permissions, results)

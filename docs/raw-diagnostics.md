@@ -138,6 +138,30 @@ Software fixtures and builds cannot validate a Pixel HAL or prove savings.
 See [the test plan](test-plan.md#android-045-manual-reuse-development) for the
 held-build benchmark procedure.
 
+## Manual Color Continuity Across Exposure Changes (Source Only)
+
+Source after Android 0.4.5/build 13 adds
+`captureSetup.policy:"manual-exposure-change-locked-color-v1"`. A fully specified
+manual exposure/ISO change may retain the previous verified still's color
+transform and WB when requested focus/WB and all camera/session/reader/preview
+identities are unchanged. A source capture that failed, was cancelled, or lacks
+verification is ineligible. Automatic/partial controls never mean reuse.
+
+This path sets `automaticColorSetupSkipped:true` and `retainedColorState` with
+the same source-frame provenance fields as `reusedVerification`. It still sets
+`fastPathUsed:false` and `manualPreviewSkipped:false`, and records fresh tagged
+manual-preview readings/times. New exposure/ISO must match readback; retained
+actual WB, matrix, focus, crop, stabilization, processing modes and physical
+camera must agree. No auto-preview timestamps/results are fabricated. The
+verified identical-request fast path above is unchanged.
+
+The purpose is to avoid an unnecessary automatic-WB transition when only
+exposure changes. Per-frame shading maps remain fresh and unmodified; neither
+map stability nor correct optical shading follows from retaining color state.
+No public request/schema change or legacy-client opt-in is required. Build,
+JVM verification and real-device effectiveness are pending on an Android
+development machine.
+
 ## Android Manual Setup Follow-Up (Source Only)
 
 The section below describes the earlier path retained for normal setup in

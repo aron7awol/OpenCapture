@@ -5,6 +5,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CameraRecoveryTest {
+    @Test fun networkRebindDoesNotWaitForBurstPreview() {
+        assertTrue(CameraRecovery.canBindListener(previewReady = false, connected = true))
+        assertTrue(CameraRecovery.canBindListener(previewReady = true, connected = false))
+        assertFalse(CameraRecovery.canBindListener(previewReady = false, connected = false))
+    }
+
+    @Test fun resumeResetsBudgetWithoutInvalidatingHealthyCamera() {
+        val state = CameraRecovery()
+        state.takeRetry(state.beginRecovery(state.beginOpen()!!)!!)
+        val camera = state.beginOpen()!!
+        state.resetAttempts()
+        assertTrue(state.current(camera))
+        assertTrue(state.opening)
+        assertEquals(0, state.attempts)
+    }
     @Test fun staleOpenFailureCannotRecoverReplacement() {
         val state = CameraRecovery()
         val old = state.beginOpen()!!

@@ -1,6 +1,6 @@
 # Verification and Device Test Plan
 
-## Foreground Recovery (November 15 Source; Builds Pending)
+## Foreground Recovery (November 15 Development Source)
 
 On both phones, briefly remove and restore Wi-Fi during a burst, during a file
 download, and after the PC has committed the result but before its ACK arrives.
@@ -19,6 +19,16 @@ activity. On iOS, verify a temporary bind failure retries while foregrounded.
 
 Desktop synthetic recovery/contract tests do not compile Kotlin or Swift.
 Run the normal Android and Mac build/test commands before shipping these changes.
+
+Android software checks now include lifecycle-ticket tests for stale open/error
+callbacks, duplicate failures, delayed retry invalidation, retry limits/reset,
+and listener admission while a burst has paused preview. The API 33 synthetic
+RAW emulator passed theme continuity, same-lens reopen, Wi-Fi loss/restoration
+while a streamed original awaited its verdict, unchanged bytes/session, verified
+receipts/repeated ACK, and background/foreground session cleanup. These do not
+exercise Pixel camera-service failure timing or establish physical color/shading
+stability. The iOS session unit test covers same-owner reconnect and idle expiry;
+it is not a real Wi-Fi or AVFoundation recovery test.
 
 ## Android Manual Exposure Changes With Locked Color (Source Only)
 

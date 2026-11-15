@@ -21,6 +21,13 @@ internal class CameraRecovery {
 
     fun current(ticket: Long) = ticket == generation
 
+    fun resetAttempts() { attempts = 0 }
+
+    companion object {
+        // Preview pauses during a burst; its owner must still download/verdict frames.
+        fun canBindListener(previewReady: Boolean, connected: Boolean) = previewReady || connected
+    }
+
     fun beginOpen(): Long? {
         if (opening || pending) return null
         opening = true
