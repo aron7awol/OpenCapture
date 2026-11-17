@@ -232,7 +232,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun startServer(ip: String) {
         try {
-            val listener = CameraServer(ip, session, ::info, ::selectCamera) { previewBytes }
+            val listener = CameraServer(ip, session, ::info, ::selectCamera, camera::diagnostics) { previewBytes }
             listener.start(5000, true); server = listener; address = ip
             val nsd = getSystemService(NSD_SERVICE) as NsdManager
             val advertised = NsdServiceInfo().apply {

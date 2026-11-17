@@ -19,6 +19,18 @@ GET `/oc/v1/info` is public on that LAN and returns `protocolVersion:1`,
 `role:"camera"`, `deviceID`, `name`, `capabilities` and `cameras` (objects with
 `id` and `name`). Capabilities describe only the currently configured lens.
 
+Android 0.4.7/build 15 adds an optional `camera2Diagnostics` object to this
+GET only, not to heartbeats or lens selection. Its `cameras` array lists
+public rear camera IDs, including non-selectable cameras. Match `cameraID`
+to `capabilities.cameraID`. Entries list reported Camera2 characteristics:
+RAW sizes, Bayer/RAW/manual sensor/manual post-processing support, missing
+OpenCapture requirements, AE modes/lock availability, lock request and result
+keys, exposure time and ISO result keys, and compensation limits. Hardware
+level, CFA and AE modes are Android enum values; null means unknown.
+An unreadable ID has an error instead of inferred capabilities. No camera is
+opened or configured. These are declarations, not verified still results:
+`rawExposureLockTested: false` means this endpoint performs no physical test.
+
 Android 0.4.5/build 13 and iOS 0.4.4 also report
 `batteryPercent` (integer 0..100) and `batteryCharging` (boolean; full while
 connected counts as charging). Null or absent means the OS reading is unknown,

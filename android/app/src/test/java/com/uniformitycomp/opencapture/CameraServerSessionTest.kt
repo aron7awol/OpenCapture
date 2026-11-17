@@ -12,6 +12,42 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class CameraServerSessionTest {
+    @Test fun extendedDiagnosticsOnlyOnDirectInfoRead() {
+        val session = CameraServerSession(Files.createTempDirectory("oc-info").toFile(), { _,_,_ -> error("unexpected capture") }, {})
+        val id = UUID.randomUUID().toString()
+        val address = "127.0.0.1"
+        var reads = 0
+        val server = CameraServer(address, session, { JSONObject().put("protocolVersion", 1) },
+            { error("unexpected lens change") }, { reads++; JSONObject().put("schemaVersion", 1) }, { null })
+        fun get(path: String, headers: Map<String,String>): fi.iki.elonen.NanoHTTPD.Response {
+            val type = fi.iki.elonen.NanoHTTPD.IHTTPSession::class.java
+            val request = java.lang.reflect.Proxy.newProxyInstance(type.classLoader,arrayOf(type)) { _, method, _ ->
+                when(method.name) {
+                    "getHeaders" -> headers
+                    "getUri" -> path
+                    "getMethod" -> fi.iki.elonen.NanoHTTPD.Method.GET
+                    "getRemoteIpAddress" -> address
+                    "getQueryParameterString" -> null
+                    else -> error(method.name)
+                }
+            } as fi.iki.elonen.NanoHTTPD.IHTTPSession
+            return server.serve(request)
+        }
+        val headers = mapOf("host" to "$address:8767")
+        try {
+            assertEquals(400, get("/oc/v1/info", headers + ("origin" to "https://example.invalid")).status.requestStatus)
+            session.connect(connection(id))
+            val state = get("/oc/v1/state", headers + ("x-opencapture-session" to id))
+            assertEquals(200, state.status.requestStatus)
+            assertFalse(JSONObject(state.data.bufferedReader().readText()).has("camera2Diagnostics"))
+            assertEquals(0, reads)
+            val response = get("/oc/v1/info", headers)
+            assertEquals(200, response.status.requestStatus)
+            assertEquals(1, JSONObject(response.data.bufferedReader().readText()).getJSONObject("camera2Diagnostics").getInt("schemaVersion"))
+            assertEquals(1, reads)
+        } finally { session.close() }
+    }
+
     @Test fun discardedExposureFailureKeepsFrozenResult() {
         val root=Files.createTempDirectory("oc-late-failure").resolve("staging").toFile()
         val published=CountDownLatch(1);val release=CountDownLatch(1)

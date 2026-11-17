@@ -63,6 +63,27 @@ class CameraController(private val context: Context) {
 
     fun cameraID(): String = selectedCameraId ?: selectBestCamera()
 
+    // Characteristics only: never open another lens or submit a capture to answer /info.
+    fun diagnostics(): org.json.JSONObject {
+        val entries = org.json.JSONArray()
+        val report = org.json.JSONObject().put("schemaVersion", 1).put("source", "camera2Characteristics")
+            .put("rawExposureLockTested", false).put("cameras", entries)
+        try {
+            for (id in cameraManager.cameraIdList) {
+                try {
+                    val c = cameraManager.getCameraCharacteristics(id)
+                    if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK)
+                        entries.put(CameraCapabilityReport.describe(id, c))
+                } catch (_: Exception) {
+                    entries.put(org.json.JSONObject().put("cameraID", id).put("error", "characteristicsUnavailable"))
+                }
+            }
+        } catch (_: CameraAccessException) {
+            report.put("error", "cameraListUnavailable")
+        }
+        return report
+    }
+
     fun rawCameraChoices(): List<Pair<String, String>> = cameraManager.cameraIdList.mapNotNull { id ->
         val c = cameraManager.getCameraCharacteristics(id)
         val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
