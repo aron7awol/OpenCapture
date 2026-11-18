@@ -5,7 +5,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Bounded in-memory evidence; no image bytes, controller credentials or context. */
-class CameraDiagnostics(private val now: () -> Long = { System.nanoTime() }) {
+class CameraDiagnostics(private val persist: ((JSONObject) -> Unit)? = null,
+                        private val now: () -> Long = { System.nanoTime() }) {
     private val events = ArrayDeque<JSONObject>()
     private var sequence = 0L
     private var firstFault: JSONObject? = null
@@ -27,6 +28,7 @@ class CameraDiagnostics(private val now: () -> Long = { System.nanoTime() }) {
         if (fault && firstFault == null) firstFault = entry
         events.addLast(entry)
         while (events.size > 128) events.removeFirst()
+        try { persist?.invoke(snapshot()) } catch (_: Exception) { /* Diagnostics cannot break capture. */ }
     }
 
     @Synchronized fun snapshot(): JSONObject = JSONObject().put("schemaVersion", 1)

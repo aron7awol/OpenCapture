@@ -13,6 +13,7 @@ class CameraServer(
     private val info: () -> JSONObject,
     private val select: (String) -> JSONObject,
     private val cameraDiagnostics: () -> JSONObject,
+    private val persistentDiagnostics: () -> JSONObject,
     private val preview: () -> ByteArray?,
 ) : NanoHTTPD(address, 8767) {
     init {
@@ -64,6 +65,7 @@ class CameraServer(
                         session.authorize(request.headers["x-opencapture-session"])
                         when {
                             request.method == Method.GET && path == "/oc/v1/state" -> json(200, info().put("session", session.state()))
+                            request.method == Method.GET && path == "/oc/v1/diagnostics" -> json(200, persistentDiagnostics())
                             request.method == Method.POST && path == "/oc/v1/disconnect" -> { session.end(); json(200, JSONObject().put("protocolVersion", 1)) }
                             request.method == Method.POST && path == "/oc/v1/jobs" -> json(202, session.submit(body))
                             request.method == Method.GET && path == "/oc/v1/preview.jpg" -> {

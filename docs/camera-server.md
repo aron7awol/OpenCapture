@@ -12,11 +12,54 @@ the sanitized operation request, start sequence, first fault and a bounded
 128-event timeline with monotonic/wall timestamps. Camera2 error numbers/names,
 still failures, request exposure/ISO, received frame controls and lifecycle
 events help distinguish original faults from recovery/cancellation symptoms.
-The first fault survives event-ring eviction. The snapshot survives transient
-original-file cleanup, but ends with the foreground server session. Copy it
-before disconnecting. Direct info's `camera2Diagnostics.runtime` exposes recent
+The first fault survives event-ring eviction. The failed-job snapshot survives
+transient original-file cleanup but ends with the foreground server session.
+The persistent extension below retains separate history across process
+restarts. Direct info's `camera2Diagnostics.runtime` exposes recent
 events without taking a photograph. Neither field contains images or opaque
 controller context; neither is a substitute for system crash logs.
+
+### Persistent Android Diagnostics (Development)
+
+Android advertises top-level `diagnosticModes:["persistent-camera-v1"]` in
+info/state replies. After connecting, GET `/oc/v1/diagnostics` with the session
+header retrieves a schemaVersion-1 bundle: `mode`, `deviceID`, `currentProcessID`,
+`records`, `exitInfo`, and nullable `storageError`. It uses the same LAN/Host/
+Origin/session guards as other private endpoints. Older apps and iOS do not
+advertise this mode; controllers must not require it to capture.
+
+Each record has a UUID `recordID`, `updatedUnixMs`, `process` (UUID `id`, PID,
+start time, app version/build, model and SDK), and `cameraDiagnostics` in the
+existing snapshot format. `request.id` identifies the original camera job;
+controller context, credentials and image pixels are not stored. A process ID
+change is not proof of a crash. `operation_completed` marks capture/control
+completion, not completion of file transfer or a controller's measurement.
+
+An app-private `camera-diagnostics` folder retains at most twelve recent
+operation/startup snapshots, at most 96 KiB each plus one replacement temporary
+file. New operations do not overwrite the previous operation's first fault.
+One background writer coalesces pending snapshots per operation, with a bounded
+12-entry queue, syncs each file and atomically replaces it. Camera callbacks
+never wait for disk I/O. An abrupt kill can lose the last queued/in-progress
+write, but previously committed snapshots survive; corrupt/unfinished files do
+not prevent reading other records. Stop, session expiry, capture ACK and original
+cleanup do not delete these records. Uninstall/clear-app-data does.
+
+An uncaught JVM exception adds a bounded class/stack record (no exception
+message), attempts a 1.5-second flush, then delegates to Android's existing
+crash handler. Native crashes, forced kills, power loss and exhausted storage
+may prevent that final record. Android 11+ supplies up to eight available own-
+package `ApplicationExitInfo` entries (PID, timestamp, numeric reason/status and
+importance); older APIs report `unsupported`, failed queries `unavailable`.
+No reason is inferred when Android supplies none. Exit history is sampled at
+startup and is not a full logcat, vendor log, or native tombstone export.
+
+Controllers download on connection/reconnection, validate device identity and
+limits (2 MiB HTTP ceiling), and preserve evidence before commencing new work.
+Retrieval is optional and must not prevent connection on failure. Reading does
+not delete records or resume captures. Any prior operation can be linked only
+to the matching local capture ID/device, never the currently active run merely
+because it was connected when diagnostics were downloaded.
 
 OpenCapture opens a camera server on the trusted Wi-Fi LAN while foregrounded.
 There is no account, pairing prompt, stored controller address or local gallery.

@@ -42,7 +42,8 @@ class CameraServerSessionTest {
         val address = "127.0.0.1"
         var reads = 0
         val server = CameraServer(address, session, { JSONObject().put("protocolVersion", 1) },
-            { error("unexpected lens change") }, { reads++; JSONObject().put("schemaVersion", 1) }, { null })
+            { error("unexpected lens change") }, { reads++; JSONObject().put("schemaVersion", 1) },
+            { JSONObject().put("mode", PersistentDiagnostics.MODE) }, { null })
         fun get(path: String, headers: Map<String,String>): fi.iki.elonen.NanoHTTPD.Response {
             val type = fi.iki.elonen.NanoHTTPD.IHTTPSession::class.java
             val request = java.lang.reflect.Proxy.newProxyInstance(type.classLoader,arrayOf(type)) { _, method, _ ->
@@ -60,7 +61,13 @@ class CameraServerSessionTest {
         val headers = mapOf("host" to "$address:8767")
         try {
             assertEquals(400, get("/oc/v1/info", headers + ("origin" to "https://example.invalid")).status.requestStatus)
+            assertEquals(409, get("/oc/v1/diagnostics", headers).status.requestStatus)
             session.connect(connection(id))
+            assertEquals(400, get("/oc/v1/diagnostics", headers + mapOf("x-opencapture-session" to id,
+                "origin" to "https://example.invalid")).status.requestStatus)
+            val recovered = get("/oc/v1/diagnostics", headers + ("x-opencapture-session" to id))
+            assertEquals(200, recovered.status.requestStatus)
+            assertEquals(PersistentDiagnostics.MODE, JSONObject(recovered.data.bufferedReader().readText()).getString("mode"))
             val state = get("/oc/v1/state", headers + ("x-opencapture-session" to id))
             assertEquals(200, state.status.requestStatus)
             assertFalse(JSONObject(state.data.bufferedReader().readText()).has("camera2Diagnostics"))

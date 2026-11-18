@@ -28,8 +28,7 @@ import com.uniformitycomp.capture.ManualStateMismatch
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Camera lifecycle and DNG preview/capture only; this client speaks the generic OpenCapture protocol. */
-class CameraController(private val context: Context) {
-    val events = CameraDiagnostics()
+class CameraController(private val context: Context, val events: CameraDiagnostics = CameraDiagnostics()) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val cameraThread = HandlerThread("OpenCaptureCamera").also { it.start() }
     private val resultThread = HandlerThread("OpenCaptureResults").also { it.start() }

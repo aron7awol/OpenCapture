@@ -60,7 +60,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
     private fun captureImpl(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream?): Pair<JSONObject, File?> {
         camera.events.begin(request, camera.cameraID())
         try {
-            return performCapture(request, cancel, progress, stream)
+            return performCapture(request, cancel, progress, stream).also {
+                camera.events.record("operation_completed")
+            }
         } catch (error: Exception) {
             camera.events.record("operation_failed", JSONObject().put("detail", error.toString().take(512))
                 .put("cancelled", cancel.get()).put("previewReady", camera.previewReady), true)

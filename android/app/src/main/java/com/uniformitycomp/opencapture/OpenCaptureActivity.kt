@@ -115,7 +115,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         window.navigationBarColor = android.graphics.Color.BLACK
         val prefs = getSharedPreferences("opencapture", MODE_PRIVATE)
         deviceID = prefs.getString("deviceID", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceID", it).apply() }
-        camera = CameraController(this)
+        camera = CameraController(this, (application as OpenCaptureApplication).events)
         val staging = File(filesDir, "server-transfers")
         capture = OpenCaptureCamera(camera, deviceID, staging)
         session = CameraServerSession(staging, capture::capture, { text -> runOnUiThread { if (server != null) message(text) } },
@@ -201,6 +201,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         }
     }
     private fun info(): JSONObject = JSONObject().put("protocolVersion", 1).put("role", "camera")
+        .put("diagnosticModes", JSONArray().put(PersistentDiagnostics.MODE))
         .put("deviceID", deviceID).put("name", android.os.Build.MODEL).put("capabilities", capture.capabilities())
         .put("cameras", JSONArray(camera.rawCameraChoices().map { JSONObject().put("id", it.first).put("name", it.second) }))
         .also { info ->
@@ -239,7 +240,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun startServer(ip: String) {
         try {
-            val listener = CameraServer(ip, session, ::info, ::selectCamera, camera::diagnostics) { previewBytes }
+            val listener = CameraServer(ip, session, ::info, ::selectCamera, camera::diagnostics,
+                { (application as OpenCaptureApplication).diagnosticBundle(deviceID) }) { previewBytes }
             listener.start(5000, true); server = listener; address = ip
             val nsd = getSystemService(NSD_SERVICE) as NsdManager
             val advertised = NsdServiceInfo().apply {

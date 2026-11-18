@@ -1,5 +1,19 @@
 # Verification and Device Test Plan
 
+## Persistent Android Diagnostics (November 18 Development)
+
+Tests cover bounded/damaged on-disk records, restart without graceful shutdown,
+preserved first faults, sanitized request context, nonfatal storage failures,
+background writer coalescing, and session/Origin guards on diagnostic retrieval.
+The allowlisted Android export passed assembleDebug, both unit-test variants
+(129 each) and lint (zero errors). On an API-33 emulator, an `am crash` followed
+by cold relaunch retained the uncaught-exception record and both process IDs.
+This does not establish Samsung camera behavior, native crash trace availability,
+or physical capture timing. On a real device, fail a bounded capture, reopen the
+app and reconnect, then verify controller retrieval links the original job and
+does not resume the measurement. A hard kill may lose the last pending write;
+Android process-exit data can be unavailable. iOS does not advertise this mode.
+
 ## iOS File Download SIGSYS Fix (November 18 Development Source)
 
 An iPhone 16 Pro running 0.4.5/build 42 completed a Bayer burst, then crashed
