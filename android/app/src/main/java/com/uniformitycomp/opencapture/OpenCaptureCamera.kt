@@ -33,6 +33,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 listOf(BayerAverage.MODE) else emptyList<String>()))
             .put("minISO", iso?.lower).put("maxISO", iso?.upper)
             .put("minExposureSeconds", exposure?.lower?.div(1e9)).put("maxExposureSeconds", exposure?.upper?.div(1e9)?.coerceAtMost(30.0))
+            .put("experimentalMaxExposureSeconds", if (usable) OpenCaptureProtocol.EXPERIMENTAL_EXPOSURE_SECONDS else JSONObject.NULL)
             .put("manualExposure", manualSensor).put("manualFocus", manualFocus)
             .put("manualWhiteBalance", usable).put("maxWhiteBalanceGain", 64)
             .put("maxPhotoWidth", selected?.width ?: 0).put("maxPhotoHeight", selected?.height ?: 0)
@@ -67,7 +68,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val isoRange = requireNotNull(c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE))
         val exposureRange = requireNotNull(c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE))
         require(settings.iso == null || isoRange.contains(settings.iso)) { "ISO is outside this camera's range" }
-        require(settings.exposureNs == null || exposureRange.contains(settings.exposureNs)) { "Exposure is outside this camera's range" }
+        require(OpenCaptureProtocol.acceptsExposure(settings.exposureNs, exposureRange.lower, exposureRange.upper)) {
+            "Exposure is outside the reported and bounded experimental ranges"
+        }
         val controlOnly = request.optString("operation") == "applyControls"
         val count = if (controlOnly) 0 else request.getInt("frameCount")
         val averaging = OpenCaptureProtocol.averaging(request)

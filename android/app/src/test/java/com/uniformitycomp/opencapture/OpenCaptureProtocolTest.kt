@@ -6,6 +6,15 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun experimentalExposureDoesNotRewriteReportedLimits() {
+        val minimum = 100_000L
+        val samsungMaximum = 100_000_000L
+        assertTrue(OpenCaptureProtocol.acceptsExposure(null, minimum, samsungMaximum))
+        assertTrue(OpenCaptureProtocol.acceptsExposure(5_000_000_000L, minimum, samsungMaximum))
+        assertFalse(OpenCaptureProtocol.acceptsExposure(5_000_000_001L, minimum, samsungMaximum))
+        assertFalse(OpenCaptureProtocol.acceptsExposure(minimum - 1, minimum, samsungMaximum))
+        assertTrue(OpenCaptureProtocol.acceptsExposure(16_000_000_000L, minimum, 16_000_000_000L))
+    }
     private fun request() = OpenCaptureProtocol.localRequest(18, 1000.0, 800.0, .25)
     private fun rejected(action: () -> Unit) {
         try { action(); fail("Expected request rejection") } catch (_: RuntimeException) { }

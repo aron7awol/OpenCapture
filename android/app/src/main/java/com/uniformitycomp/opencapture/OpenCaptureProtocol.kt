@@ -8,6 +8,12 @@ import java.security.MessageDigest
 import java.util.UUID
 
 object OpenCaptureProtocol {
+    const val EXPERIMENTAL_EXPOSURE_SECONDS = 5.0
+
+    internal fun acceptsExposure(exposureNs: Long?, minimumNs: Long, reportedMaximumNs: Long): Boolean =
+        exposureNs == null || exposureNs in minimumNs..maxOf(reportedMaximumNs,
+            (EXPERIMENTAL_EXPOSURE_SECONDS * 1e9).toLong())
+
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")

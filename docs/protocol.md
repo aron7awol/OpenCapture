@@ -71,6 +71,16 @@ mode to its intended local interface and reject foreign browser origins.
 
 ## Request
 
+Android 0.4.8+ may advertise `experimentalMaxExposureSeconds:5`.
+This permits manual requests beyond `maxExposureSeconds`, but does not claim
+that the camera honors them. The original reported maximum remains unchanged
+(and larger reported ranges remain usable). Requests below the minimum, above
+both ceilings, or outside the ISO range are still rejected. Manual readback,
+per-still controls and RAW timing verification remain required; unsupported
+requests can fail. Controllers must bound retries and restore verified controls.
+Clients without this capability, including current iOS, retain their advertised
+range. No new request fields or private APIs are used.
+
 See `protocol/request.schema.json` and `protocol/request.example.json`.
 `exposureSeconds` and `iso` are either both omitted/null (auto then lock) or
 both provided. Focus position is normalized 0...1. For existing iOS clients it

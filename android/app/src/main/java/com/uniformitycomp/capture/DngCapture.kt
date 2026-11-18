@@ -244,7 +244,10 @@ internal class DngCapture(
                 auto.set(CaptureRequest.CONTROL_AF_MODE, autoFocusMode)
                 applySupportedProcessing(auto, characteristics, reportLensShading)
                 // A fully specified job never meters a new exposure on the next display pattern.
-                settings.exposureNs?.let { auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF); auto.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
+                settings.exposureNs?.let {
+                    auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                    applyExposure(auto, it, characteristics)
+                }
                 settings.iso?.let { auto.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
                 settings.focusFraction?.let {
                     auto.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
@@ -616,7 +619,7 @@ internal class DngCapture(
                         reportLensShading: Boolean = false) {
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, value.exposureNs)
+            applyExposure(builder, value.exposureNs, c)
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, value.iso)
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, value.focusDiopters)
@@ -628,6 +631,14 @@ internal class DngCapture(
             value.crop?.let { builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(it)) }
             value.opticalStabilization?.let { builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, it) }
             value.videoStabilization?.let { builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it) }
+        }
+
+        private fun applyExposure(builder: CaptureRequest.Builder, exposureNs: Long, c: CameraCharacteristics) {
+            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
+            if (c.availableCaptureRequestKeys.contains(CaptureRequest.SENSOR_FRAME_DURATION)) {
+                // Do not leave a short template frame duration competing with a long manual shutter.
+                builder.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(exposureNs, 33_333_333L))
+            }
         }
 
         fun lensShadingMode(c: CameraCharacteristics): Int? {
