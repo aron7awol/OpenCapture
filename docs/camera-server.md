@@ -1,11 +1,29 @@
 # Foreground Camera Server v1
 
 Development Android diagnostics: capabilities may advertise
-`captureSchedulingModes:["sequential"]`. Only then may a controller add
+`captureSchedulingModes:["sequential","sequential-preview"]`. Only then may a controller add
 `captureScheduling:"sequential"` to a capture or applyControls request. It
 disables original-exposure lookahead; streaming transport and exact-count
 replacement policy are unchanged. Absent field preserves existing behavior.
+The optional `sequential-preview` value also disables lookahead, but keeps the
+manually locked repeating preview running throughout RAW still capture, DNG
+writing, inspection and streaming-verdict waits. It requires fresh manual
+preview readback even when identical still controls were cached; it does not
+re-meter/refocus between frames. Preview results never enter the still-result
+queue or become measurement pixels. Capability-gate the exact requested value:
+older Android builds advertising only `sequential` do not support this mode.
+It applies to original, streamed and averaged Bayer capture; exact usable counts,
+2*N attempt limits and cancellation remain unchanged. `applyControls` accepts
+the mode for consistent controller requests but captures no RAW frames.
 Other values are invalid. iOS does not currently advertise this extension.
+
+Per-frame timing records `repeatingPreviewDuringStill`, cumulative
+`previewResultsAtSubmission` / `previewResultsAtCompletion`, and (if available)
+`latestPreviewDuringStills` actual settings/timestamps. Operation diagnostics
+record `raw_preview_policy`, `preview_during_raw_first_result` and
+`raw_preview_summary`, including counts on failure. The flag is requested
+behavior; delivered preview callbacks are separate evidence, not proof that a
+particular phone avoids its camera-driver watchdog.
 
 Failed Android job states may include `cameraDiagnostics` (schemaVersion 1):
 the sanitized operation request, start sequence, first fault and a bounded

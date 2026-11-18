@@ -119,7 +119,10 @@ internal data class ManualStateReading(
 internal class CaptureCallbackGate {
     class Tag internal constructor(internal val owner: CaptureCallbackGate, val index: Int?)
     @Volatile private var ended = false
+    @Volatile private var stillsOnly = false
     fun tag(index: Int? = null) = Tag(this, index)
     fun accepts(tag: Any?): Boolean = !ended && tag is Tag && tag.owner === this
+    fun queuesResult(tag: Any?): Boolean = accepts(tag) && (!stillsOnly || (tag as Tag).index != null)
+    fun beginStills() { stillsOnly = true }
     fun end() { ended = true }
 }

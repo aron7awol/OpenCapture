@@ -108,6 +108,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
     fun captureDngOriginals(settings: DngSettings, count: Int, directory: java.io.File?, cancel: AtomicBoolean,
                             maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
                             overlap: Boolean = false, tryReserveNext: (() -> Boolean)? = null,
+                            keepPreviewRunning: Boolean = false,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
         val connectionLost = onConnectionLost
@@ -121,6 +122,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             settings.focusFraction, settings.whiteBalance), ManualCaptureScope(camera, configured, reader, surface), count > 0)
         previewReady = false
         events.record("capture_started", org.json.JSONObject().put("overlap", overlap)
+            .put("repeatingPreviewDuringStill", keepPreviewRunning)
             .put("exposureNs", settings.exposureNs).put("iso", settings.iso).put("frames", count))
         var succeeded = false
         try {
@@ -131,7 +133,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                 diagnosticEvent = { event, details -> events.record(event, org.json.JSONObject(details),
                     event == "still_capture_failed" || event == "still_sequence_aborted") })
                 .run(settings, count, directory, onFrame, maxAttempts, needsMore,
-                    overlap = overlap, tryReserveNext = tryReserveNext)
+                    overlap = overlap, tryReserveNext = tryReserveNext, keepPreviewRunning = keepPreviewRunning)
             synchronized(this) {
                 check(cameraDevice === camera && previewSession === configured && rawReader === reader &&
                     previewSurface === surface && !cancel.get() && manualState.current(ticket)) { "Camera state invalidated during capture" }

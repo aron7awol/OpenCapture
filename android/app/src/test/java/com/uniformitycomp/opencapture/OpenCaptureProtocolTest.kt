@@ -6,6 +6,20 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun previewCompatibilityIsExplicitAndAlwaysSequential() {
+        assertFalse(OpenCaptureProtocol.keepPreviewRunning(request()))
+        assertTrue(OpenCaptureProtocol.overlap(request(), false, false))
+        for (mode in listOf("sequential", "sequential-preview")) {
+            val r = request().put("captureScheduling", mode)
+            OpenCaptureProtocol.request(r)
+            assertEquals(mode == "sequential-preview", OpenCaptureProtocol.keepPreviewRunning(r))
+            for (average in listOf(false, true)) for (stream in listOf(false, true))
+                assertFalse(OpenCaptureProtocol.overlap(r, average, stream))
+            OpenCaptureProtocol.request(r.put("operation", "applyControls").put("frameCount", 1))
+        }
+        for (mode in listOf(true, 1, "parallel", "preview", JSONObject.NULL))
+            rejected { OpenCaptureProtocol.request(request().put("captureScheduling", mode)) }
+    }
     @Test fun experimentalExposureDoesNotRewriteReportedLimits() {
         val minimum = 100_000L
         val samsungMaximum = 100_000_000L

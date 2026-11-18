@@ -1,5 +1,21 @@
 # Verification and Device Test Plan
 
+## Continuous Preview RAW Compatibility (November 18 Development)
+
+- Default and `sequential` preserve stopped-preview behavior. Explicit
+  `sequential-preview` forces sequential stills and fresh manual preview
+  readback; it must work for batch, original streaming and phone averaging.
+- Verify abundant preview callbacks cannot evict a RAW result, satisfy a RAW
+  frame count or bypass generation/session checks. Still images continue to
+  match their own sensor timestamps and tags; late/ended callbacks are ignored.
+- Verify Windows rejects unsupported phones, preserves this option on resume,
+  and passes it through alignment, metering, applyControls and measurements.
+- Physical Samsung test: fixed phone/lens, same 10% level and exposure policy,
+  with only keep-preview compatibility changed. Inspect requested mode,
+  `raw_preview_policy`, per-frame actual controls and preview callback counts.
+  Repeat a failed case with logcat if needed. A compiled APK is not evidence of
+  hardware success. Keep originals and existing accepted corrections intact.
+
 ## Persistent Android Diagnostics (November 18 Development)
 
 Tests cover bounded/damaged on-disk records, restart without graceful shutdown,

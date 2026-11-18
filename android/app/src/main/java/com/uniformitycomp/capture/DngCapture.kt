@@ -17,6 +17,7 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** Settings are camera requests. Only timestamp-matched TotalCaptureResults are evidence. */
@@ -81,6 +82,8 @@ internal class DngCapture(
     private var session: CameraCaptureSession? = null
     private val ended = AtomicBoolean(false)
     private val callbackGate = CaptureCallbackGate()
+    private val previewResultsDuringStills = AtomicLong(0)
+    private val latestPreviewDuringStills = AtomicReference<TotalCaptureResult?>()
 
     private fun rawSample(image: Image): Map<String, Any> = runCatching {
         val plane = image.planes.single()
@@ -112,6 +115,13 @@ internal class DngCapture(
         }
         override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
             if (s !== session || !callbackGate.accepts(r.tag)) return
+            // Continuous preview must never evict a timestamp-matched RAW result.
+            if (!callbackGate.queuesResult(r.tag)) {
+                latestPreviewDuringStills.set(result)
+                if (previewResultsDuringStills.incrementAndGet() == 1L)
+                    diagnosticEvent?.invoke("preview_during_raw_first_result", setupReading(result))
+                return
+            }
             (r.tag as? CaptureCallbackGate.Tag)?.index?.let { tag -> timings[tag]?.apply {
                 put("resultArrivedElapsedNs", SystemClock.elapsedRealtimeNanos())
                 put("resultFrameNumber", result.frameNumber)
@@ -151,12 +161,14 @@ internal class DngCapture(
     fun run(settings: DngSettings, count: Int, directory: File?, onFrame: (DngFrame) -> Unit,
             maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
             overlap: Boolean = false,
-            tryReserveNext: (() -> Boolean)? = null): DngSequence {
+            tryReserveNext: (() -> Boolean)? = null,
+            keepPreviewRunning: Boolean = false): DngSequence {
         check()
         require(count in 0..32)
         require(maxAttempts in count..64 && (needsMore != null || maxAttempts == count))
         require(!overlap || needsMore == null || tryReserveNext != null) { "Overlap requires nonblocking attempt admission" }
         require(!overlap || reader.maxImages >= 2) { "Overlap requires two owned RAW buffers" }
+        require(!keepPreviewRunning || !overlap) { "Continuous-preview compatibility requires sequential RAW captures" }
         val caps = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         require(caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) &&
@@ -167,7 +179,7 @@ internal class DngCapture(
         val minFocus = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
         // Exposure-only changes retain verified manual color state, but must
         // obtain fresh manual readback. Omitted controls still mean auto.
-        val fast = previousVerified?.takeIf { count > 0 && existingSession != null &&
+        val fast = previousVerified?.takeIf { !keepPreviewRunning && count > 0 && existingSession != null &&
             ManualRequestKey.from(settings.exposureNs, settings.iso, settings.focusFraction, settings.whiteBalance) != null }
         val exposureSource = previousExposureState?.takeIf { fast == null && existingSession != null &&
             ManualRequestKey.from(settings.exposureNs, settings.iso, settings.focusFraction, settings.whiteBalance) != null &&
@@ -180,7 +192,9 @@ internal class DngCapture(
                 exposureLocked != null -> "manual-exposure-change-locked-color-v1"
                 reusable != null -> "manual-reuse-identical-controls-v1"; else -> "auto-then-lock-v1" },
             "fastPathUsed" to (fast != null), "manualPreviewSkipped" to (fast != null),
-            "reason" to if (fast != null) "verified_identical_manual" else setupFallbackReason,
+            "reason" to if (keepPreviewRunning) "continuous_preview_fresh_manual_readback" else
+                if (fast != null) "verified_identical_manual" else setupFallbackReason,
+            "keepPreviewRunning" to keepPreviewRunning,
             "sessionRecreated" to (existingSession == null),
             "previousLockedAvailable" to (previousLocked != null),
             "setupStartedElapsedNs" to SystemClock.elapsedRealtimeNanos())
@@ -312,7 +326,7 @@ internal class DngCapture(
                 val lockTag = callbackGate.tag()
                 manual.setTag(lockTag)
                 applyLocked(manual, locked, characteristics, reportLensShading)
-                if (reusable == null) active.stopRepeating()
+                if (reusable == null && !keepPreviewRunning) active.stopRepeating()
                 results.clear()
                 setup["manualRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 active.setRepeatingRequest(manual.build(), callback, handler)
@@ -378,9 +392,13 @@ internal class DngCapture(
             if (count > 0) {
                 requireNotNull(directory)
                 check(directory.isDirectory || directory.mkdirs()) { "Cannot create capture archive" }
-                if (fast == null) active.stopRepeating()
+                if (fast == null && !keepPreviewRunning) active.stopRepeating()
+                callbackGate.beginStills()
                 results.clear()
                 synchronized(images) { while (true) (images.poll() ?: break).image.close() }
+                diagnosticEvent?.invoke("raw_preview_policy", mapOf(
+                    "repeatingPreviewDuringStill" to keepPreviewRunning, "overlap" to overlap,
+                    "exposureNs" to locked.exposureNs, "iso" to locked.iso))
                 var physicalId: String? = null
                 var previousSensorTimestamp: Long? = null
                 var previousCloseElapsed: Long? = null
@@ -420,7 +438,8 @@ internal class DngCapture(
                     timing["submittedWhilePreviousUnfinished"] = overlapping
                     timing["imageReaderMaxImages"] = reader.maxImages
                     timing["requestTemplate"] = "TEMPLATE_STILL_CAPTURE"
-                    timing["repeatingPreviewDuringStill"] = false
+                    timing["repeatingPreviewDuringStill"] = keepPreviewRunning
+                    timing["previewResultsAtSubmission"] = previewResultsDuringStills.get()
                     timing["requestedExposureNs"] = locked.exposureNs
                     timing["requestedISO"] = locked.iso
                     timing["requestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
@@ -524,6 +543,8 @@ internal class DngCapture(
                         timings.remove(index)
                     }
                     completedStills++
+                    timing["previewResultsAtCompletion"] = previewResultsDuringStills.get()
+                    latestPreviewDuringStills.get()?.let { timing["latestPreviewDuringStills"] = setupReading(it) }
                     val recorded = frame.copy(diagnostics = timing.toMap())
                     frames.add(recorded)
                     onFrame(recorded)
@@ -542,6 +563,10 @@ internal class DngCapture(
         } finally {
             ended.set(true)
             callbackGate.end()
+            diagnosticEvent?.invoke("raw_preview_summary", mapOf(
+                "repeatingPreviewDuringStill" to keepPreviewRunning,
+                "previewResults" to previewResultsDuringStills.get(),
+                "submittedStills" to submittedStills, "completedStills" to completedStills))
             if (submittedStills > completedStills) runCatching { session?.abortCaptures() }
             if (existingSession == null || !succeeded) session?.close()
             sessions.poll()?.close()

@@ -7,12 +7,17 @@ unchanged. The outbound connection/endpoints in this document are the legacy
 Do not confuse `_oc-camera._tcp` (phone server) with `_opencapture._tcp`
 (legacy desktop controller).
 
-Development Android can advertise `captureSchedulingModes:["sequential"]`.
+Development Android can advertise `captureSchedulingModes:["sequential","sequential-preview"]`.
 The optional `captureScheduling:"sequential"` request then disables exposure
 lookahead; omission keeps the normal policy. Capability-gate the field, including
 applyControls requests; iOS does not advertise it. See `camera-server.md` for
 bounded failed-job camera diagnostics. No original-file receipt/manifest or
 RAW image format changes accompany this diagnostic extension.
+
+`captureScheduling:"sequential-preview"` additionally keeps verified manually
+locked preview requests running between sequential RAW stills. It disables
+the skip-preview fast path and separates preview callbacks from RAW metadata
+matching. Gate this exact mode; see `camera-server.md` for evidence fields.
 
 Optional `streaming:{"mode":"originals-v1"}` is defined by
 [the foreground original-streaming extension](original-streaming.md). It is

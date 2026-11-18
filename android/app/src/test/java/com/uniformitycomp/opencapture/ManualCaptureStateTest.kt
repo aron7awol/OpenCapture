@@ -162,4 +162,19 @@ class ManualCaptureStateTest {
         old.end(); assertFalse(old.accepts(oldStill))
         current.end(); assertFalse(current.accepts(still)); assertFalse(current.accepts(preview))
     }
+
+    @Test fun continuousPreviewCannotEnterStillResultQueue() {
+        val gate = CaptureCallbackGate()
+        val preview = gate.tag(); val still = gate.tag(0)
+        assertTrue(gate.queuesResult(preview)); assertTrue(gate.queuesResult(still))
+        gate.beginStills()
+        repeat(1000) {
+            assertTrue(gate.accepts(preview)) // Lifecycle errors still belong to this operation.
+            assertFalse(gate.queuesResult(preview))
+        }
+        assertTrue(gate.queuesResult(still))
+        assertFalse(gate.queuesResult(CaptureCallbackGate().tag(0)))
+        gate.end()
+        assertFalse(gate.queuesResult(still)); assertFalse(gate.queuesResult(preview))
+    }
 }
