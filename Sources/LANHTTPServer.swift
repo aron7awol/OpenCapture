@@ -43,24 +43,32 @@ private final class CameraChannels: @unchecked Sendable {
 @MainActor final class LANHTTPServer {
     typealias Route = @MainActor @Sendable (CameraHTTPRequest) async -> CameraHTTPResponse
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    private let filePool: NIOThreadPool = {
+        let pool = NIOThreadPool(numberOfThreads: 1)
+        pool.start()
+        return pool
+    }()
     private let clients = CameraChannels()
     private var channel: Channel?
     private var stopped = false
     func start(address: String, route: @escaping Route) async throws {
         let clients = clients
+        let fileIO = NonBlockingFileIO(threadPool: filePool)
         channel = try await ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 guard clients.add(channel) else { return channel.close() }
                 return channel.pipeline.configureHTTPServerPipeline(withPipeliningAssistance: false).flatMap {
-                    channel.pipeline.addHandler(CameraHTTPHandler(address: address, route: route))
+                    channel.pipeline.addHandler(CameraHTTPHandler(address: address, fileIO: fileIO, route: route))
                 }
             }.bind(host: address, port: 8767).get()
     }
     func stop() async {
         guard !stopped else { return }; stopped = true
         try? await channel?.close().get(); clients.close()
+        // Drain disk work while its completion callbacks still have an event loop.
+        try? await filePool.shutdownGracefully()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             group.shutdownGracefully { _ in continuation.resume() }
         }
@@ -95,12 +103,15 @@ private final class CameraHTTPHandler: ChannelInboundHandler {
     typealias OutboundOut = HTTPServerResponsePart
     private let address: String
     private let route: LANHTTPServer.Route
+    private let fileIO: NonBlockingFileIO
     private var head: HTTPRequestHead?
     private var body = Data()
     private var length = 0
     private var complete = false
     private var timeout: Scheduled<Void>?
-    init(address: String, route: @escaping LANHTTPServer.Route) { self.address = address; self.route = route }
+    init(address: String, fileIO: NonBlockingFileIO, route: @escaping LANHTTPServer.Route) {
+        self.address = address; self.fileIO = fileIO; self.route = route
+    }
     func handlerAdded(context: ChannelHandlerContext) {
         timeout = context.eventLoop.scheduleTask(in: .seconds(15)) { context.close(promise: nil) }
     }
@@ -159,16 +170,43 @@ private final class CameraHTTPHandler: ChannelInboundHandler {
             headers.add(name: "Cache-Control", value: "no-store")
             headers.add(name: "X-Content-Type-Options", value: "nosniff")
             context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: HTTPResponseStatus(statusCode: response.code), headers: headers))), promise: nil)
-            if let region { context.write(wrapOutboundOut(.body(.fileRegion(region))), promise: nil) }
-            else {
+            let bodyWritten: EventLoopFuture<Void>
+            if let region {
+                // Do not send FileRegion to a socket: NIO invokes sendfile, which
+                // terminates the iOS app with SIGSYS. Read on the file pool and
+                // await each socket write before allocating/reading another chunk.
+                var transferred = 0
+                bodyWritten = fileIO.readChunked(fileRegion: region, chunkSize: 256 * 1024,
+                    allocator: context.channel.allocator, eventLoop: context.eventLoop) { buffer in
+                    guard context.channel.isActive else {
+                        return context.eventLoop.makeFailedFuture(ChannelError.ioOnClosedChannel)
+                    }
+                    transferred += buffer.readableBytes
+                    let written = context.eventLoop.makePromise(of: Void.self)
+                    context.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: written)
+                    return written.futureResult
+                }.flatMapThrowing {
+                    guard transferred == region.readableBytes else { throw CameraFileError.truncated }
+                }
+            } else {
                 var buffer = context.channel.allocator.buffer(capacity: response.data.count)
-                buffer.writeBytes(response.data); context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+                buffer.writeBytes(response.data)
+                let written = context.eventLoop.makePromise(of: Void.self)
+                context.writeAndFlush(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: written)
+                bodyWritten = written.futureResult
             }
-            let promise = context.eventLoop.makePromise(of: Void.self)
             let opened = file
-            promise.futureResult.whenComplete { _ in try? opened?.close(); context.close(promise: nil) }
-            context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: promise)
+            bodyWritten.flatMap {
+                let ended = context.eventLoop.makePromise(of: Void.self)
+                context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: ended)
+                return ended.futureResult
+            }.whenComplete { _ in
+                try? opened?.close()
+                context.close(promise: nil)
+            }
         } catch { try? file?.close(); context.close(promise: nil) }
     }
     func errorCaught(context: ChannelHandlerContext, error: Error) { context.close(promise: nil) }
 }
+
+private enum CameraFileError: Error { case truncated }

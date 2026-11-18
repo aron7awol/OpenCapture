@@ -18,7 +18,10 @@ the default and retains each requested original unchanged.
   admission and cancellation drain. See [exposure overlap](exposure-overlap.md)
   for current source-only verification status on Android and iOS.
 - `Sources/LANHTTPServer.swift`: SwiftNIO HTTP/1 server bound to the private
-  Wi-Fi IPv4 interface. Bounded requests/connections; file-region streaming.
+  Wi-Fi IPv4 interface. Bounded requests/connections; 256 KiB file reads on a
+  dedicated file pool, with each byte-buffer socket write completing before
+  the next read. Never send a FileRegion to the socket: iOS terminated build
+  42 with SIGSYS at `sendfile`. FileRegion remains a disk-read range only.
 - `Core/RemoteReconnect.swift`: legacy outbound retry policy, retained as a fixture.
 - `Core/CaptureArchiveStore.swift`: archive creation/deletion, upload-acknowledgement
   checks and persistent ID replay protection after deletion.

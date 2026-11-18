@@ -1,5 +1,35 @@
 # Verification and Device Test Plan
 
+## iOS File Download SIGSYS Fix (November 18 Development Source)
+
+An iPhone 16 Pro running 0.4.5/build 42 completed a Bayer burst, then crashed
+at its first saved-file GET. Both DNG-first and metadata-JSON-first attempts
+failed. The supplied crash report confirms `SIGSYS`, termination signal 12,
+on the NIO event-loop thread at `sendfile`, through `Posix.sendfile`, socket
+file writes and `CameraHTTPHandler.send`. This was a file-transfer failure,
+not an AVFoundation capture exception or demonstrated memory-pressure kill.
+
+Development source now reads files in bounded 256 KiB chunks off the event
+loop and sends byte buffers, awaiting each write. It preserves Content-Length,
+original bytes, immutable retries and existing ACK cleanup. It checks short
+reads and closes handles after pending disk/socket work completes. No native
+file-region socket writes are allowed on this iOS path.
+
+On macOS, `swift test` and `swift test -c release` now also compile the actual
+LAN HTTP source and run `HTTPTests/LANHTTPServerTests.swift`: small, empty and
+multi-chunk files, exact lengths/bytes, repeated downloads, in-memory responses
+and missing-file listener survival. These tests use loopback port 8767; leave
+it available. They do not replace a physical iPhone test: macOS may permit
+syscalls that iOS rejects. Windows cannot run the Swift/macOS/device checks.
+
+Before release, run both Swift configurations and the normal iOS build, then
+on the iPhone download both metadata-first and DNG-first bursts. Verify exact
+receipt hashes, repeat the same unacknowledged downloads, interrupt a transfer
+and retry unchanged bytes, then ACK. Check cancellation/server shutdown during
+a slow transfer, server responsiveness, bounded memory and no handle leak.
+Resume the three-lens metadata experiment only after successful file delivery.
+No new iOS binary or physical fix verification exists yet.
+
 ## Foreground Recovery (November 15 Development Source)
 
 On both phones, briefly remove and restore Wi-Fi during a burst, during a file
