@@ -55,8 +55,10 @@ cameras also offer optional [on-device averaging](docs/frame-averaging.md).
 ## Updates
 
 Open **About > Check for updates**. Android uses its system installer; iPhone
-updates are installed by AltStore. Add the [OpenCapture AltStore source](https://github.com/aron7awol/OpenCapture/releases/latest/download/altstore.json)
+updates are installed by AltStore. Add the [OpenCapture AltStore source](https://github.com/aron7awol/OpenCapture/releases/download/ios-updates/altstore.json)
 once. Keep the same signing identity when updating either app.
+Already subscribed through the older source address? It still works; no change
+or second subscription is needed.
 
 ## Developers
 

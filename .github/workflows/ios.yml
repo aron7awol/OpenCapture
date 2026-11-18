@@ -47,7 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: ios-feed-publication
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: OpenCapture-device
@@ -60,5 +66,6 @@ jobs:
         run: |
           TAG=$(python3 -c 'import json; print(json.load(open("dist/release.json"))["tag"])')
           ASSETS=(dist/OpenCapture.ipa dist/altstore.json dist/release.json dist/SHA256SUMS.txt dist/icon.png dist/LICENSE dist/build-info.txt)
-          gh release create "$TAG" "${ASSETS[@]}" --target "$SOURCE_COMMIT" --title "OpenCapture $TAG" --latest \
+          gh release create "$TAG" "${ASSETS[@]}" --target "$SOURCE_COMMIT" --title "OpenCapture iOS $TAG" --latest=false \
             --notes "Experimental unsigned device IPA for AltStore Classic. GPLv3 source is the source archive attached to this tag. Real camera and AltStore installation require device testing."
+          python3 scripts/publish_ios_feed.py --feed dist/altstore.json --publish --promote "$TAG"

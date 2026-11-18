@@ -21,6 +21,28 @@ The AltStore feed hashes the exact IPA and derives version/permissions from
 its plist. Do not supply Apple ID passwords, signing certificates or private
 keys to this workflow. AltStore performs installation and signing refresh.
 
+The stable iOS source is
+`https://github.com/aron7awol/OpenCapture/releases/download/ios-updates/altstore.json`.
+New builds and the README use it. Existing apps and AltStore subscriptions using
+`releases/latest/download/altstore.json` remain supported; no user must switch
+sources to keep receiving updates. Do not add a new source identity or change
+the bundle identifier as part of this migration.
+
+Future iOS tags use `vVERSION-ios.BUILD` (for example `v0.4.7-ios.46`). Old
+`vVERSION-bBUILD` releases and assets remain immutable and downloadable. The
+publisher first creates the versioned release with `--latest=false`, verifies
+its public IPA/icon, updates the dedicated feed, then makes that iOS release
+Latest and verifies the old feed address too. The publish job is serialized.
+`python scripts/publish_ios_feed.py --feed dist/altstore.json` is a read-only
+verification; `--publish --promote TAG` updates both paths. It rejects downgrades,
+changed same-version metadata and detectable concurrent feed changes. GitHub
+asset replacement is not transactional; do not run manual publishers concurrently.
+A failed promotion can be retried with this script against the same immutable
+versioned release. Do not recreate its IPA or change its hashes.
+
+Keep Latest reserved for iOS while old clients depend on it. A separate feed
+does not itself migrate installed clients or fix all historical release sorting.
+
 ## Android
 
 See `android/README.md` for the standalone JDK/SDK build. GitHub Android CI
@@ -41,6 +63,12 @@ Publish on a new `android-vVERSION-bBUILD` release with `--latest=false` so
 iOS's latest-release AltStore source is preserved. Once those assets are
 downloadable, replace only `android.json` on the separate `android-updates`
 release, also with `--latest=false`. Never replace an existing versioned APK.
+
+Android's legacy tag spelling is a compatibility contract: installed updaters
+construct and require that exact APK URL. Do not change it to a cleaner-looking
+tag without a separately tested compatibility migration. Platform labels belong
+in release titles; preserve all historical tags and feed URLs. GitHub's listing
+may therefore remain out of numeric order, especially 0.4.9 versus 0.4.10.
 
 Android About checks this dedicated HTTPS feed and verifies byte count,
 SHA-256, package/version and continuity with the installed signing key before

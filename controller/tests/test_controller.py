@@ -428,6 +428,7 @@ class ReleaseTests(unittest.TestCase):
                 self.skipTest("Run scripts/make_icon.py before release tests")
             source = module.package(app, Path(temp) / "dist", "aron7awol/OpenCapture")
             version = source["apps"][0]["versions"][0]
+            self.assertEqual(version['downloadURL'], 'https://github.com/aron7awol/OpenCapture/releases/download/v0.1.0-ios.7/OpenCapture.ipa')
             ipa = Path(temp) / "dist/OpenCapture.ipa"
             self.assertEqual(version["size"], ipa.stat().st_size)
             self.assertEqual(version["sha256"], hashlib.sha256(ipa.read_bytes()).hexdigest())

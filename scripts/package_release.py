@@ -30,7 +30,7 @@ def package(app, output, repository):
                 archive.write(path, "Payload/" + app.name + "/" + path.relative_to(app).as_posix())
     with ipa.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    tag = f"v{version}-b{build}"
+    tag = f"v{version}-ios.{build}"
     base = f"https://github.com/{repository}/releases/download/{tag}"
     app_entry = {"name": "OpenCapture", "bundleIdentifier": info["CFBundleIdentifier"],
         "developerName": "aron7awol", "subtitle": "Controlled still capture",

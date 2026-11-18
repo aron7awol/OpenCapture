@@ -27,6 +27,6 @@
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
   <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
   <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
-  <key>OpenCaptureSourceURL</key><string>https://github.com/aron7awol/OpenCapture/releases/latest/download/altstore.json</string>
+  <key>OpenCaptureSourceURL</key><string>https://github.com/aron7awol/OpenCapture/releases/download/ios-updates/altstore.json</string>
   <key>OpenCaptureOriginalBundleID</key><string>io.github.aron7awol.OpenCapture</string>
 </dict></plist>

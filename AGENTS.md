@@ -83,4 +83,9 @@ verification code. Do not copy additional private parent-project code/history
 or assume its license changed. Publish release source, license and build
 instructions alongside IPAs/APKs. Keep package and bundle IDs stable.
 Android releases must use `--latest=false` to preserve iOS's latest-release
-AltStore URL. XcodeGen is a build tool, not an embedded runtime library.
+AltStore URL. iOS has a dedicated `ios-updates/altstore.json` feed; retain the
+legacy Latest alias for installed users. Publish it with `scripts/publish_ios_feed.py`
+after verifying immutable assets. Future iOS tags use `vVERSION-ios.BUILD`;
+Android `android-vVERSION-bBUILD` URLs cannot change because installed clients
+validate that exact spelling. Read `docs/development.md` before feed/tag changes.
+XcodeGen is a build tool, not an embedded runtime library.
