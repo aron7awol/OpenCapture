@@ -1,5 +1,23 @@
 # Foreground Camera Server v1
 
+Development Android diagnostics: capabilities may advertise
+`captureSchedulingModes:["sequential"]`. Only then may a controller add
+`captureScheduling:"sequential"` to a capture or applyControls request. It
+disables original-exposure lookahead; streaming transport and exact-count
+replacement policy are unchanged. Absent field preserves existing behavior.
+Other values are invalid. iOS does not currently advertise this extension.
+
+Failed Android job states may include `cameraDiagnostics` (schemaVersion 1):
+the sanitized operation request, start sequence, first fault and a bounded
+128-event timeline with monotonic/wall timestamps. Camera2 error numbers/names,
+still failures, request exposure/ISO, received frame controls and lifecycle
+events help distinguish original faults from recovery/cancellation symptoms.
+The first fault survives event-ring eviction. The snapshot survives transient
+original-file cleanup, but ends with the foreground server session. Copy it
+before disconnecting. Direct info's `camera2Diagnostics.runtime` exposes recent
+events without taking a photograph. Neither field contains images or opaque
+controller context; neither is a substitute for system crash logs.
+
 OpenCapture opens a camera server on the trusted Wi-Fi LAN while foregrounded.
 There is no account, pairing prompt, stored controller address or local gallery.
 A desktop controller discovers/selects the phone and owns capture settings and lens choice.

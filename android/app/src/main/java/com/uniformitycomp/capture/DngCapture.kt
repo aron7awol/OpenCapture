@@ -69,7 +69,8 @@ internal class DngCapture(
     private val previousLocked: DngLockedSettings? = null,
     private val previousVerified: DngVerifiedState? = null,
     private val setupFallbackReason: String = "no_verified_still",
-    private val previousExposureState: DngVerifiedState? = null
+    private val previousExposureState: DngVerifiedState? = null,
+    private val diagnosticEvent: ((String, Map<String, Any>) -> Unit)? = null
 ) {
     private val failure = AtomicReference<Throwable?>()
     private data class RawArrival(val image: Image, val elapsedNs: Long,
@@ -135,10 +136,14 @@ internal class DngCapture(
         }
         override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
             if (s !== session || !callbackGate.accepts(r.tag)) return
+            diagnosticEvent?.invoke("still_capture_failed", mapOf("reason" to f.reason,
+                "frameNumber" to f.frameNumber, "sequenceId" to f.sequenceId,
+                "imageCaptured" to f.wasImageCaptured()))
             failure.compareAndSet(null, IllegalStateException("Capture failure ${f.reason}"))
         }
         override fun onCaptureSequenceAborted(s: CameraCaptureSession, sequenceId: Int) {
             if (s !== session || ended.get()) return
+            diagnosticEvent?.invoke("still_sequence_aborted", mapOf("sequenceId" to sequenceId))
             failure.compareAndSet(null, IllegalStateException("Capture sequence aborted"))
         }
     }
@@ -278,6 +283,7 @@ internal class DngCapture(
                     if (autoResults++ == 0) {
                         setup["autoFirstResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                         setup["autoFirstResult"] = setupReading(observed)
+                        diagnosticEvent?.invoke("auto_first_result", setupReading(observed))
                     }
                     val ae = observed.get(CaptureResult.CONTROL_AE_STATE)
                     val af = observed.get(CaptureResult.CONTROL_AF_STATE)
@@ -313,8 +319,13 @@ internal class DngCapture(
                 // Reject queued auto results; wait for controls actually reported by the locked request.
                 val lockStart = System.nanoTime()
                 var manualResults = 0
+                var manualReadbackReported = false
                 do {
                     observed = await(results)
+                    if (!manualReadbackReported && observed.request.tag === lockTag) {
+                        diagnosticEvent?.invoke("manual_first_result", setupReading(observed))
+                        manualReadbackReported = true
+                    }
                     val retainedStateMatches = exposureSource == null || exposureSource.actual.copy(
                         exposureNs = locked.exposureNs, iso = locked.iso).difference(stateReading(observed), minFocus) == null
                     val isManual = observed.request.tag === lockTag && honors(observed, locked, minFocus) && retainedStateMatches
@@ -346,6 +357,8 @@ internal class DngCapture(
                 setup["sceneWaitEndedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
             }
             val setupEnded = SystemClock.elapsedRealtimeNanos()
+            diagnosticEvent?.invoke("setup_completed", mapOf("exposureNs" to locked.exposureNs,
+                "iso" to locked.iso, "reusedVerifiedState" to (fast != null)))
             setup["setupDurationNs"] = setupEnded - (setup["setupStartedElapsedNs"] as Long)
             if (reportLensShading) android.util.Log.i("OpenCaptureSetup", "fast=${fast != null} reason=${setup["reason"]} " +
                 "sourceFrame=${fast?.frameNumber} setupMs=${(setup["setupDurationNs"] as Long)/1_000_000}")

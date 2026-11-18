@@ -43,6 +43,14 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_sequential_scheduling_is_explicit(self):
+        schema=json.loads((ROOT/'protocol/request.schema.json').read_text())
+        self.assertEqual(schema['properties']['captureScheduling'],{'enum':['sequential']})
+        self.assertNotIn('captureScheduling',schema['required'])
+        server.validate_request(dict(request(),captureScheduling='sequential'))
+        for value in (None,True,'parallel',{},1):
+            with self.assertRaises(server.Invalid):server.validate_request(dict(request(),captureScheduling=value))
+
     def test_optional_preview_and_performance_contract(self):
         for value in (True, False):
             server.validate_request(dict(request(),includePreview=value))

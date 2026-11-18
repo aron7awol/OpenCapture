@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -97,6 +97,8 @@ def validate_request(request):
         raise Invalid("Invalid settling interval")
     if 'includePreview' in request and type(request['includePreview']) is not bool:
         raise Invalid('includePreview must be boolean')
+    if 'captureScheduling' in request and request['captureScheduling'] != 'sequential':
+        raise Invalid('Unknown capture scheduling')
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
     if (exposure is None) != (iso is None):
         raise Invalid("Manual exposure requires shutter time and ISO")
@@ -449,6 +451,8 @@ class State:
                 raise Invalid("Camera does not support on-device averaging", 409)
             if 'streaming' in request and 'originals-v1' not in (self.capabilities or {}).get('captureStreamingModes', []):
                 raise Invalid('Camera does not support original streaming',409)
+            if 'captureScheduling' in request and request['captureScheduling'] not in (self.capabilities or {}).get('captureSchedulingModes', []):
+                raise Invalid('Camera does not support requested capture scheduling',409)
             if request["id"] in self.jobs:
                 job = self.jobs[request["id"]]
                 if canonical_request(job["request"]) == canonical_request(request):

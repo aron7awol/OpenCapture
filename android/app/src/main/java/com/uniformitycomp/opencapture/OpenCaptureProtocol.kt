@@ -17,7 +17,11 @@ object OpenCaptureProtocol {
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")
-    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming")
+    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling")
+
+    internal fun overlap(value: JSONObject, averaging: Boolean, streaming: Boolean): Boolean =
+        value.optString("captureScheduling", "") != "sequential" && !averaging &&
+            (value.getInt("frameCount") > 1 || streaming)
 
     internal data class Averaging(val policy: String, val keepOriginals: Boolean)
     internal fun averaging(value: JSONObject): Averaging? {
@@ -39,6 +43,7 @@ object OpenCaptureProtocol {
         val frames = integer(value, "frameCount", 1, 32)
         val operation = if (value.isNull("operation")) "capture" else value.getString("operation")
         require(operation in setOf("capture", "applyControls")) { "Unknown operation" }
+        require(!value.has("captureScheduling") || value.get("captureScheduling") == "sequential") { "Unknown capture scheduling" }
         require(operation != "applyControls" || frames == 1)
         averaging(value)
         if (value.has("streaming")) {

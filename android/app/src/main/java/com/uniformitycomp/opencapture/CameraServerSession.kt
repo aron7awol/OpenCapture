@@ -20,7 +20,7 @@ class CameraServerSession(
     private data class Job(val request: String, val cancel: AtomicBoolean = AtomicBoolean(false),
         var status: String = "running", var message: String = "Capturing", var result: ByteArray? = null,
         var hash: String? = null, val files: MutableMap<String, File> = linkedMapOf(),
-        var writing: Boolean = true, var stream: OriginalStream? = null)
+        var writing: Boolean = true, var stream: OriginalStream? = null, var diagnostics: JSONObject? = null)
     private val worker = Executors.newSingleThreadExecutor()
     private val jobs = linkedMapOf<String, Job>()
     private var owner: String? = null
@@ -130,6 +130,7 @@ class CameraServerSession(
                 notice("Transferring")
             } catch (error: Exception) {
                 synchronized(this) {
+                    job.diagnostics = (error as? CameraDiagnosticException)?.diagnostics
                     if(job.stream?.isFrozen!=true || job.cancel.get()) {
                         job.status = if (job.cancel.get()) "cancelled" else "failed"
                         job.message = (error.message ?: "Capture failed").take(256)
@@ -151,6 +152,7 @@ class CameraServerSession(
         val job = job(id)
         return JSONObject().put("protocolVersion", 1).put("id", id).put("status", job.status)
             .put("message", job.message).put("cameraReady",!job.writing)
+            .also { job.diagnostics?.let { evidence -> it.put("cameraDiagnostics", JSONObject(evidence.toString())) } }
             .also { if (job.hash != null) it.put("resultSha256", job.hash); job.stream?.let { stream -> it.put("streaming",stream.state()) } }
     }
     @Synchronized fun result(id: String): ByteArray = job(id).let {

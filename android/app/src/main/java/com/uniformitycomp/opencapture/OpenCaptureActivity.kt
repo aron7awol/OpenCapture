@@ -134,6 +134,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         // request drains. A renderer/controller can then resume the same job.
         if (!resumed || !enabled) return
         val ticket = recovery.beginRecovery(failedGeneration) ?: return
+        camera.events.record("recovery_started", JSONObject().put("attempt", recovery.attempts)
+            .put("pending", recovery.pending))
         camera.onConnectionLost = null
         camera.close(); previewBytes = null
         if (!recovery.pending) {
@@ -149,11 +151,13 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
                     if (System.nanoTime() < cleanupDeadline) ui.postDelayed(this, 250)
                     else {
                         recovery.abandonRetry(ticket)
+                        camera.events.record("recovery_cleanup_timeout", fault = true)
                         message("Camera cleanup stalled. Tap Stop, then Resume.")
                     }
                     return
                 }
                 if (recovery.takeRetry(ticket)) {
+                    camera.events.record("recovery_reopen", JSONObject().put("attempt", recovery.attempts))
                     message("Reopening camera (${recovery.attempts}/3)")
                     openCamera()
                 }
@@ -170,6 +174,9 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun logLifecycle(event: String) {
         val awakeFlag = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
         val interactive = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
+        if (::camera.isInitialized) camera.events.record("activity_$event", JSONObject()
+            .put("visible", resumed).put("enabled", enabled).put("updating", updating.get())
+            .put("keepScreenOn", awakeFlag).put("interactive", interactive))
         Log.i("OpenCaptureLifecycle", "$event visible=$resumed enabled=$enabled updating=${updating.get()} keepScreenOn=$awakeFlag interactive=$interactive")
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -310,7 +317,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) { openCamera() }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) { transformPreview() }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { stopServer(); closeCamera(); return true }
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { logLifecycle("surface_destroyed"); stopServer(); closeCamera(); return true }
     override fun onConfigurationChanged(configuration: Configuration) { super.onConfigurationChanged(configuration); texture.post { transformPreview() } }
     private fun transformPreview() {
         val size = camera.previewDimensions() ?: return

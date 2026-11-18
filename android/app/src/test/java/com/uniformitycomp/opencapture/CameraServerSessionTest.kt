@@ -12,6 +12,30 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class CameraServerSessionTest {
+    @Test fun failedJobRetainsDiagnosticsAfterOriginalCleanup() {
+        val root = Files.createTempDirectory("oc-diagnostic").resolve("staging").toFile()
+        val session = CameraServerSession(root, { request, cancel, _ ->
+            val dir = CaptureArchives(root).create(request.getString("id"))
+            File(dir, "frame-0001.dng").writeText("partial")
+            val log = CameraDiagnostics()
+            log.begin(request, "0")
+            log.record("camera_error", JSONObject().put("code", 4).put("detail", "ERROR_CAMERA_DEVICE"), true)
+            cancel.set(true)
+            throw CameraDiagnosticException(IllegalStateException("Cancelled"), log.snapshot())
+        }, {})
+        try {
+            session.connect(connection(UUID.randomUUID().toString()))
+            val request = OpenCaptureProtocol.localRequest(1, null, null, null)
+            val id = request.getString("id")
+            session.submit(request)
+            waitFor { session.jobState(id).getBoolean("cameraReady") }
+            val state = session.jobState(id)
+            assertEquals("cancelled", state.getString("status"))
+            assertTrue(state.getString("message").contains("ERROR_CAMERA_DEVICE"))
+            assertEquals(4, state.getJSONObject("cameraDiagnostics").getJSONObject("firstFault").getInt("code"))
+            assertFalse(File(root, id).exists())
+        } finally { session.close() }
+    }
     @Test fun extendedDiagnosticsOnlyOnDirectInfoRead() {
         val session = CameraServerSession(Files.createTempDirectory("oc-info").toFile(), { _,_,_ -> error("unexpected capture") }, {})
         val id = UUID.randomUUID().toString()

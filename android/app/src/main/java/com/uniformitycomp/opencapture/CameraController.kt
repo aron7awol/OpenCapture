@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Camera lifecycle and DNG preview/capture only; this client speaks the generic OpenCapture protocol. */
 class CameraController(private val context: Context) {
+    val events = CameraDiagnostics()
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val cameraThread = HandlerThread("OpenCaptureCamera").also { it.start() }
     private val resultThread = HandlerThread("OpenCaptureResults").also { it.start() }
@@ -81,7 +82,7 @@ class CameraController(private val context: Context) {
         } catch (_: CameraAccessException) {
             report.put("error", "cameraListUnavailable")
         }
-        return report
+        return report.put("runtime", events.snapshot())
     }
 
     fun rawCameraChoices(): List<Pair<String, String>> = cameraManager.cameraIdList.mapNotNull { id ->
@@ -120,12 +121,16 @@ class CameraController(private val context: Context) {
         val ticket = manualState.begin(ManualRequestKey.from(settings.exposureNs, settings.iso,
             settings.focusFraction, settings.whiteBalance), ManualCaptureScope(camera, configured, reader, surface), count > 0)
         previewReady = false
+        events.record("capture_started", org.json.JSONObject().put("overlap", overlap)
+            .put("exposureNs", settings.exposureNs).put("iso", settings.iso).put("frames", count))
         var succeeded = false
         try {
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
                 existingSession = configured, previousLocked = dngPreviewControls,
                 previousVerified = ticket.reused, setupFallbackReason = ticket.reason,
-                previousExposureState = ticket.exposureSource)
+                previousExposureState = ticket.exposureSource,
+                diagnosticEvent = { event, details -> events.record(event, org.json.JSONObject(details),
+                    event == "still_capture_failed" || event == "still_sequence_aborted") })
                 .run(settings, count, directory, onFrame, maxAttempts, needsMore,
                     overlap = overlap, tryReserveNext = tryReserveNext)
             synchronized(this) {
@@ -137,6 +142,7 @@ class CameraController(private val context: Context) {
             succeeded = true
             return sequence
         } catch (error: Exception) {
+            events.record("capture_exception", org.json.JSONObject().put("detail", error.toString().take(512)), true)
             invalidateManualState(if (cancel.get()) "capture_cancelled" else
                 (error as? ManualStateMismatch)?.reason ?: "capture_error")
             // A failed/cancelled lookahead can deliver a late buffer. Never let
@@ -152,6 +158,7 @@ class CameraController(private val context: Context) {
                 if (cameraDevice === camera) {
                     if (succeeded && previewSession === configured && previewSurface === surface) {
                         runCatching { repeatPreview(configured, surface) }.onFailure {
+                            events.record("preview_restore_exception", org.json.JSONObject().put("detail", it.toString().take(512)), true)
                             invalidateManualState("preview_error")
                             previewReady = false; connectionLost?.invoke()
                         }
@@ -176,6 +183,7 @@ class CameraController(private val context: Context) {
             if (openedReported.compareAndSet(false, true)) onOpened(value)
         }
         try {
+            events.record("camera_open_requested")
             invalidateManualState("camera_opened")
             val openCancel = AtomicBoolean(false)
             pendingOpenCancel?.set(true)
@@ -217,39 +225,51 @@ class CameraController(private val context: Context) {
                         }
                     }
                     reportOpened(accepted)
+                    events.record("camera_opened", org.json.JSONObject().put("accepted", accepted))
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
-                    camera.close()
                     val current = synchronized(this@CameraController) {
                         val owns = cameraDevice === camera || pendingOpenCancel === openCancel
+                        if (owns) {
+                            events.record("camera_disconnected", fault = true)
+                            previewReady = false
+                        }
                         if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_disconnected") }
                         if (pendingOpenCancel === openCancel) pendingOpenCancel = null
                         owns
                     }
+                    camera.close()
                     reportOpened(false)
                     if (current) connectionLost?.invoke()
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
-                    camera.close()
                     val current = synchronized(this@CameraController) {
                         val owns = cameraDevice === camera || pendingOpenCancel === openCancel
+                        if (owns) {
+                            events.record("camera_error", org.json.JSONObject().put("code", error)
+                                .put("detail", CameraDiagnostics.errorName(error)).put("cameraID", camera.id), true)
+                            previewReady = false
+                        }
                         if (cameraDevice === camera) { cancelCurrentCapture(); cameraDevice = null; invalidateManualState("camera_error") }
                         if (pendingOpenCancel === openCancel) pendingOpenCancel = null
                         owns
                     }
+                    camera.close()
                     reportOpened(false)
                     if (current) connectionLost?.invoke()
                 }
             }, cameraHandler)
         } catch (e: Exception) {
+            events.record("camera_open_exception", org.json.JSONObject().put("detail", e.toString().take(512)), true)
             pendingOpenCancel = null
             reportOpened(false)
         }
     }
 
     fun startPreview(textureView: TextureView, onError: (String) -> Unit = {}) {
+        events.record("preview_configure_requested")
         val connectionLost = onConnectionLost
         invalidateManualState("session_recreated")
         previewReady = false
@@ -281,6 +301,7 @@ class CameraController(private val context: Context) {
                     try {
                         repeatPreview(session, surface)
                     } catch (e: Exception) {
+                        events.record("preview_exception", org.json.JSONObject().put("detail", e.toString().take(512)), true)
                         invalidateManualState("preview_error")
                         onError(e.message ?: "preview request failed")
                         connectionLost?.invoke()
@@ -290,6 +311,7 @@ class CameraController(private val context: Context) {
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     session.close()
                     if (previewSurface === surface) {
+                        events.record("preview_configuration_failed", fault = true)
                         invalidateManualState("session_configuration_failed")
                         previewSurface = null
                         surface.release()
@@ -299,6 +321,7 @@ class CameraController(private val context: Context) {
                 }
                 override fun onClosed(session: CameraCaptureSession) {
                     if (previewSession === session) {
+                        events.record("active_session_closed", fault = true)
                         previewReady = false
                         previewSession = null
                         invalidateManualState("session_closed")
@@ -307,6 +330,7 @@ class CameraController(private val context: Context) {
                 }
             }, cameraHandler)
         } catch (e: Exception) {
+            events.record("preview_start_exception", org.json.JSONObject().put("detail", e.toString().take(512)), true)
             if (previewSurface === surface) {
                 previewSurface = null
                 surface.release()
@@ -341,6 +365,8 @@ class CameraController(private val context: Context) {
             }
             override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
                 if (previewSession === session && previewRequestGeneration == generation && activeCaptureCancel == null) {
+                    events.record("preview_capture_failed", org.json.JSONObject().put("reason", failure.reason)
+                        .put("frameNumber", failure.frameNumber).put("sequenceId", failure.sequenceId), true)
                     invalidateManualState("preview_capture_failed")
                     previewReady = false
                     connectionLost?.invoke()
@@ -348,15 +374,18 @@ class CameraController(private val context: Context) {
             }
         }, cameraHandler)
         previewReady = true
+        events.record("preview_ready")
     }
 
     @Synchronized fun cancelCurrentCapture() {
+        events.record("capture_cancel_requested")
         invalidateManualState("capture_cancelled")
         activeCaptureCancel?.set(true)
         activeCaptureCleanup?.invoke()
     }
 
     @Synchronized fun close() {
+        events.record("camera_close_requested")
         invalidateManualState("camera_closed_or_backgrounded")
         lastPreviewResult = null
         previewReady = false

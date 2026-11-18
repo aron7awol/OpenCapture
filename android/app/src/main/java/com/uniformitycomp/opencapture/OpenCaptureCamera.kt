@@ -26,6 +26,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val selected = sizes.filter { it.width.toLong() * it.height <= 13_000_000L }.maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.filter { it.width.toLong() * it.height <= 60_000_000L }.minByOrNull { it.width.toLong() * it.height }
         return JSONObject().put("protocolVersion", 1).put("cameraID", camera.cameraID())
+            .put("captureSchedulingModes", JSONArray(listOf("sequential")))
             .put("captureStreamingModes", JSONArray(if (usable && selected != null) listOf("originals-v1") else emptyList<String>()))
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
@@ -57,10 +58,26 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         captureImpl(request,cancel,progress,stream)
 
     private fun captureImpl(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream?): Pair<JSONObject, File?> {
+        camera.events.begin(request, camera.cameraID())
+        try {
+            return performCapture(request, cancel, progress, stream)
+        } catch (error: Exception) {
+            camera.events.record("operation_failed", JSONObject().put("detail", error.toString().take(512))
+                .put("cancelled", cancel.get()).put("previewReady", camera.previewReady), true)
+            val evidence = camera.events.snapshot().put("appVersion", BuildConfig.VERSION_NAME)
+                .put("appBuild", BuildConfig.VERSION_CODE).put("manufacturer", Build.MANUFACTURER)
+                .put("model", Build.MODEL).put("androidAPI", Build.VERSION.SDK_INT)
+                .put("capabilities", runCatching { capabilities() }.getOrNull() ?: JSONObject.NULL)
+            throw CameraDiagnosticException(error, evidence)
+        }
+    }
+
+    private fun performCapture(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream?): Pair<JSONObject, File?> {
         val settings = OpenCaptureProtocol.request(request)
         val previewDeadline = System.nanoTime() + 10_000_000_000L
         while (!camera.previewReady) {
-            check(!cancel.get() && System.nanoTime() < previewDeadline) { "Camera preview is not ready" }
+            check(!cancel.get()) { "Capture cancelled while waiting for preview" }
+            check(System.nanoTime() < previewDeadline) { "Camera preview is not ready after 10 seconds" }
             Thread.sleep(50)
         }
         val cap = capabilities()
@@ -112,6 +129,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             val index = records.length() + 1
             val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
             val native = nativeMetadata(frame.result, c).put("imageTimestampNs", frame.imageTimestampNs)
+            camera.events.record("frame_received", JSONObject().put("index", index)
+                .put("sensorTimestampNs", frame.imageTimestampNs).put("exposureTimeNs", native.get("exposureTimeNs"))
+                .put("iso", native.get("iso")))
             val sidecar = File(directory, "frame-%04d.json".format(java.util.Locale.ROOT, index))
             OpenCaptureProtocol.saveJson(sidecar, JSONObject().put("metadataVersion", 1)
                 .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
@@ -143,7 +163,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             val sequence = camera.captureDngOriginals(settings, count, directory, cancel,
                 stream?.limit ?: selection?.maxAttempts ?: count,
                 stream?.let { { it.next() } } ?: selection?.let { { needsAverage() } },
-                overlap = selection == null && (count > 1 || stream != null),
+                overlap = OpenCaptureProtocol.overlap(request, selection != null, stream != null),
                 tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->
                 if (processor == null) recordFrame(frame)
                 else {
