@@ -47,6 +47,26 @@ SHA-256, package/version and continuity with the installed signing key before
 opening the system installer. Installation permission and confirmation remain
 Android-owned. A different signing key cannot update an existing install.
 
+Android signing compatibility: if the platform's `GET_SIGNING_CERTIFICATES`
+lookup supplies no usable current signers, the verifier explicitly retries
+`GET_SIGNATURES` for that package. Legacy results require exact nonempty signer
+sets on both sides, cannot authorize rotation, and cannot override available
+modern signing metadata or a package/version mismatch. Known modern rotation
+history is rejected when either side needs legacy lookup. The legacy API can
+expose an old rotation certificate; it is not proof of current-key lineage,
+and Android's installer still performs the final update-signature enforcement.
+Normal modern lookups keep the existing lineage-aware path. The release feed
+hash is never a replacement for the installed app's signing identity.
+
+Signing failures identify the installed app versus downloaded APK and include
+Android API/device, package/build, lookup flags and signer counts in the error
+dialog and `OpenCaptureUpdate` logcat. Successful fallback is logged too. No
+private keys, APK contents, controller addresses or download tokens are logged.
+These updater diagnostics are not camera sidecars or automatically uploaded to
+the desktop. A phone stuck on an older verifier may need one manual installation
+of the official APK over the existing app; do not uninstall to bypass a signing
+error. Device-specific success must be confirmed on the affected phone.
+
 ## Contracts And Evidence
 
 Run `python -m unittest discover -s controller/tests -v` for the retained
