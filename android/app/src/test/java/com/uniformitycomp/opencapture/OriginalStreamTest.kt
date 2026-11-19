@@ -31,16 +31,16 @@ class OriginalStreamTest {
             val entered=CountDownLatch(1);val resumed=CountDownLatch(1)
             val worker=Thread { entered.countDown();assertTrue(stream.next());resumed.countDown() }.apply { start() }
             assertTrue(entered.await(1,TimeUnit.SECONDS));assertFalse(resumed.await(50,TimeUnit.MILLISECONDS))
-            stream.verdict(verdict(a,true));assertTrue(resumed.await(1,TimeUnit.SECONDS));worker.join()
-            val c=frame(root,3);stream.publish(c);stream.verdict(verdict(b,false))
-            val d=frame(root,4);assertTrue(stream.next());stream.publish(d)
+            stream.verdict(verdict(a,true));assertFalse(resumed.await(50,TimeUnit.MILLISECONDS))
+            stream.verdict(verdict(b,false));assertTrue(resumed.await(1,TimeUnit.SECONDS));worker.join()
+            val c=frame(root,3);stream.publish(c);assertFalse(stream.tryNext())
             stream.verdict(verdict(c,true));val frozen=stream.finish().toString()
             stream.verdict(verdict(c,true));assertEquals(frozen,stream.finish().toString())
             assertFalse(stream.next());assertEquals(3,stream.finish().getJSONArray("frames").length())
             val accepted = stream.finish().getJSONObject("streaming").getJSONArray("acceptedIndices")
             assertEquals(listOf(1,3), (0 until accepted.length()).map { accepted.getInt(it) })
             assertThrows(IllegalArgumentException::class.java) { stream.verdict(verdict(c,false)) }
-            assertThrows(IllegalArgumentException::class.java) { stream.verdict(verdict(d,true)) }
+            assertThrows(IllegalArgumentException::class.java) { stream.verdict(verdict(frame(root,4),true)) }
         } finally { root.deleteRecursively() }
     }
 
@@ -75,10 +75,10 @@ class OriginalStreamTest {
         }
     }
 
-    @Test fun publicationBoundsAndLateExposureCannotChangeFrozenFiles() {
+    @Test fun publicationBoundsAndUnreservedExposureCannotChangeFrozenFiles() {
         val root=Files.createTempDirectory("stream-bounds").toFile()
         try {
-            val stream=OriginalStream(OpenCaptureProtocol.localRequest(1,null,null,null),root,AtomicBoolean(),20)
+            val stream=OriginalStream(OpenCaptureProtocol.localRequest(2,null,null,null),root,AtomicBoolean(),20)
             stream.begin(JSONObject(),"start","fixture")
             val first=frame(root,1);assertTrue(stream.next());stream.publish(first)
             val second=frame(root,2);assertTrue(stream.tryNext())
@@ -86,10 +86,6 @@ class OriginalStreamTest {
             assertNull(stream.file(second.getJSONObject("file").getString("name")))
             assertThrows(IllegalArgumentException::class.java) { stream.verdict(verdict(second,true)) }
             assertThrows(IllegalArgumentException::class.java) { stream.verdict(verdict(first,true).put("sha256","wrong")) }
-            stream.verdict(verdict(first,true));val result=stream.finish().toString()
-            stream.publish(second)
-            assertEquals(result,stream.finish().toString())
-            assertFalse(File(root,second.getJSONObject("file").getString("name")).exists())
             assertTrue(File(root,first.getJSONObject("file").getString("name")).exists())
         } finally { root.deleteRecursively() }
     }
@@ -108,13 +104,12 @@ class OriginalStreamTest {
             assertTrue(stream.tryNext())
             assertFalse(stream.tryNext())
             val b=frame(root,2);stream.publish(b);stream.verdict(verdict(b,true))
-            assertTrue(stream.tryNext())
+            assertFalse(stream.tryNext()) // Accepted + pending already meets the target.
             val c=frame(root,3);stream.publish(c);stream.verdict(verdict(c,true))
             val frozen=stream.finish().toString()
             assertFalse(stream.tryNext())
-            stream.publish(frame(root,4)) // Previously reserved, now discarded.
+            assertThrows(IllegalStateException::class.java) { stream.publish(frame(root,4)) }
             assertEquals(frozen,stream.finish().toString())
-            assertFalse(File(root,"frame-0004.dng").exists())
         } finally { root.deleteRecursively() }
     }
 
@@ -124,6 +119,39 @@ class OriginalStreamTest {
             val stream=OriginalStream(OpenCaptureProtocol.localRequest(1,null,null,null),root,AtomicBoolean())
             stream.begin(JSONObject(),"start","fixture")
             assertThrows(IllegalStateException::class.java) { stream.publish(frame(root,1)) }
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun healthyTailWaitsForVerdictAndCancellationStillUnblocks() {
+        for (cancelled in listOf(false,true)) {
+            val root=Files.createTempDirectory("stream-tail").toFile()
+            try {
+                val cancel=AtomicBoolean()
+                val stream=OriginalStream(OpenCaptureProtocol.localRequest(1,null,null,null),root,cancel)
+                stream.begin(JSONObject(),"start","fixture")
+                assertTrue(stream.next());assertFalse(stream.tryNext())
+                val first=frame(root,1);stream.publish(first)
+                val done=CountDownLatch(1);var next:Boolean?=null;var failure:Throwable?=null
+                val worker=Thread { try { next=stream.next() } catch(e:Throwable) { failure=e } finally { done.countDown() } }.apply { start() }
+                assertFalse(done.await(50,TimeUnit.MILLISECONDS))
+                if(cancelled) cancel.set(true) else stream.verdict(verdict(first,true))
+                assertTrue(done.await(1,TimeUnit.SECONDS));worker.join()
+                if(cancelled) assertTrue(failure is IllegalStateException) else {
+                    assertNull(failure);assertEquals(false,next)
+                    assertEquals(1,stream.finish().getJSONObject("streaming").getInt("attemptedFrames"))
+                }
+            } finally { root.deleteRecursively() }
+        }
+    }
+
+    @Test fun lookaheadRemainsAvailableBeforeTheTail() {
+        val root=Files.createTempDirectory("stream-interior").toFile()
+        try {
+            val stream=OriginalStream(OpenCaptureProtocol.localRequest(6,null,null,null),root,AtomicBoolean())
+            stream.begin(JSONObject(),"start","fixture")
+            assertTrue(stream.next());assertTrue(stream.tryNext());assertFalse(stream.tryNext())
+            val first=frame(root,1);stream.publish(first);stream.verdict(verdict(first,true))
+            assertTrue(stream.tryNext())
         } finally { root.deleteRecursively() }
     }
 }

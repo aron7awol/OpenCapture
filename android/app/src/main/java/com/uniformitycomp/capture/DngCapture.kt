@@ -48,8 +48,9 @@ data class DngSequence(val locked: DngLockedSettings, val reading: TotalCaptureR
 }
 
 internal data class DngVerifiedState(val locked: DngLockedSettings, val actual: ManualStateReading,
-    val frameNumber: Long, val sensorTimestampNs: Long, val verifiedElapsedNs: Long) {
-    fun provenance(): Map<String, Any> = mapOf("source" to "previous_completed_still",
+    val frameNumber: Long, val sensorTimestampNs: Long, val verifiedElapsedNs: Long,
+    val source: String = "previous_completed_still") {
+    fun provenance(): Map<String, Any> = mapOf("source" to source,
         "frameNumber" to frameNumber, "sensorTimestampNs" to sensorTimestampNs,
         "verifiedElapsedNs" to verifiedElapsedNs)
 }
@@ -179,7 +180,7 @@ internal class DngCapture(
         val minFocus = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
         // Exposure-only changes retain verified manual color state, but must
         // obtain fresh manual readback. Omitted controls still mean auto.
-        val fast = previousVerified?.takeIf { !keepPreviewRunning && count > 0 && existingSession != null &&
+        val fast = previousVerified?.takeIf { count > 0 && existingSession != null &&
             ManualRequestKey.from(settings.exposureNs, settings.iso, settings.focusFraction, settings.whiteBalance) != null }
         val exposureSource = previousExposureState?.takeIf { fast == null && existingSession != null &&
             ManualRequestKey.from(settings.exposureNs, settings.iso, settings.focusFraction, settings.whiteBalance) != null &&
@@ -192,8 +193,8 @@ internal class DngCapture(
                 exposureLocked != null -> "manual-exposure-change-locked-color-v1"
                 reusable != null -> "manual-reuse-identical-controls-v1"; else -> "auto-then-lock-v1" },
             "fastPathUsed" to (fast != null), "manualPreviewSkipped" to (fast != null),
-            "reason" to if (keepPreviewRunning) "continuous_preview_fresh_manual_readback" else
-                if (fast != null) "verified_identical_manual" else setupFallbackReason,
+            "reason" to if (fast != null) "verified_identical_manual" else
+                if (keepPreviewRunning) "continuous_preview_fresh_manual_readback" else setupFallbackReason,
             "keepPreviewRunning" to keepPreviewRunning,
             "sessionRecreated" to (existingSession == null),
             "previousLockedAvailable" to (previousLocked != null),
@@ -364,7 +365,15 @@ internal class DngCapture(
             } else {
                 // Scene settling is independent of control verification. No preview round trip
                 // and no fabricated manualSettled timestamp for a skipped phase.
-                active.stopRepeating()
+                if (keepPreviewRunning) {
+                    // Keep the driver fed without waiting through another identical
+                    // preview pipeline. This callback owns the new operation's tags.
+                    val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    manual.addTarget(preview)
+                    manual.setTag(callbackGate.tag())
+                    applyLocked(manual, locked, characteristics, reportLensShading)
+                    active.setRepeatingRequest(manual.build(), callback, handler)
+                } else active.stopRepeating()
                 val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.settleMs.coerceAtLeast(250))
                 setup["sceneWaitStartedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 while (System.nanoTime() < until) { check(); Thread.sleep(10) }
@@ -388,6 +397,13 @@ internal class DngCapture(
                 verificationUnavailable = "optical_stabilization_not_verified"
             if (locked.videoStabilization != null && reference?.videoStabilization != locked.videoStabilization)
                 verificationUnavailable = "video_stabilization_not_verified"
+            if (count == 0 && verificationUnavailable == null) {
+                // A controls-only job can establish control state, never RAW quality.
+                val reading = requireNotNull(observed)
+                verified = DngVerifiedState(locked, requireNotNull(reference), reading.frameNumber,
+                    requireNotNull(reading.get(CaptureResult.SENSOR_TIMESTAMP)), SystemClock.elapsedRealtimeNanos(),
+                    source = "previous_manual_preview")
+            }
             val frames = mutableListOf<DngFrame>()
             if (count > 0) {
                 requireNotNull(directory)

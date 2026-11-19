@@ -56,15 +56,19 @@ public struct OriginalStreamState: Encodable {
             throw CameraServerError(408,"Controller frame verdict timed out")
         }
     }
+    private var hasRoom: Bool {
+        reservedAttempts-verdicts.count < 2 &&
+        reservedAttempts-verdicts.filter { !$0.accepted }.count < request.frameCount
+    }
     public func next() async throws -> Bool {
-        while !frozen && reservedAttempts-verdicts.count >= 2 {
+        while !frozen && reservedAttempts < limit && !hasRoom {
             try live(); try await Task.sleep(nanoseconds:50_000_000)
         }
         return try tryNext()
     }
     public func tryNext() throws -> Bool {
         try live()
-        guard !frozen, reservedAttempts < limit, reservedAttempts-verdicts.count < 2 else { return false }
+        guard !frozen, reservedAttempts < limit, hasRoom else { return false }
         reservedAttempts += 1
         return true
     }

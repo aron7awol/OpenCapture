@@ -201,6 +201,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         }
     }
     private fun info(): JSONObject = JSONObject().put("protocolVersion", 1).put("role", "camera")
+        .put("cameraPreviewReady", camera.previewReady && camera.lastPreviewResult != null)
         .put("diagnosticModes", JSONArray().put(PersistentDiagnostics.MODE))
         .put("deviceID", deviceID).put("name", android.os.Build.MODEL).put("capabilities", capture.capabilities())
         .put("cameras", JSONArray(camera.rawCameraChoices().map { JSONObject().put("id", it.first).put("name", it.second) }))

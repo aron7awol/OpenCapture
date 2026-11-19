@@ -93,6 +93,17 @@ class ManualCaptureStateTest {
         seed(); val controls = cache.begin(key(),scope,false)
         assertNull(controls.reused); assertEquals("fresh_controls_readback_required",controls.reason)
     }
+    @Test fun completedControlsReadbackCanSeedNextIdenticalCaptureButNotAnotherReadback() {
+        val controls = cache.begin(key(),scope,false)
+        assertNull(controls.reused)
+        assertTrue(cache.complete(controls,"actual manual preview #42","none"))
+        val capture = cache.begin(key(),scope,true)
+        assertEquals("actual manual preview #42",capture.reused)
+        cache.complete(capture,"actual still #43","none")
+        val again = cache.begin(key(),scope,false)
+        assertNull(again.reused)
+        assertEquals("fresh_controls_readback_required",again.reason)
+    }
     @Test fun eachCameraSessionReaderAndPreviewIdentityInvalidates() {
         for ((changed,reason) in listOf(
             ManualCaptureScope(Any(),scope.session,scope.reader,scope.preview) to "camera_changed",

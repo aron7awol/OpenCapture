@@ -55,9 +55,10 @@ import XCTest
         var proceeded=false
         let waiting=Task { @MainActor in proceeded=try await stream.next() }
         try await Task.sleep(nanoseconds:20_000_000);XCTAssertFalse(proceeded)
-        try stream.verdict(verdict(1,true));try await waiting.value;XCTAssertTrue(proceeded)
-        try stream.publish(frame(directory,3));try stream.verdict(verdict(2,false))
-        XCTAssertTrue(try stream.tryNext());try stream.publish(frame(directory,4))
+        try stream.verdict(verdict(1,true))
+        try await Task.sleep(nanoseconds:20_000_000);XCTAssertFalse(proceeded)
+        try stream.verdict(verdict(2,false));try await waiting.value;XCTAssertTrue(proceeded)
+        try stream.publish(frame(directory,3));XCTAssertFalse(try stream.tryNext())
         try stream.verdict(verdict(3,true));let frozen=try await stream.finish()
         try stream.verdict(verdict(3,true));XCTAssertEqual(frozen.data,stream.result?.data)
         let manifest=try JSONDecoder().decode(CaptureManifest.self,from:frozen.data)
@@ -88,8 +89,8 @@ import XCTest
             }
         }
     }
-    func testPublicationBudgetAndDiscardedLateExposure() async throws {
-        let directory=try root();var request=CaptureRequest();request.frameCount=1
+    func testPublicationBudgetRejectsOversizedSecondFrame() async throws {
+        let directory=try root();var request=CaptureRequest();request.frameCount=2
         request.streaming=StreamingOptions(mode:"originals-v1")
         let stream=OriginalStream(request:request,directory:directory,maximumBytes:15)
         stream.begin(camera:camera(),started:"start",processing:"fixture")
@@ -99,10 +100,6 @@ import XCTest
         XCTAssertNil(stream.file(second.file.name))
         XCTAssertThrowsError(try stream.verdict(verdict(2,true)))
         XCTAssertThrowsError(try stream.verdict(StreamVerdict(index:1,sha256:"wrong",accepted:true,reason:"usable")))
-        try stream.verdict(verdict(1,true));let frozen=try await stream.finish()
-        try stream.publish(second)
-        XCTAssertEqual(frozen.data,stream.result?.data)
-        XCTAssertFalse(FileManager.default.fileExists(atPath:directory.appendingPathComponent(second.file.name).path))
         XCTAssertTrue(FileManager.default.fileExists(atPath:directory.appendingPathComponent(first.file.name).path))
     }
     func testRequestRejectsMixedModesAndUnknownStreamingFields() throws {
@@ -130,13 +127,12 @@ import XCTest
         try stream.verdict(verdict(1,false));XCTAssertTrue(try stream.tryNext())
         XCTAssertFalse(try stream.tryNext())
         try stream.publish(frame(directory,2));try stream.verdict(verdict(2,true))
-        XCTAssertTrue(try stream.tryNext())
+        XCTAssertFalse(try stream.tryNext())
         try stream.publish(frame(directory,3));try stream.verdict(verdict(3,true))
         let frozen=try await stream.finish()
         XCTAssertFalse(try stream.tryNext())
-        try stream.publish(frame(directory,4))
+        XCTAssertThrowsError(try stream.publish(frame(directory,4)))
         XCTAssertEqual(frozen.data,stream.result?.data)
-        XCTAssertFalse(FileManager.default.fileExists(atPath:directory.appendingPathComponent("frame-0004.dng").path))
     }
     func testUnreservedPublicationFails() throws {
         let directory=try root();var request=CaptureRequest();request.frameCount=1
@@ -144,14 +140,14 @@ import XCTest
         stream.begin(camera:camera(),started:"start",processing:"fixture")
         XCTAssertThrowsError(try stream.publish(frame(directory,1)))
     }
-    func testFrozenAckDoesNotWaitForExtraExposureAndNextJobCannotOverlap() async throws {
+    func testFrozenAckDoesNotWaitForWriterAndNextJobCannotOverlap() async throws {
         let base=try root();let directory=base.appendingPathComponent("Transfers")
         var request=CaptureRequest();request.frameCount=1;request.streaming=StreamingOptions(mode:"originals-v1")
         var release=false
         let session=try CameraServerSession(root:directory,hash:{_ in "hash"},streamCapture:{ request,stream in
             let folder=try CaptureArchiveStore(root:directory).create(request.id)
             stream.begin(camera:self.camera(),started:"start",processing:"fixture")
-            XCTAssertTrue(try stream.tryNext());XCTAssertTrue(try stream.tryNext())
+            XCTAssertTrue(try stream.tryNext());XCTAssertFalse(try stream.tryNext())
             try stream.publish(self.frame(folder,1))
             while !release { try await Task.sleep(nanoseconds:5_000_000) }
             XCTAssertTrue(FileManager.default.fileExists(atPath:folder.path))
@@ -174,17 +170,17 @@ import XCTest
         XCTAssertFalse(FileManager.default.fileExists(atPath:directory.appendingPathComponent(request.id).path))
         try await session.end()
     }
-    func testFailureOfDiscardedExposurePreservesCompletedResult() async throws {
+    func testFailureOfFinishingWriterPreservesCompletedResult() async throws {
         let directory=try root().appendingPathComponent("Transfers")
         var request=CaptureRequest();request.frameCount=1;request.streaming=StreamingOptions(mode:"originals-v1")
         var release=false
         let session=try CameraServerSession(root:directory,hash:{_ in "hash"},streamCapture:{ request,stream in
             let folder=try CaptureArchiveStore(root:directory).create(request.id)
             stream.begin(camera:self.camera(),started:"start",processing:"fixture")
-            XCTAssertTrue(try stream.tryNext());XCTAssertTrue(try stream.tryNext())
+            XCTAssertTrue(try stream.tryNext());XCTAssertFalse(try stream.tryNext())
             try stream.publish(self.frame(folder,1))
             while !release { try await Task.sleep(nanoseconds:5_000_000) }
-            throw CaptureError.invalid("Discarded lookahead failed")
+            throw CaptureError.invalid("Writer cleanup failed")
         },capture:{_ in throw CaptureError.invalid("Unexpected batch")})
         try await session.connect(id:UUID().uuidString.lowercased(),client:"PC")
         _=try session.submit(request)
@@ -204,7 +200,7 @@ import XCTest
         let session=try CameraServerSession(root:directory,hash:{_ in "hash"},streamCapture:{ request,stream in
             let folder=try CaptureArchiveStore(root:directory).create(request.id)
             stream.begin(camera:self.camera(),started:"start",processing:"fixture")
-            XCTAssertTrue(try stream.tryNext());XCTAssertTrue(try stream.tryNext())
+            XCTAssertTrue(try stream.tryNext());XCTAssertFalse(try stream.tryNext())
             try stream.publish(self.frame(folder,1))
             do { try await Task.sleep(nanoseconds:60_000_000_000) }
             catch {
@@ -220,5 +216,40 @@ import XCTest
         XCTAssertTrue(drained);XCTAssertTrue(session.cameraReady)
         XCTAssertFalse(FileManager.default.fileExists(atPath:directory.appendingPathComponent(request.id).path))
         try await session.end()
+    }
+
+    func testHealthySingleFrameTailWaitsAndDoesNotReserveExtra() async throws {
+        let directory=try root();var request=CaptureRequest();request.frameCount=1
+        let stream=OriginalStream(request:request,directory:directory)
+        stream.begin(camera:camera(),started:"start",processing:"fixture")
+        XCTAssertTrue(try stream.tryNext());XCTAssertFalse(try stream.tryNext())
+        try stream.publish(frame(directory,1))
+        var done=false
+        let waiting=Task { @MainActor in
+            let next=try await stream.next();XCTAssertFalse(next);done=true
+        }
+        try await Task.sleep(nanoseconds:20_000_000);XCTAssertFalse(done)
+        try stream.verdict(verdict(1,true));try await waiting.value
+        XCTAssertTrue(done)
+        let result=try await stream.finish()
+        let manifest=try JSONDecoder().decode(CaptureManifest.self,from:result.data)
+        XCTAssertEqual(manifest.streaming?.attemptedFrames,1)
+    }
+
+    func testCancellationUnblocksTailWaitAndInteriorLookaheadRemainsAvailable() async throws {
+        let directory=try root();var request=CaptureRequest();request.frameCount=1
+        let stream=OriginalStream(request:request,directory:directory)
+        XCTAssertTrue(try stream.tryNext())
+        let waiting=Task { @MainActor in try await stream.next() }
+        try await Task.sleep(nanoseconds:20_000_000);waiting.cancel()
+        do { _=try await waiting.value;XCTFail("Cancellation ignored") }
+        catch is CancellationError { }
+        request.frameCount=6
+        let interior=OriginalStream(request:request,directory:directory)
+        interior.begin(camera:camera(),started:"start",processing:"fixture")
+        XCTAssertTrue(try interior.tryNext());XCTAssertTrue(try interior.tryNext())
+        XCTAssertFalse(try interior.tryNext())
+        try interior.publish(frame(directory,1));try interior.verdict(verdict(1,true))
+        XCTAssertTrue(try interior.tryNext())
     }
 }

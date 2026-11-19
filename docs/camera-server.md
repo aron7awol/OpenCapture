@@ -1,5 +1,15 @@
 # Foreground Camera Server v1
 
+Development Android info/state includes optional boolean `cameraPreviewReady`:
+the current preview is configured and has delivered a result since camera
+close/reopen. It is false during capture/recovery; it is not a signal/noise or
+exposure-quality assessment. It is distinct from `session.cameraReady`, which
+means the capture writer has drained and no lens switch is in progress. A
+controller restoring controls after failure must wait for both before submitting
+another job, otherwise that new writer can block camera recovery. Always verify
+device/lens identity on fresh state replies. Older clients omit the field; do
+not infer preview readiness from the writer flag alone. iOS is unchanged.
+
 Development Android diagnostics: capabilities may advertise
 `captureSchedulingModes:["sequential","sequential-preview"]`. Only then may a controller add
 `captureScheduling:"sequential"` to a capture or applyControls request. It
@@ -7,9 +17,11 @@ disables original-exposure lookahead; streaming transport and exact-count
 replacement policy are unchanged. Absent field preserves existing behavior.
 The optional `sequential-preview` value also disables lookahead, but keeps the
 manually locked repeating preview running throughout RAW still capture, DNG
-writing, inspection and streaming-verdict waits. It requires fresh manual
-preview readback even when identical still controls were cached; it does not
-re-meter/refocus between frames. Preview results never enter the still-result
+writing, inspection and streaming-verdict waits. Development source can reuse
+verified identical manual settings in the same healthy session, including a
+completed controls-only manual preview readback. Changed/automatic controls
+still require fresh setup. It does not re-meter/refocus between frames.
+Preview results never enter the still-result
 queue or become measurement pixels. Capability-gate the exact requested value:
 older Android builds advertising only `sequential` do not support this mode.
 It applies to original, streamed and averaged Bayer capture; exact usable counts,

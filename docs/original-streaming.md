@@ -30,6 +30,12 @@ There may be at most two unjudged attempts, counting the in-flight exposure:
 the frame being transferred and one capture ahead. Current source reserves each
 exposure before submission; a new exposure starts only when the reserved count
 minus verdict count is less than two. Unpublished photos consume slots too.
+Development source adds a target-aware bound: accepted plus pending/reserved
+frames must remain below N before another exposure is admitted. At the tail,
+wait for outstanding verdicts instead of speculating on a replacement. A
+rejection frees a slot; N accepted frames still freeze immediately, and 2*N
+failed attempts still produce an insufficient result. Interior lookahead and
+controller validation remain enabled, including in sequential-preview mode.
 The historical sequential implementation used published count before submission;
 that was valid only with its single unfinished photo. Capture order
 and verdict order are sequential. At most 2*N total attempts are allowed, with

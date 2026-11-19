@@ -34,8 +34,11 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
     }
     fun next(): Boolean = reserve(wait = true)
     fun tryNext(): Boolean = reserve(wait = false)
+    private fun hasRoom(): Boolean = reservedAttempts-verdicts.size < 2 &&
+        reservedAttempts-verdicts.count { !it.getBoolean("accepted") } < request.getInt("frameCount")
     private fun reserve(wait: Boolean): Boolean = synchronized(lock) {
-        while (frozen == null && reservedAttempts-verdicts.size >= 2) {
+        // Pending originals may all pass. Only a rejection justifies crossing the target.
+        while (frozen == null && reservedAttempts < limit && !hasRoom()) {
             checkLive()
             if (!wait) return@synchronized false
             lock.wait(50)
