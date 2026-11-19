@@ -24,7 +24,10 @@ object OpenCaptureProtocol {
             (value.getInt("frameCount") > 1 || streaming)
 
     internal fun keepPreviewRunning(value: JSONObject): Boolean =
-        value.optString("captureScheduling", "") == "sequential-preview"
+        value.optString("captureScheduling", "") in setOf("sequential-preview", "sequential-short-preview")
+
+    internal fun shortPreviewExposure(value: JSONObject): Boolean =
+        value.optString("captureScheduling", "") == "sequential-short-preview"
 
     internal data class Averaging(val policy: String, val keepOriginals: Boolean)
     internal fun averaging(value: JSONObject): Averaging? {
@@ -46,7 +49,7 @@ object OpenCaptureProtocol {
         val frames = integer(value, "frameCount", 1, 32)
         val operation = if (value.isNull("operation")) "capture" else value.getString("operation")
         require(operation in setOf("capture", "applyControls")) { "Unknown operation" }
-        require(!value.has("captureScheduling") || value.get("captureScheduling") in setOf("sequential", "sequential-preview")) { "Unknown capture scheduling" }
+        require(!value.has("captureScheduling") || value.get("captureScheduling") in setOf("sequential", "sequential-preview", "sequential-short-preview")) { "Unknown capture scheduling" }
         require(operation != "applyControls" || frames == 1)
         averaging(value)
         if (value.has("streaming")) {

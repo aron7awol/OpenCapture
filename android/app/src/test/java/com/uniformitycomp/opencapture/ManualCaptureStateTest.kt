@@ -6,6 +6,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ManualCaptureStateTest {
+    @Test fun shortPreviewCapNeverChangesTheRequestedStillOrValidationBounds() {
+        assertEquals(200_000_000L, ShortPreviewExposure.exposure(5_000_000_000L,true))
+        assertEquals(50_000_000L, ShortPreviewExposure.exposure(50_000_000L,true))
+        assertEquals(5_000_000_000L, ShortPreviewExposure.exposure(5_000_000_000L,false))
+        val request=OpenCaptureProtocol.localRequest(2,5000.0,1000.0,null).put("captureScheduling","sequential-short-preview")
+        assertEquals(5_000_000_000L,OpenCaptureProtocol.request(request).exposureNs)
+        assertTrue(OpenCaptureProtocol.keepPreviewRunning(request))
+        assertTrue(OpenCaptureProtocol.shortPreviewExposure(request))
+        assertFalse(OpenCaptureProtocol.overlap(request,false,true))
+        val actual=actual().copy(exposureNs=200_000_000,iso=1000)
+        assertEquals("mismatch",actual.controlChecks(5_000_000_000,1000,1f,listOf(2f,1f,1f,1.5f),10f)
+            .single { it["field"]=="exposureNs" }["status"])
+    }
     private fun key(exposure: Long? = 4_290_200_432, iso: Int? = 5331, focus: Float? = .2f,
                     gains: FloatArray? = floatArrayOf(2f, 1f, 1.5f)) = ManualRequestKey.from(exposure, iso, focus, gains)
     private val scope = ManualCaptureScope(Any(), Any(), Any(), Any())
@@ -14,6 +27,53 @@ class ManualCaptureStateTest {
     private fun actual() = ManualStateReading(4_290_200_432, 5331, 1f, listOf(2f,1f,1f,1.5f),
         listOf(1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0), listOf(0,0,4080,3072),
         listOf(0,0,0,0,0), 0,0,2,1,"wide")
+
+    private fun checks(value: ManualStateReading) = value.controlChecks(
+        1_000_000_000, 1000, 1f, listOf(2f,1f,1f,1.5f), 10f)
+
+    @Test fun controlDiagnosticsExposeAllFailuresAndMissingModes() {
+        val values = checks(actual().copy(exposureNs=null, iso=1200, focus=2f,
+            gains=listOf(3f,1f,2f,1.5f), modes=listOf(1,null,0,1,0))).associateBy { it["field"] }
+        assertEquals(11, values.size)
+        assertEquals("missing", values["exposureNs"]!!["status"])
+        assertEquals("missing", values["aeMode"]!!["actual"])
+        for (field in listOf("iso", "focusDiopters", "controlMode", "awbMode", "whiteBalance.red", "whiteBalance.greenOdd"))
+            assertEquals(field, "mismatch", values[field]!!["status"])
+        assertEquals("matched", values["afMode"]!!["status"])
+        assertEquals(1000, values["iso"]!!["expected"])
+        assertEquals(1200, values["iso"]!!["actual"])
+        assertEquals(50.0, values["iso"]!!["tolerance"])
+    }
+
+    @Test fun diagnosticsRetainExistingAcceptanceBounds() {
+        val baseline = actual().copy(exposureNs=1_000_000_000, iso=1000)
+        assertTrue(checks(baseline.copy(exposureNs=1_030_000_000,iso=1050,focus=1.19f,
+            gains=listOf(2.09f,1.09f,1.09f,1.59f))).all { it["status"] == "matched" })
+        for (value in listOf(baseline.copy(exposureNs=1_030_000_001), baseline.copy(iso=1051),
+            baseline.copy(focus=1.21f), baseline.copy(gains=listOf(2.11f,1f,1f,1.5f))))
+            assertTrue(checks(value).any { it["status"] == "mismatch" })
+        val floor = baseline.copy(exposureNs=110_000,iso=2,focus=0f)
+            .controlChecks(100_000,1,0f,baseline.gains!!,0f)
+        assertTrue(floor.all { it["status"] == "matched" })
+    }
+
+    @Test fun samsungLikeReadbackDoesNotSilentlyClampOrHideExpectedIso() {
+        val result = actual().copy(iso=6368).controlChecks(4_290_200_432,6945,1f,
+            listOf(2f,1f,1f,1.5f),10f).single { it["field"] == "iso" }
+        assertEquals(6945,result["expected"])
+        assertEquals(6368,result["actual"])
+        assertEquals("mismatch",result["status"])
+    }
+
+    @Test fun missingReadbackAndReferenceAreSerializableWithoutPhotos() {
+        val value = actual().copy(exposureNs=null, gains=null, transform=null, crop=null,
+            modes=emptyList(), physicalCamera=null)
+        val json = org.json.JSONObject(mapOf("actual" to value.diagnosticFields(), "checks" to checks(value)))
+        val copy = org.json.JSONObject(json.toString())
+        assertEquals("missing",copy.getJSONObject("actual").getString("exposureNs"))
+        assertEquals(11,copy.getJSONArray("checks").length())
+        assertEquals("missing",copy.getJSONObject("actual").getString("colorTransformMatrix"))
+    }
 
     @Test fun firstUseNeedsVerificationButIdenticalManualBurstReusesIt() {
         assertEquals("no_verified_still", seed().reason)

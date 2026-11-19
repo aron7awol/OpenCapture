@@ -8,6 +8,77 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 import kotlin.math.sqrt
 
+/** Bounded request milestones survive missing images and failed DNG writes. App clock only. */
+internal class CaptureTimeline {
+    private val requests = linkedMapOf<Int, MutableMap<String, Any>>()
+    private var lastImageTimestamp: Long? = null
+    @Synchronized fun mark(index: Int, stage: String, now: Long, fields: Map<String, Any> = emptyMap()): Map<String, Any> {
+        require(index in 1..64)
+        val row = requests.getOrPut(index) { linkedMapOf("index" to index) }
+        row.putIfAbsent(stage + "ElapsedNs", now)
+        row["lastStage"] = stage
+        row.putAll(fields)
+        return row.toMap()
+    }
+    @Synchronized fun image(now: Long, sensor: Long, queueDepth: Int): Map<String, Any> {
+        val value = linkedMapOf<String, Any>("imageArrivedElapsedNs" to now,
+            "imageTimestampNs" to sensor, "queueDepth" to queueDepth)
+        lastImageTimestamp?.let { value["previousImageTimestampNs"] = it }
+        lastImageTimestamp = sensor
+        return value
+    }
+    @Synchronized fun summary(): Map<String, Any> {
+        val pairs = mapOf("requestToImage" to ("submitted" to "imageMatched"),
+            "requestToResult" to ("submitted" to "result"), "dngWrite" to ("writeStarted" to "writeEnded"),
+            "dngReadback" to ("readbackStarted" to "readbackEnded"))
+        val durations = pairs.mapValues { (_, pair) ->
+            val spans = requests.values.mapNotNull { row ->
+                val a = row[pair.first + "ElapsedNs"] as? Long
+                val b = row[pair.second + "ElapsedNs"] as? Long
+                if (a != null && b != null && b >= a) (b-a)/1e9 else null
+            }
+            mapOf("seconds" to spans.sum(), "completedIntervals" to spans.size)
+        }
+        return mapOf("policy" to "raw-request-timeline-v1", "submitted" to requests.size,
+            "imagesMatched" to requests.values.count { "imageMatchedElapsedNs" in it },
+            "buffersClosed" to requests.values.count { "closedElapsedNs" in it },
+            "durations" to durations, "recentRequests" to requests.values.toList().takeLast(8).map { it.toMap() },
+            "omittedOlderRequests" to (requests.size-8).coerceAtLeast(0),
+            "scope" to "Overlapping app-clock intervals; missing checkpoints are unknown, not zero duration")
+    }
+}
+
+/** Observed maps only; larger maps use explicitly labeled endpoint sampling, never interpolation. */
+internal class LensShadingDiagnostics {
+    private var first: Map<String, Any>? = null
+    private var previousHash: String? = null
+    private var observations = 0
+    private var changes = 0
+    fun observe(rows: Int, columns: Int, gains: FloatArray, context: Map<String, Any>): Map<String, Any> {
+        require(rows in 1..64 && columns in 1..64 && gains.size == rows*columns*4)
+        require(gains.all { it.isFinite() && it > 0 })
+        val bytes = ByteBuffer.allocate(gains.size*4).order(ByteOrder.LITTLE_ENDIAN)
+        gains.forEach { bytes.putFloat(it) }
+        val hash = MessageDigest.getInstance("SHA-256").digest(bytes.array()).joinToString("") { "%02x".format(it.toInt() and 255) }
+        val ys = List(minOf(rows,13)) { it*(rows-1)/(minOf(rows,13)-1).coerceAtLeast(1) }
+        val xs = List(minOf(columns,17)) { it*(columns-1)/(minOf(columns,17)-1).coerceAtLeast(1) }
+        val value = context + mapOf("rows" to rows, "columns" to columns,
+            "channelOrder" to listOf("R","G_even","G_odd","B"), "sha256" to hash,
+            "channelRanges" to (0..3).map { c ->
+                val values = gains.indices.filter { it%4==c }.map { gains[it] }
+                mapOf("min" to values.min(), "max" to values.max())
+            }, "sampleRows" to ys, "sampleColumns" to xs,
+            "gridComplete" to (ys.size==rows && xs.size==columns),
+            "gains" to ys.flatMap { y -> xs.flatMap { x -> (0..3).map { gains[(y*columns+x)*4+it] } } })
+        if (first == null) first = value
+        if (previousHash != null && previousHash != hash) changes++
+        previousHash = hash; observations++
+        return mapOf("policy" to "observed-lens-shading-v1", "observations" to observations,
+            "changes" to changes, "first" to first!!, "latest" to value,
+            "scope" to "Selected setup/RAW results only; map usefulness and optical accuracy unverified")
+    }
+}
+
 /** App-clock completion bound plus comparable Camera2 exposure-start evidence. */
 internal object RawTiming {
     const val POLICY = "fresh-camera2-raw-v1"

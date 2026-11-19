@@ -26,7 +26,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val selected = sizes.filter { it.width.toLong() * it.height <= 13_000_000L }.maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.filter { it.width.toLong() * it.height <= 60_000_000L }.minByOrNull { it.width.toLong() * it.height }
         return JSONObject().put("protocolVersion", 1).put("cameraID", camera.cameraID())
-            .put("captureSchedulingModes", JSONArray(listOf("sequential", "sequential-preview")))
+            .put("captureSchedulingModes", JSONArray(listOf("sequential", "sequential-preview", "sequential-short-preview")))
             .put("captureStreamingModes", JSONArray(if (usable && selected != null) listOf("originals-v1") else emptyList<String>()))
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
@@ -59,13 +59,20 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
 
     private fun captureImpl(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream?): Pair<JSONObject, File?> {
         camera.events.begin(request, camera.cameraID())
+        val operationStarted = System.nanoTime()
+        fun summarize() = camera.events.record("phone_pipeline_summary", JSONObject()
+            .put("operationWallSeconds", (System.nanoTime()-operationStarted)/1e9)
+            .put("streaming", stream?.diagnostics() ?: JSONObject.NULL))
         try {
             return performCapture(request, cancel, progress, stream).also {
+                summarize()
                 camera.events.record("operation_completed")
             }
         } catch (error: Exception) {
-            camera.events.record("operation_failed", JSONObject().put("detail", error.toString().take(512))
+            camera.events.record("operation_failed", camera.runtimeEvidence().put("detail", error.toString().take(512))
+                .put("errorChain", CameraDiagnostics.errorChain(error))
                 .put("cancelled", cancel.get()).put("previewReady", camera.previewReady), true)
+            summarize()
             val evidence = camera.events.snapshot().put("appVersion", BuildConfig.VERSION_NAME)
                 .put("appBuild", BuildConfig.VERSION_CODE).put("manufacturer", Build.MANUFACTURER)
                 .put("model", Build.MODEL).put("androidAPI", Build.VERSION.SDK_INT)
@@ -77,11 +84,13 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
     private fun performCapture(request: JSONObject, cancel: AtomicBoolean, progress: (String) -> Unit, stream: OriginalStream?): Pair<JSONObject, File?> {
         val settings = OpenCaptureProtocol.request(request)
         val previewDeadline = System.nanoTime() + 10_000_000_000L
+        camera.events.record("preview_wait_started", camera.runtimeEvidence())
         while (!camera.previewReady) {
             check(!cancel.get()) { "Capture cancelled while waiting for preview" }
             check(System.nanoTime() < previewDeadline) { "Camera preview is not ready after 10 seconds" }
             Thread.sleep(50)
         }
+        camera.events.record("preview_wait_ended", camera.runtimeEvidence())
         val cap = capabilities()
         val c = camera.selectedCharacteristics()
         val isoRange = requireNotNull(c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE))
@@ -109,6 +118,19 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val captureStarted = System.nanoTime()
         stream?.begin(cap,start,"Camera2 RAW_SENSOR -> DngCreator; immutable original frames, controller selection; no averaging or demosaicing")
         val records = JSONArray()
+        val attemptEvidence = mutableListOf<JSONObject>()
+        fun saveSelection() {
+            if (selection == null) return
+            val reasons = selection.reasons()
+            val rejected = reasons.indices.filter { reasons[it] != null }
+            val context = rejected.flatMap { listOf(it-1,it,it+1) }.filter { it in attemptEvidence.indices }.distinct()
+            val retained = (rejected + context).distinct().take(12)
+            camera.events.record("frame_selection_summary", JSONObject().put("policy", "phone-average-selection-v1")
+                .put("requested", count).put("attempted", reasons.size).put("accepted", reasons.count { it == null })
+                .put("rejected", JSONArray(rejected.map { JSONObject().put("index",it+1).put("reason",reasons[it]) }))
+                .put("rejectedAndNeighborEvidence", JSONArray(retained.map { attemptEvidence[it] }))
+                .put("omittedEvidenceCount", (rejected+context).distinct().size-retained.size))
+        }
         val processor = if (selection == null) null else FrameProcessor<Pair<com.uniformitycomp.capture.DngFrame,BayerAverage.Evidence>>()
         fun inspectFrame(frame: com.uniformitycomp.capture.DngFrame): BayerAverage.Evidence {
             val integrity = frame.diagnostics["sampleIntegrity"] as? Map<*, *>
@@ -139,7 +161,19 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 .put("source", "camera2CaptureResult").put("cameraID", cap.getString("cameraID"))
                 .put("native", native).put("characteristics", staticMetadata(c))
                 .put("captureDiagnostics", JSONObject(frame.diagnostics)))
-            if (evidence != null) selection!!.attempts.add(evidence)
+            if (evidence != null) {
+                selection!!.attempts.add(evidence)
+                val samples = frame.diagnostics["rawAtAcquisition"] as? Map<*, *>
+                attemptEvidence.add(JSONObject().put("index", index).put("sensorTimestampNs", frame.imageTimestampNs)
+                    .put("exposureTimeNs", native.get("exposureTimeNs")).put("iso", native.get("iso"))
+                    .put("sampleSha256", samples?.get("sampleSha256")).put("sampleMean", samples?.get("mean"))
+                    .put("sampleMinimum", samples?.get("minimum")).put("sampleMaximum", samples?.get("maximum"))
+                    .put("sampleSpatialStd", samples?.get("spatialStd"))
+                    .put("blackLevels", JSONArray(evidence.layout.black)).put("whiteLevel", evidence.layout.white)
+                    .put("signalRms", evidence.rms).put("spatialStd", evidence.std).put("clippedFraction", evidence.clipped)
+                    .put("integrity", evidence.integrity).put("timingInvalid", evidence.timingInvalid))
+                saveSelection()
+            }
             // Full evidence is in the hashed sidecar; keep logcat below its line limit.
             android.util.Log.i("OpenCaptureRAW", "frame=$index sensorNs=${frame.imageTimestampNs} " +
                 "diagnostics=${frame.diagnostics["diagnosticsVersion"]} " +
@@ -167,6 +201,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 stream?.let { { it.next() } } ?: selection?.let { { needsAverage() } },
                 overlap = OpenCaptureProtocol.overlap(request, selection != null, stream != null),
                 keepPreviewRunning = OpenCaptureProtocol.keepPreviewRunning(request),
+                shortPreviewExposure = OpenCaptureProtocol.shortPreviewExposure(request),
                 tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->
                 if (processor == null) recordFrame(frame)
                 else {
@@ -226,7 +261,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             OpenCaptureProtocol.saveJson(File(directory, "manifest.json"), manifest)
             return manifest to directory
         } catch (error: Exception) {
-            camera.cancelCurrentCapture() // Includes post-capture inspection/packaging failures.
+            saveSelection()
+            camera.cancelCurrentCapture("capture_or_processing_failure") // Includes post-capture inspection/packaging failures.
             if (directory != null) OpenCaptureProtocol.saveJson(File(directory, "failure.json"), JSONObject()
                 .put("status", if (cancel.get()) "cancelled" else "failed").put("message", error.message ?: "Capture failed"))
             throw error

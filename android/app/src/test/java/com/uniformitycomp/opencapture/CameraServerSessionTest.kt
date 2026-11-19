@@ -12,6 +12,26 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class CameraServerSessionTest {
+    @Test fun cancellationRecordsOriginAndJobBeforeCleanup() {
+        val root=Files.createTempDirectory("oc-cancel-reason").toFile()
+        val started=CountDownLatch(1)
+        val log=java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        val session=CameraServerSession(root,{ _,cancel,_ ->
+            started.countDown()
+            while(!cancel.get()) Thread.sleep(5)
+            throw IllegalStateException("cancelled")
+        },{},diagnostic={ event,detail -> log.add(JSONObject(detail.toString()).put("event",event)) })
+        try {
+            session.connect(connection(UUID.randomUUID().toString()))
+            val request=OpenCaptureProtocol.localRequest(1,null,null,null)
+            session.submit(request)
+            assertTrue(started.await(3,TimeUnit.SECONDS))
+            session.cancel(request.getString("id"))
+            waitFor { session.jobState(request.getString("id")).getBoolean("cameraReady") }
+            assertEquals("controller_cancel",log.first().getString("reason"))
+            assertEquals(request.getString("id"),log.first().getString("jobID"))
+        } finally { session.close() }
+    }
     @Test fun failedJobRetainsDiagnosticsAfterOriginalCleanup() {
         val root = Files.createTempDirectory("oc-diagnostic").resolve("staging").toFile()
         val session = CameraServerSession(root, { request, cancel, _ ->

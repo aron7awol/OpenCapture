@@ -10,6 +10,10 @@ class JSONObject() {
 
     private val values = LinkedHashMap<String, Any>()
 
+    constructor(map: Map<*, *>) : this() {
+        map.forEach { (key, value) -> put(requireNotNull(key).toString(), wrap(value)) }
+    }
+
     constructor(json: String) : this() {
         val parser = Parser(json)
         val parsed = parser.parseValue()
@@ -226,7 +230,7 @@ class JSONArray() {
     private val values = mutableListOf<Any>()
 
     constructor(values: Collection<*>) : this() {
-        values.forEach { put(it) }
+        values.forEach { put(wrap(it)) }
     }
 
     fun put(value: Any?): JSONArray = putAny(value)
@@ -253,6 +257,13 @@ class JSONArray() {
     fun getInt(index: Int): Int = (values[index] as? Number)?.toInt() ?: throw JSONException("Not a number")
 
     override fun toString(): String = values.joinToString(prefix = "[", postfix = "]") { stringify(it) }
+}
+
+private fun wrap(value: Any?): Any = when (value) {
+    null -> JSONObject.NULL
+    is Map<*, *> -> JSONObject(value)
+    is Collection<*> -> JSONArray(value)
+    else -> value
 }
 
 private fun stringify(value: Any): String = when (value) {

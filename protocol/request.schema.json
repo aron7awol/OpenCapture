@@ -14,7 +14,7 @@
     "exposureSeconds": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 30},
     "iso": {"type": ["number", "null"], "minimum": 1, "maximum": 204800},
     "focusPosition": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-    "captureScheduling": {"enum": ["sequential", "sequential-preview"]},
+    "captureScheduling": {"enum": ["sequential", "sequential-preview", "sequential-short-preview"]},
     "streaming": {"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"originals-v1"}}},
     "averaging": {
       "type": "object", "additionalProperties": false, "required": ["mode", "emptyFramePolicy", "keepOriginals"],

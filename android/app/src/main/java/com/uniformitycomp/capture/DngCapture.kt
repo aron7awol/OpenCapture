@@ -85,6 +85,29 @@ internal class DngCapture(
     private val callbackGate = CaptureCallbackGate()
     private val previewResultsDuringStills = AtomicLong(0)
     private val latestPreviewDuringStills = AtomicReference<TotalCaptureResult?>()
+    private val timeline = CaptureTimeline()
+    private val shadingEvidence = LensShadingDiagnostics()
+
+    private fun record(event: String, fields: Map<String, Any>) {
+        runCatching { diagnosticEvent?.invoke(event, fields) }
+    }
+    private fun checkpoint(index: Int, stage: String, fields: Map<String, Any> = emptyMap(),
+                           at: Long = SystemClock.elapsedRealtimeNanos()) {
+        record("raw_request_checkpoint", timeline.mark(index+1, stage, at, fields))
+    }
+    private fun shading(result: TotalCaptureResult, source: String) {
+        runCatching {
+            val map = result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+            if (map == null) { record("lens_shading_missing", mapOf("source" to source, "frameNumber" to result.frameNumber)); return }
+            val gains = FloatArray(map.gainFactorCount).also { map.copyGainFactors(it, 0) }
+            record("lens_shading_evidence", shadingEvidence.observe(map.rowCount, map.columnCount, gains,
+                mapOf("source" to source, "frameNumber" to result.frameNumber,
+                    "sensorTimestampNs" to (result.get(CaptureResult.SENSOR_TIMESTAMP) ?: "missing"),
+                    "shadingMode" to (result.get(CaptureResult.SHADING_MODE) ?: "missing"),
+                    "lensShadingMapMode" to (result.get(CaptureResult.STATISTICS_LENS_SHADING_MAP_MODE) ?: "missing"),
+                    "rawLensShadingApplied" to (characteristics.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED) ?: "unknown"))))
+        }.onFailure { record("lens_shading_unavailable", mapOf("detail" to it.toString().take(240), "source" to source)) }
+    }
 
     private fun rawSample(image: Image): Map<String, Any> = runCatching {
         val plane = image.planes.single()
@@ -102,6 +125,9 @@ internal class DngCapture(
             check()
             queue.poll(100, TimeUnit.MILLISECONDS)?.let { return it }
         }
+        record("capture_wait_timeout", mapOf("waitingFor" to when (queue) {
+            images -> "raw_image"; results -> "capture_result"; else -> "session_configuration"
+        }, "timeoutSeconds" to seconds, "imageQueueDepth" to images.size, "resultQueueDepth" to results.size))
         throw IllegalStateException("Camera timed out; partial originals retained")
     }
 
@@ -112,6 +138,7 @@ internal class DngCapture(
                 put("captureStartedElapsedNs", SystemClock.elapsedRealtimeNanos())
                 put("captureStartedSensorTimestampNs", timestamp)
                 put("captureStartedFrameNumber", frameNumber)
+                checkpoint(tag, "started", mapOf("frameNumber" to frameNumber, "sensorTimestampNs" to timestamp))
             } }
         }
         override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
@@ -126,6 +153,8 @@ internal class DngCapture(
             (r.tag as? CaptureCallbackGate.Tag)?.index?.let { tag -> timings[tag]?.apply {
                 put("resultArrivedElapsedNs", SystemClock.elapsedRealtimeNanos())
                 put("resultFrameNumber", result.frameNumber)
+                checkpoint(tag, "result", mapOf("frameNumber" to result.frameNumber,
+                    "sensorTimestampNs" to (result.get(CaptureResult.SENSOR_TIMESTAMP) ?: "missing")))
             } }
             if (!results.offer(result)) { results.poll(); results.offer(result) }
         }
@@ -138,6 +167,7 @@ internal class DngCapture(
                 if (count == 1) {
                     put("firstPartialResultElapsedNs", now)
                     put("firstPartialResultKeys", result.keys.map { it.name }.sorted())
+                    checkpoint(tag, "firstPartial", mapOf("frameNumber" to result.frameNumber))
                 }
                 put("lastPartialResultElapsedNs", now)
                 if (result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP) != null) {
@@ -150,6 +180,8 @@ internal class DngCapture(
             diagnosticEvent?.invoke("still_capture_failed", mapOf("reason" to f.reason,
                 "frameNumber" to f.frameNumber, "sequenceId" to f.sequenceId,
                 "imageCaptured" to f.wasImageCaptured()))
+            (r.tag as? CaptureCallbackGate.Tag)?.index?.let { checkpoint(it, "failed",
+                mapOf("reason" to f.reason, "sequenceId" to f.sequenceId, "imageCaptured" to f.wasImageCaptured())) }
             failure.compareAndSet(null, IllegalStateException("Capture failure ${f.reason}"))
         }
         override fun onCaptureSequenceAborted(s: CameraCaptureSession, sequenceId: Int) {
@@ -157,19 +189,30 @@ internal class DngCapture(
             diagnosticEvent?.invoke("still_sequence_aborted", mapOf("sequenceId" to sequenceId))
             failure.compareAndSet(null, IllegalStateException("Capture sequence aborted"))
         }
+        override fun onCaptureBufferLost(s: CameraCaptureSession, r: CaptureRequest, target: Surface, frameNumber: Long) {
+            if (s !== session || !callbackGate.accepts(r.tag)) return
+            record("capture_buffer_lost", mapOf("frameNumber" to frameNumber,
+                "requestIndex" to ((r.tag as? CaptureCallbackGate.Tag)?.index?.plus(1) ?: "preview"),
+                "target" to if (target === preview) "preview" else "raw_or_other"))
+        }
+        override fun onCaptureSequenceCompleted(s: CameraCaptureSession, sequenceId: Int, frameNumber: Long) {
+            if (s !== session || ended.get()) return
+            record("capture_sequence_completed", mapOf("sequenceId" to sequenceId, "lastFrameNumber" to frameNumber))
+        }
     }
 
     fun run(settings: DngSettings, count: Int, directory: File?, onFrame: (DngFrame) -> Unit,
             maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
             overlap: Boolean = false,
             tryReserveNext: (() -> Boolean)? = null,
-            keepPreviewRunning: Boolean = false): DngSequence {
+            keepPreviewRunning: Boolean = false, shortPreviewExposure: Boolean = false): DngSequence {
         check()
         require(count in 0..32)
         require(maxAttempts in count..64 && (needsMore != null || maxAttempts == count))
         require(!overlap || needsMore == null || tryReserveNext != null) { "Overlap requires nonblocking attempt admission" }
         require(!overlap || reader.maxImages >= 2) { "Overlap requires two owned RAW buffers" }
         require(!keepPreviewRunning || !overlap) { "Continuous-preview compatibility requires sequential RAW captures" }
+        require(!shortPreviewExposure || keepPreviewRunning) { "Short preview requires continuous sequential preview" }
         val caps = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         require(caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) &&
@@ -210,6 +253,17 @@ internal class DngCapture(
         characteristics.get(CameraCharacteristics.REQUEST_PIPELINE_MAX_DEPTH)?.let {
             setup["advertisedPipelineMaxDepth"] = it.toInt()
         }
+        setup["controlDiagnosticsPolicy"] = "manual-control-comparison-v1"
+        setup["requestedControls"] = mapOf("exposureNs" to (settings.exposureNs ?: "auto"),
+            "iso" to (settings.iso ?: "auto"), "focusFraction" to (settings.focusFraction ?: "auto"),
+            "whiteBalanceRGB" to (settings.whiteBalance?.toList() ?: "auto"))
+        setup["maximumFocusDiopters"] = minFocus
+        characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let {
+            setup["advertisedISORange"] = listOf(it.lower, it.upper)
+        }
+        characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let {
+            setup["advertisedExposureRangeNs"] = listOf(it.lower, it.upper)
+        }
         val sessions = ArrayBlockingQueue<CameraCaptureSession>(1)
         var submittedStills = 0
         var completedStills = 0
@@ -228,6 +282,8 @@ internal class DngCapture(
                         val acquired = SystemClock.elapsedRealtimeNanos()
                         val samples = if (ended.get() || cancel.get()) emptyMap() else rawSample(image)
                         val sampled = SystemClock.elapsedRealtimeNanos()
+                        record("raw_image_arrived", timeline.image(acquired, image.timestamp, images.size) +
+                            mapOf("samples" to samples, "closingWithoutDelivery" to (ended.get() || cancel.get())))
                         if (ended.get() || cancel.get()) image.close()
                         else if (!images.offer(RawArrival(image, acquired, sampled, samples, images.size))) {
                             image.close()
@@ -286,6 +342,7 @@ internal class DngCapture(
                     setup["autoExposureRetainedManualColor"] = true
                 }
                 setup["autoRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                setup["autoSubmittedRequest"] = requestReading(auto.build())
                 active.setRepeatingRequest(auto.build(), callback, handler)
                 if (settings.focusFraction == null && autoFocusMode == CaptureRequest.CONTROL_AF_MODE_AUTO) {
                     auto.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
@@ -295,6 +352,8 @@ internal class DngCapture(
                 var autoResults = 0
                 do {
                     observed = await(results)
+                    setup["autoLatestResult"] = setupReading(observed)
+                    setup["autoResultsSeen"] = autoResults + 1
                     if (autoResults++ == 0) {
                         setup["autoFirstResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                         setup["autoFirstResult"] = setupReading(observed)
@@ -313,6 +372,8 @@ internal class DngCapture(
                 setup["autoSettledElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 setup["autoResultsSeen"] = autoResults
                 setup["autoSettledResult"] = setupReading(observed)
+                shading(observed, "auto_settled")
+                diagnosticEvent?.invoke("auto_settled_result", setupReading(observed))
                 val gains = settings.whiteBalance?.let { RggbChannelVector(it[0], it[1], it[1], it[2]) }
                     ?: requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_GAINS)) { "Missing actual white balance gains" }
                 DngLockedSettings(
@@ -321,6 +382,10 @@ internal class DngCapture(
                     settings.focusFraction?.times(minFocus) ?: requireNotNull(observed.get(CaptureResult.LENS_FOCUS_DISTANCE)),
                     gains, requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)) { "Missing color transform" })
             }
+            setup["lockedControls"] = lockedReading(locked)
+            diagnosticEvent?.invoke("manual_lock_selected", mapOf("controls" to lockedReading(locked),
+                "advertisedISORange" to (setup["advertisedISORange"] ?: "missing"),
+                "advertisedExposureRangeNs" to (setup["advertisedExposureRangeNs"] ?: "missing")))
             if (fast == null) {
                 val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                 manual.addTarget(preview)
@@ -330,6 +395,7 @@ internal class DngCapture(
                 if (reusable == null && !keepPreviewRunning) active.stopRepeating()
                 results.clear()
                 setup["manualRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                setup["manualSubmittedRequest"] = requestReading(manual.build())
                 active.setRepeatingRequest(manual.build(), callback, handler)
                 // Reject queued auto results; wait for controls actually reported by the locked request.
                 val lockStart = System.nanoTime()
@@ -341,9 +407,16 @@ internal class DngCapture(
                         diagnosticEvent?.invoke("manual_first_result", setupReading(observed))
                         manualReadbackReported = true
                     }
-                    val retainedStateMatches = exposureSource == null || exposureSource.actual.copy(
-                        exposureNs = locked.exposureNs, iso = locked.iso).difference(stateReading(observed), minFocus) == null
-                    val isManual = observed.request.tag === lockTag && honors(observed, locked, minFocus) && retainedStateMatches
+                    val retainedReference = exposureSource?.actual?.copy(exposureNs = locked.exposureNs, iso = locked.iso)
+                    val retainedDifference = retainedReference?.difference(stateReading(observed), minFocus)
+                    val checks = controlChecks(observed, locked, minFocus)
+                    setup["manualLatestResult"] = setupReading(observed)
+                    setup["manualLatestComparison"] = mapOf("checks" to checks,
+                        "requestTagMatches" to (observed.request.tag === lockTag),
+                        "retainedStateDifference" to (retainedDifference ?: "matched_or_not_required"),
+                        "retainedReference" to (retainedReference?.diagnosticFields() ?: "not_required"))
+                    setup["manualLatestResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                    val isManual = observed.request.tag === lockTag && checks.all { it["status"] == "matched" } && retainedDifference == null
                     if (isManual) {
                         if (manualResults++ == 0) {
                             setup["manualFirstResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
@@ -356,6 +429,8 @@ internal class DngCapture(
                 setup["manualSettledElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 setup["manualResultsSeen"] = manualResults
                 setup["manualSettledResult"] = setupReading(observed)
+                shading(observed, "manual_settled")
+                diagnosticEvent?.invoke("manual_settled_result", setupReading(observed))
                 // Carry verified geometry and the same requested stabilization policy across templates.
                 if (reportLensShading) locked = locked.copy(
                     crop = observed.get(CaptureResult.SCALER_CROP_REGION)?.takeIf {
@@ -383,6 +458,11 @@ internal class DngCapture(
             diagnosticEvent?.invoke("setup_completed", mapOf("exposureNs" to locked.exposureNs,
                 "iso" to locked.iso, "reusedVerifiedState" to (fast != null)))
             setup["setupDurationNs"] = setupEnded - (setup["setupStartedElapsedNs"] as Long)
+            record("setup_timing", mapOf("setupDurationNs" to setup["setupDurationNs"]!!,
+                "controlsReused" to (fast != null), "startedElapsedNs" to preparationStarted,
+                "endedElapsedNs" to setupEnded, "stages" to setup.filterKeys {
+                    it.endsWith("ElapsedNs") || it == "autoResultsSeen" || it == "manualResultsSeen"
+                }))
             if (reportLensShading) android.util.Log.i("OpenCaptureSetup", "fast=${fast != null} reason=${setup["reason"]} " +
                 "sourceFrame=${fast?.frameNumber} setupMs=${(setup["setupDurationNs"] as Long)/1_000_000}")
             val setupEvidence = setup.toMap()
@@ -409,12 +489,23 @@ internal class DngCapture(
                 requireNotNull(directory)
                 check(directory.isDirectory || directory.mkdirs()) { "Cannot create capture archive" }
                 if (fast == null && !keepPreviewRunning) active.stopRepeating()
+                val previewExposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)
+                if (shortPreviewExposure) {
+                    // Verify setup at the full requested exposure first. Only the
+                    // repeating preview changes; still validation keeps the full tuple.
+                    val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    previewRequest.addTarget(preview)
+                    previewRequest.setTag(callbackGate.tag())
+                    applyLocked(previewRequest, locked.copy(exposureNs=previewExposureNs), characteristics, reportLensShading)
+                    active.setRepeatingRequest(previewRequest.build(), callback, handler)
+                }
                 callbackGate.beginStills()
                 results.clear()
                 synchronized(images) { while (true) (images.poll() ?: break).image.close() }
                 diagnosticEvent?.invoke("raw_preview_policy", mapOf(
                     "repeatingPreviewDuringStill" to keepPreviewRunning, "overlap" to overlap,
-                    "exposureNs" to locked.exposureNs, "iso" to locked.iso))
+                    "exposureNs" to locked.exposureNs, "iso" to locked.iso,
+                    "shortPreviewExposure" to shortPreviewExposure, "requestedPreviewExposureNs" to previewExposureNs))
                 var physicalId: String? = null
                 var previousSensorTimestamp: Long? = null
                 var previousCloseElapsed: Long? = null
@@ -455,13 +546,20 @@ internal class DngCapture(
                     timing["imageReaderMaxImages"] = reader.maxImages
                     timing["requestTemplate"] = "TEMPLATE_STILL_CAPTURE"
                     timing["repeatingPreviewDuringStill"] = keepPreviewRunning
+                    timing["shortPreviewExposure"] = shortPreviewExposure
+                    timing["requestedPreviewExposureNs"] = previewExposureNs
                     timing["previewResultsAtSubmission"] = previewResultsDuringStills.get()
                     timing["requestedExposureNs"] = locked.exposureNs
                     timing["requestedISO"] = locked.iso
                     timing["requestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     timings[index] = timing
+                    checkpoint(index, "submitted", mapOf("exposureNs" to locked.exposureNs,
+                        "iso" to locked.iso, "imageReaderMaxImages" to reader.maxImages,
+                        "imageQueueDepth" to images.size, "resultQueueDepth" to results.size),
+                        timing["requestSubmittedElapsedNs"] as Long)
                     val sequenceId = active.capture(request.build(), callback, handler)
                     timing["captureSequenceId"] = sequenceId
+                    checkpoint(index, "sequenceAssigned", mapOf("sequenceId" to sequenceId))
                     submittedStills++
                     return timing
                 }
@@ -484,10 +582,20 @@ internal class DngCapture(
                         check(callbackGate.accepts(result.request.tag) &&
                             (result.request.tag as? CaptureCallbackGate.Tag)?.index == index) { "RAW image/result identity mismatch" }
                         observed = result // Always a current result, never cached setup evidence.
+                        checkpoint(index, "imageMatched", mapOf("imageTimestampNs" to image.timestamp), arrival.elapsedNs)
+                        shading(result, "raw_${index+1}")
                         if (reportLensShading) {
-                            val mismatch = if (!honors(result, locked, minFocus)) "still_controls_not_honored"
+                            val checks = controlChecks(result, locked, minFocus)
+                            val mismatch = if (checks.any { it["status"] != "matched" }) "still_controls_not_honored"
                                 else if (reference == null) "no_setup_readback" else reference.difference(stateReading(result), minFocus)
                             if (mismatch != null) {
+                                diagnosticEvent?.invoke("manual_state_mismatch", mapOf("detail" to mismatch,
+                                    "fatal" to (fast != null || mismatch == "still_controls_not_honored"),
+                                    "requestIndex" to index + 1, "imageTimestampNs" to image.timestamp,
+                                    "lockedControls" to lockedReading(locked), "checks" to checks,
+                                    "submittedRequest" to requestReading(result.request),
+                                    "actual" to setupReading(result),
+                                    "reference" to (reference?.diagnosticFields() ?: "missing")))
                                 if (fast != null || mismatch == "still_controls_not_honored") throw ManualStateMismatch(mismatch)
                                 verificationUnavailable = mismatch
                             }
@@ -526,23 +634,34 @@ internal class DngCapture(
                         val before = rawSample(image)
                         timing["rawBeforeDng"] = before
                         timing["dngWriteStartedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        checkpoint(index, "writeStarted")
                         DngCreator(characteristics, result).use { creator ->
                             // Pixels retain native sensor coordinates. Preview orientation is independent.
                             creator.setOrientation(1)
                             pending.outputStream().use { creator.writeImage(it, image) }
                         }
                         timing["dngWriteEndedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        checkpoint(index, "writeEnded")
                         val after = rawSample(image)
                         timing["rawAfterDng"] = after
                         check(pending.length() in 1..(128L * 1024 * 1024)) { "DNG exceeds file limit" }
                         check(pending.renameTo(file)) { "Cannot finalize DNG original" }
                         timing["dngBytes"] = file.length()
                         timing["dngReadbackStartedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        checkpoint(index, "readbackStarted")
                         val saved = runCatching { DngSampleDiagnostics.sample(file, image.width, image.height) }
                             .getOrElse { mapOf("unavailable" to (it.message ?: it.javaClass.simpleName).take(240)) }
                         timing["dngReadbackEndedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                        checkpoint(index, "readbackEnded")
                         timing["rawSavedDng"] = saved
                         timing["sampleIntegrity"] = RawBufferDiagnostics.compare(arrival.samples, before, after, saved)
+                        record("raw_frame_evidence", mapOf("index" to index+1,
+                            "imageTimestampNs" to image.timestamp, "actual" to setupReading(result),
+                            "samples" to arrival.samples, "savedSamples" to saved,
+                            "sampleIntegrity" to timing["sampleIntegrity"]!!,
+                            "timingIntegrity" to (timing["timingIntegrity"] ?: "unassessed"),
+                            "dynamicBlackLevel" to (result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.toList() ?: "missing"),
+                            "dynamicWhiteLevel" to (result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL) ?: "missing")))
                         if (reportLensShading) {
                             if ((timing["timingIntegrity"] as? Map<*, *>)?.get("status") != "passed")
                                 verificationUnavailable = "timing_not_verified"
@@ -556,6 +675,7 @@ internal class DngCapture(
                         image.close()
                         previousCloseElapsed = SystemClock.elapsedRealtimeNanos()
                         timing["imageClosedElapsedNs"] = previousCloseElapsed!!
+                        checkpoint(index, "closed")
                         timings.remove(index)
                     }
                     completedStills++
@@ -573,12 +693,18 @@ internal class DngCapture(
             }
             succeeded = true
             return sequence
-        } catch (error: ManualStateMismatch) {
-            android.util.Log.w("OpenCaptureSetup", "fallback=${error.reason} nextJob=normal_setup")
+        } catch (error: Exception) {
+            // Persist before cleanup, including failures that never produced a DNG sidecar.
+            diagnosticEvent?.invoke("capture_setup_failure", mapOf("detail" to error.toString().take(512),
+                "setup" to setup.toMap(), "submittedStills" to submittedStills,
+                "completedStills" to completedStills))
+            if (error is ManualStateMismatch)
+                android.util.Log.w("OpenCaptureSetup", "fallback=${error.reason} nextJob=normal_setup")
             throw error
         } finally {
             ended.set(true)
             callbackGate.end()
+            record("raw_timeline_summary", timeline.summary())
             diagnosticEvent?.invoke("raw_preview_summary", mapOf(
                 "repeatingPreviewDuringStill" to keepPreviewRunning,
                 "previewResults" to previewResultsDuringStills.get(),
@@ -609,11 +735,17 @@ internal class DngCapture(
     /** Small metadata-only snapshots; never substitute these maps for a still's actual map. */
     private fun setupReading(result: TotalCaptureResult): Map<String, Any> {
         val reading = linkedMapOf<String, Any>("frameNumber" to result.frameNumber)
+        reading.putAll(stateReading(result).diagnosticFields())
         result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { reading["sensorTimestampNs"] = it }
         result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { reading["exposureNs"] = it }
         result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { reading["iso"] = it }
         result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { reading["focusDiopters"] = it }
         result.get(CaptureResult.CONTROL_AE_MODE)?.let { reading["aeMode"] = it }
+        result.get(CaptureResult.CONTROL_MODE)?.let { reading["controlMode"] = it }
+        result.get(CaptureResult.CONTROL_AF_MODE)?.let { reading["afMode"] = it }
+        result.get(CaptureResult.CONTROL_AE_STATE)?.let { reading["aeState"] = it }
+        result.get(CaptureResult.CONTROL_AF_STATE)?.let { reading["afState"] = it }
+        result.get(CaptureResult.SENSOR_FRAME_DURATION)?.let { reading["frameDurationNs"] = it }
         result.get(CaptureResult.CONTROL_AWB_MODE)?.let { reading["awbMode"] = it }
         result.get(CaptureResult.CONTROL_AWB_STATE)?.let { reading["awbState"] = it }
         result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let {
@@ -634,6 +766,41 @@ internal class DngCapture(
         return reading
     }
 
+    private fun lockedReading(value: DngLockedSettings): Map<String, Any> = mapOf(
+        "exposureNs" to value.exposureNs, "iso" to value.iso, "focusDiopters" to value.focusDiopters,
+        "whiteBalanceGains" to listOf(value.gains.red, value.gains.greenEven, value.gains.greenOdd, value.gains.blue),
+        "colorTransform" to (0..8).map { value.transform.getElement(it % 3, it / 3).toDouble() })
+
+    private fun requestReading(request: CaptureRequest): Map<String, Any> {
+        val reading = linkedMapOf<String, Any>()
+        fun <T> field(name: String, key: CaptureRequest.Key<T>) { reading[name] = request.get(key) ?: "missing" }
+        field("exposureNs", CaptureRequest.SENSOR_EXPOSURE_TIME)
+        field("frameDurationNs", CaptureRequest.SENSOR_FRAME_DURATION)
+        field("iso", CaptureRequest.SENSOR_SENSITIVITY)
+        field("focusDiopters", CaptureRequest.LENS_FOCUS_DISTANCE)
+        field("controlMode", CaptureRequest.CONTROL_MODE)
+        field("aeMode", CaptureRequest.CONTROL_AE_MODE)
+        field("afMode", CaptureRequest.CONTROL_AF_MODE)
+        field("awbMode", CaptureRequest.CONTROL_AWB_MODE)
+        field("colorCorrectionMode", CaptureRequest.COLOR_CORRECTION_MODE)
+        field("shadingMode", CaptureRequest.SHADING_MODE)
+        field("lensShadingMapMode", CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE)
+        field("opticalStabilization", CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE)
+        field("videoStabilization", CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE)
+        request.get(CaptureRequest.COLOR_CORRECTION_GAINS)?.let {
+            reading["whiteBalanceGains"] = listOf(it.red, it.greenEven, it.greenOdd, it.blue)
+        }
+        request.get(CaptureRequest.COLOR_CORRECTION_TRANSFORM)?.let { matrix ->
+            reading["colorTransform"] = (0..8).map { matrix.getElement(it % 3, it / 3).toDouble() }
+        }
+        request.get(CaptureRequest.SCALER_CROP_REGION)?.let { reading["crop"] = listOf(it.left, it.top, it.right, it.bottom) }
+        return reading
+    }
+
+    private fun controlChecks(result: TotalCaptureResult, locked: DngLockedSettings, maximumFocus: Float) =
+        stateReading(result).controlChecks(locked.exposureNs, locked.iso, locked.focusDiopters,
+            listOf(locked.gains.red, locked.gains.greenEven, locked.gains.greenOdd, locked.gains.blue), maximumFocus)
+
     companion object {
         private fun matches(settings: DngSettings, locked: DngLockedSettings, maximumFocus: Float): Boolean {
             return settings.exposureNs == locked.exposureNs && settings.iso == locked.iso &&
@@ -645,22 +812,6 @@ internal class DngCapture(
             return settings.focusFraction != null && settings.focusFraction * maximumFocus == locked.focusDiopters &&
                 wb.contentEquals(floatArrayOf(locked.gains.red, locked.gains.greenEven, locked.gains.blue)) &&
                 locked.gains.greenEven == locked.gains.greenOdd
-        }
-
-        private fun honors(result: TotalCaptureResult, locked: DngLockedSettings, maximumFocus: Float): Boolean {
-            val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return false
-            val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return false
-            val focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: return false
-            val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS) ?: return false
-            return result.get(CaptureResult.CONTROL_AE_MODE) == CaptureResult.CONTROL_AE_MODE_OFF &&
-                result.get(CaptureResult.CONTROL_MODE) == CaptureResult.CONTROL_MODE_OFF &&
-                result.get(CaptureResult.CONTROL_AWB_MODE) == CaptureResult.CONTROL_AWB_MODE_OFF &&
-                result.get(CaptureResult.CONTROL_AF_MODE) == CaptureResult.CONTROL_AF_MODE_OFF &&
-                kotlin.math.abs(exposure-locked.exposureNs) <= maxOf(10_000L, (locked.exposureNs*.03).toLong()) &&
-                kotlin.math.abs(iso-locked.iso) <= maxOf(1.0, locked.iso*.05) &&
-                kotlin.math.abs(focus-locked.focusDiopters) <= maxOf(.0001f,maximumFocus*.02f) &&
-                listOf(gains.red-locked.gains.red,gains.greenEven-locked.gains.greenEven,
-                    gains.greenOdd-locked.gains.greenOdd,gains.blue-locked.gains.blue).all { kotlin.math.abs(it) <= .1f }
         }
 
         fun isBayer(c: CameraCharacteristics): Boolean = c.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) in setOf(

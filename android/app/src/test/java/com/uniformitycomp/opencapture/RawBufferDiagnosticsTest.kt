@@ -7,6 +7,45 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RawBufferDiagnosticsTest {
+    @Test fun requestTimelineKeepsMissingCallbacksAndBoundedRecentHistory() {
+        val trace = com.uniformitycomp.capture.CaptureTimeline()
+        for (i in 1..64) {
+            trace.mark(i,"submitted",i*1_000_000_000L)
+            if (i < 64) {
+                trace.mark(i,"imageMatched",i*1_000_000_000L+500_000_000)
+                trace.mark(i,"closed",i*1_000_000_000L+600_000_000)
+            }
+        }
+        val summary = org.json.JSONObject(trace.summary())
+        assertEquals(64,summary.getInt("submitted"))
+        assertEquals(63,summary.getInt("buffersClosed"))
+        assertEquals(8,summary.getJSONArray("recentRequests").length())
+        assertFalse(summary.getJSONArray("recentRequests").getJSONObject(7).has("imageMatchedElapsedNs"))
+        assertEquals(31.5,summary.getJSONObject("durations").getJSONObject("requestToImage").getDouble("seconds"),0.0)
+        trace.image(12,30,0)
+        assertEquals(30L,trace.image(13,40,1)["previousImageTimestampNs"])
+    }
+
+    @Test fun shadingSnapshotsDistinguishFlatChangedAndSubsampledMaps() {
+        val evidence = com.uniformitycomp.capture.LensShadingDiagnostics()
+        val first = org.json.JSONObject(evidence.observe(13,17,FloatArray(13*17*4){1f},mapOf("source" to "preview")))
+        assertTrue(first.getJSONObject("first").getBoolean("gridComplete"))
+        val changed = FloatArray(13*17*4){ if(it%4==0) 2f else 1f }
+        val second = org.json.JSONObject(evidence.observe(13,17,changed,mapOf("source" to "raw")))
+        assertEquals(1,second.getInt("changes"))
+        assertEquals(1.0,second.getJSONObject("first").getJSONArray("channelRanges").getJSONObject(0).getDouble("max"),0.0)
+        assertEquals(2.0,second.getJSONObject("latest").getJSONArray("channelRanges").getJSONObject(0).getDouble("max"),0.0)
+        val large = org.json.JSONObject(evidence.observe(64,64,FloatArray(64*64*4){1f},emptyMap()))
+        assertFalse(large.getJSONObject("latest").getBoolean("gridComplete"))
+        assertEquals(13*17*4,large.getJSONObject("latest").getJSONArray("gains").length())
+        assertEquals(63,large.getJSONObject("latest").getJSONArray("sampleColumns").getInt(16))
+    }
+
+    @Test(expected=IllegalArgumentException::class)
+    fun shadingDiagnosticsRejectNonFiniteMetadata() {
+        com.uniformitycomp.capture.LensShadingDiagnostics().observe(1,1,floatArrayOf(1f,1f,Float.NaN,1f),emptyMap())
+    }
+
     @Test fun handlesStrideAndPreservesBufferState() {
         val buffer = ByteBuffer.allocate(4*12).order(ByteOrder.nativeOrder())
         for (y in 0..3) for (x in 0..3) buffer.putShort(y*12+x*2,(256+y*4+x).toShort())

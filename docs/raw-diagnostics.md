@@ -3,6 +3,92 @@
 iOS and Android have different native capture APIs and therefore different
 diagnostic scopes. Do not relabel one platform's checks as the other's.
 
+## Failure Timelines And Retained Evidence (November 19 Development)
+
+Android now preserves metadata checkpoints before a frame can fail:
+
+- `raw_request_checkpoint`: submission attempt, assigned sequence, capture
+  start, first partial result, full result, image matching, DNG write/readback
+  and buffer close. Request indices are one-based, sensor timestamps stay
+  separate from elapsed-realtime timestamps. `raw_image_arrived` records native
+  sparse sample statistics/hash and the preceding image timestamp even before
+  an image/result pair is available. Buffer-loss, sequence-completion and wait
+  timeout events distinguish missing callbacks from missing images.
+- `raw_timeline_summary`: counters, overlapping interval totals and the last
+  eight request timelines; older omitted request count is explicit. A submit
+  checkpoint precedes the API call; an assigned sequence proves it returned.
+  Missing milestones do not prove the HAL never performed the underlying work.
+- Lifecycle/cancellation events record the initiating reason, job where known,
+  camera/session/preview generations and aiming-preview result age. Aiming
+  preview age does not describe the operation-owned repeating preview during
+  RAW. Setup time, phone operation wall time and streaming verdict-wait time
+  supplement existing successful-frame sidecar timings. Nested exception causes
+  and bounded stack frames retain underlying application errors.
+- `frame_selection_summary`: streaming requested/reserved/published/accepted/
+  rejected/pending counts and all verdicts, or on-device averaging decisions.
+  Averaging retains up to 12 rejected/neighbor compact evidence rows, prioritizing
+  rejected frames, with an explicit omitted count. Decisions cover all attempts.
+  Sparse stats/hashes, actual exposure/ISO/timestamps, black/white normalization
+  and integrity distinguish empty acquisition from later file changes. They do
+  not establish the cause of an empty frame. No new rejection policy is added.
+- `lens_shading_evidence`: first and latest observed maps, change count and
+  per-channel full-map extrema. Up to 17 columns by 13 rows of RGGB gains are
+  retained per representative snapshot. Larger maps use labeled endpoint
+  samples with original indices and `gridComplete:false`, not interpolation.
+  Full native maps still live in successful sidecars. Selected settled setup
+  and matched RAW results are observed, not every preview. Each snapshot includes
+  source/result identity and shading mode/applied flag; never substitute a preview
+  map into RAW processing. Missing/invalid observations are explicit events.
+
+These larger summaries live under `cameraDiagnostics.evidence` and survive
+event-ring eviction until the next operation begins. Previously persisted jobs
+retain their own snapshot. The event ring remains bounded; diagnostics add no
+exposures and do not retain full images in RAM. Abrupt process death can recover
+only checkpoints actually persisted before the death. No internal vendor logs
+are claimed. This diagnostic extension and short-preview experiment are Android
+only; desktop metadata summaries also accept existing iOS sidecars.
+
+## Android Control-Failure Evidence (November 19 Development)
+
+`manual-control-comparison-v1` adds metadata-only evidence to the existing
+persistent camera event log. No request settings, acceptance tolerances, or
+capture scheduling have changed. In particular, an automatic ISO above the
+advertised manual range is recorded, not silently clamped or declared causal.
+
+- `auto_settled_result` records the actual reading selected to seed locking,
+  distinct from the first automatic result.
+- `manual_lock_selected` records expected locked exposure, ISO, focus and RGGB
+  gains/color matrix, alongside advertised exposure and ISO ranges.
+- `capture_setup_failure` preserves setup policy, requested/automatic controls,
+  built auto/manual requests, first/settled/latest readings, latest manual
+  comparisons, request-tag match and retained-reference mismatch. It is emitted
+  before cleanup, including missing-result timeouts and failures before any RAW.
+- `manual_state_mismatch` records the timestamp-matched RAW's actual controls,
+  built request, locked expectations, setup reference, request index and image
+  timestamp before rejecting the frame. `fatal` distinguishes rejection from a
+  normal-path mismatch that only prevents verified-state reuse.
+- Each `checks` entry includes `field`, `expected`, `actual`, `tolerance`, and
+  `status` (`matched`, `mismatch`, `missing`). All exposure/ISO/focus/control-mode/
+  AE/AF/AWB/RGGB failures are retained, not just the first. Missing readback is
+  explicitly `"missing"`, never filled with the request. Existing comparison
+  bounds are shared with the decision itself.
+- Readings now include CONTROL_MODE, AF_MODE, AE/AF states, frame duration,
+  crop/stabilization/physical-camera fields, and numeric `colorTransformMatrix`.
+  Existing `colorTransform` string remains compatible. Shading maps remain
+  dimensions/hashes in these events, not pixel or gain-array downloads.
+
+Fatal comparison/setup events preserve the existing first fault. History is
+trimmed by event count and a 64 KiB snapshot budget (retaining first fault) to
+leave room under the 96 KiB persistent-record limit. Bounded snapshots are logged
+at stage transitions/failure, not every preview result. The latest setup readback
+is retained in memory until failure; a process kill before that event can only
+recover events already written to disk.
+
+Windows retrieves these event payloads without dropping unknown fields, including
+recovered diagnostics on reconnect. The failed-run support ZIP includes them
+even without a manifest or original photo. This is Camera2 application evidence,
+not internal Samsung driver logs. Physical verification remains pending.
+
 ## Timing Integrity And Stage Timings
 
 Android 0.4.4 adds `timingPolicy:"fresh-camera2-raw-v1"` and
@@ -78,7 +164,20 @@ genuinely dark, stale, or otherwise unusable. Preserve originals for investigati
 New iOS native-buffer behavior requires physical-device verification; macOS core
 tests and simulator navigation cannot establish sensor behavior.
 
-## Android 0.4.5 Verified Manual Fast Path (Development)
+## Verified Setup Reuse With Continuous Preview (November 19 Development)
+
+The identical full-manual cache is now also eligible in `sequential-preview`.
+Repeating preview stays active, with a new operation-owned callback; stills
+remain sequential. It does not repeat an already verified manual-preview wait.
+A successful controls-only request can seed the following identical capture
+with `reusedVerification.source:"previous_manual_preview"`; later verified
+stills use `previous_completed_still`. Every controls-only request itself still
+requires fresh readback. Missing metadata, changed controls/session, cancellation
+or camera errors prevent reuse. Per-still actual controls, timestamps, integrity
+checks, scene waits and verdict handling remain required. No shorter-preview
+exposure policy has been added. Physical speed and compatibility are unverified.
+
+## Android 0.4.5 Verified Manual Fast Path (Historical)
 
 Build 13 extends the earlier manual-control reuse: a matching fully specified
 request skips both auto setup and the tagged manual-preview result wait when

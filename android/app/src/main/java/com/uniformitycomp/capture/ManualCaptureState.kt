@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.uniformitycomp.capture
 
+internal object ShortPreviewExposure {
+    const val CAP_NS = 200_000_000L
+    fun exposure(stillNs: Long, enabled: Boolean): Long = if (enabled) minOf(stillNs, CAP_NS) else stillNs
+}
+
 /** Immutable request identity. Omitted/automatic values never mean "keep the previous value". */
 internal data class ManualRequestKey(
     val exposureNs: Long, val iso: Int, val focus: Float, val gains: List<Float>
@@ -83,6 +88,46 @@ internal data class ManualStateReading(
     val opticalStabilization: Int?, val videoStabilization: Int?,
     val shadingMode: Int?, val shadingMapMode: Int?, val physicalCamera: String?, val lensMoving: Boolean = false
 ) {
+    /** Same acceptance bounds as manual locking, with every failed field retained. */
+    fun controlChecks(expectedExposure: Long, expectedISO: Int, expectedFocus: Float,
+                      expectedGains: List<Float>, maximumFocus: Float): List<Map<String, Any>> {
+        val checks = mutableListOf<Map<String, Any>>()
+        fun add(field: String, expected: Any, actual: Any?, tolerance: Number, matched: Boolean) {
+            checks.add(mapOf("field" to field, "expected" to expected,
+                "actual" to (actual ?: "missing"), "tolerance" to tolerance,
+                "status" to if (actual == null) "missing" else if (matched) "matched" else "mismatch"))
+        }
+        val exposureTolerance = maxOf(10_000L, (expectedExposure * .03).toLong())
+        val isoTolerance = maxOf(1.0, expectedISO * .05)
+        val focusTolerance = maxOf(.0001f, maximumFocus * .02f)
+        add("exposureNs", expectedExposure, exposureNs, exposureTolerance,
+            exposureNs != null && kotlin.math.abs(exposureNs - expectedExposure) <= exposureTolerance)
+        add("iso", expectedISO, iso, isoTolerance, iso != null && kotlin.math.abs(iso - expectedISO) <= isoTolerance)
+        add("focusDiopters", expectedFocus, focus, focusTolerance,
+            focus != null && kotlin.math.abs(focus - expectedFocus) <= focusTolerance)
+        listOf("controlMode", "aeMode", "afMode", "awbMode").forEachIndexed { index, field ->
+            val actual = modes.getOrNull(index)
+            add(field, 0, actual, 0, actual == 0)
+        }
+        listOf("red", "greenEven", "greenOdd", "blue").forEachIndexed { index, channel ->
+            val actual = gains?.getOrNull(index)
+            val expected = expectedGains[index]
+            add("whiteBalance.$channel", expected, actual, .1f,
+                actual != null && kotlin.math.abs(actual - expected) <= .1f)
+        }
+        return checks
+    }
+
+    fun diagnosticFields(): Map<String, Any> = mapOf(
+        "exposureNs" to (exposureNs ?: "missing"), "iso" to (iso ?: "missing"),
+        "focusDiopters" to (focus ?: "missing"), "whiteBalanceGains" to (gains ?: "missing"),
+        "colorTransformMatrix" to (transform ?: "missing"), "crop" to (crop ?: "missing"),
+        "controlModes" to modes.map { it ?: "missing" },
+        "opticalStabilization" to (opticalStabilization ?: "missing"),
+        "videoStabilization" to (videoStabilization ?: "missing"),
+        "shadingMode" to (shadingMode ?: "missing"), "lensShadingMapMode" to (shadingMapMode ?: "missing"),
+        "physicalCamera" to (physicalCamera ?: "missing"), "lensMoving" to lensMoving)
+
     fun incomplete(): String? = when {
         exposureNs == null || exposureNs <= 0 -> "missing_exposure"
         iso == null || iso <= 0 -> "missing_iso"

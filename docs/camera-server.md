@@ -1,5 +1,23 @@
 # Foreground Camera Server v1
 
+### Experimental Short Preview Exposure (November 19 Development)
+
+New Android builds advertise `sequential-short-preview` in captureSchedulingModes.
+The optional request value forces sequential RAW with continuous preview, capped
+at `min(requested RAW exposure, 0.2 s)`. ISO, focus, WB, color transform, crop and
+processing policy stay locked. RAW requests and per-still verification retain
+the full original exposure; preview pixels are never measurement input.
+
+Fresh setup/applyControls still verifies the full exposure before switching to
+short preview for the RAW phase. applyControls returns that full-exposure reading;
+aiming preview after the operation uses the cap. This first implementation does
+not shorten fresh manual-settling waits. It must not pretend a short preview
+reading verifies a longer RAW exposure. Actual still mismatches fail normally;
+there is no silent retry in another mode or relaxed tolerance. Diagnostics record
+requested preview exposure separately and actual preview/RAW results when delivered.
+The feature is experimental, default off, exact-capability-gated, and unavailable
+on iOS/older Android clients. Software tests are not physical compatibility proof.
+
 Development Android info/state includes optional boolean `cameraPreviewReady`:
 the current preview is configured and has delivered a result since camera
 close/reopen. It is false during capture/recovery; it is not a signal/noise or

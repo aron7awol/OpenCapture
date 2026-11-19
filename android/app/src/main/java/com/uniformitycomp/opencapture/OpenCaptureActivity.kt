@@ -119,14 +119,14 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         val staging = File(filesDir, "server-transfers")
         capture = OpenCaptureCamera(camera, deviceID, staging)
         session = CameraServerSession(staging, capture::capture, { text -> runOnUiThread { if (server != null) message(text) } },
-            streamCapture=capture::captureStreaming)
+            streamCapture=capture::captureStreaming, diagnostic = { event, detail -> camera.events.record(event, detail) })
         screen = OpenCaptureScreens(this, ::toggle, ::showAbout)
         texture.surfaceTextureListener = this
     }
-    private fun closeCamera(resetAttempts: Boolean = false) {
+    private fun closeCamera(resetAttempts: Boolean = false, reason: String = "activity_camera_close") {
         recovery.invalidate(resetAttempts)
         camera.onConnectionLost = null
-        camera.close()
+        camera.close(reason)
         previewBytes = null
     }
     private fun recoverCamera(failedGeneration: Long) {
@@ -137,7 +137,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         camera.events.record("recovery_started", JSONObject().put("attempt", recovery.attempts)
             .put("pending", recovery.pending))
         camera.onConnectionLost = null
-        camera.close(); previewBytes = null
+        camera.close("camera_recovery"); previewBytes = null
         if (!recovery.pending) {
             message("Camera recovery failed. Tap Stop, then Resume.")
             return
@@ -189,7 +189,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         keepAwake()
         logLifecycle("toggle")
         if (enabled) { recovery.invalidate(resetAttempts = true); openCamera(); message("Opening camera") }
-        else { stopServer(); closeCamera(); message("Stopped") }
+        else { stopServer(reason="user_stop"); closeCamera(reason="user_stop"); message("Stopped") }
     }
     private fun lanAddress(): String? {
         val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -226,7 +226,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         runOnUiThread {
             try {
                 check(resumed && enabled) { "Camera server stopped" }
-                closeCamera(resetAttempts = true)
+                closeCamera(resetAttempts = true, reason="lens_change")
                 previewBytes = null; camera.selectRawCamera(id); openCamera()
             } catch (error: Exception) { failure = error }
             finally { ready.countDown() }
@@ -259,9 +259,9 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             message("Ready at $ip:8767")
         } catch (error: Exception) { stopServer(preserveSession = true); message(error.message ?: "Server unavailable") }
     }
-    private fun stopServer(preserveSession: Boolean = false) {
+    private fun stopServer(preserveSession: Boolean = false, reason: String = "server_stopped") {
         server?.stop(); server = null; address = null
-        if (!preserveSession) session.end()
+        if (!preserveSession) session.end(reason)
         previewBytes = null
         registration?.let { runCatching { (getSystemService(NSD_SERVICE) as NsdManager).unregisterService(it) } }
         registration = null
@@ -278,8 +278,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         resumed = false; displayManager.unregisterDisplayListener(displayListener)
         keepAwake()
         logLifecycle("stop")
-        stopServer(); updateCancel.set(true); updater?.close(); ui.removeCallbacks(tick)
-        closeCamera(); super.onStop()
+        stopServer(reason="backgrounded"); updateCancel.set(true); updater?.close(); ui.removeCallbacks(tick)
+        closeCamera(reason="backgrounded"); super.onStop()
     }
     override fun onDestroy() { session.close(); camera.shutdown(); updates.shutdown(); super.onDestroy() }
     private fun openCamera() {
@@ -320,7 +320,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) { openCamera() }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) { transformPreview() }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { logLifecycle("surface_destroyed"); stopServer(); closeCamera(); return true }
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { logLifecycle("surface_destroyed"); stopServer(reason="surface_destroyed"); closeCamera(reason="surface_destroyed"); return true }
     override fun onConfigurationChanged(configuration: Configuration) { super.onConfigurationChanged(configuration); texture.post { transformPreview() } }
     private fun transformPreview() {
         val size = camera.previewDimensions() ?: return
@@ -380,7 +380,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun installUpdate(release: OpenCaptureUpdates.Release) {
         if (!updating.compareAndSet(false, true)) return
-        enabled = false; screen.serving(false); stopServer(); closeCamera()
+        enabled = false; screen.serving(false); stopServer(reason="app_update"); closeCamera(reason="app_update")
         keepAwake()
         val client = OpenCaptureUpdates(); updater = client
         val cancelled = AtomicBoolean(false); updateCancel = cancelled

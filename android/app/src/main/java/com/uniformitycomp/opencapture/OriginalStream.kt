@@ -9,7 +9,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Immutable frame publication, one-frame lookahead, and controller-owned selection. */
 class OriginalStream(private val request: JSONObject, private val directory: File,
-                     private val cancel: AtomicBoolean, private val maximumBytes: Long = 4L*1024*1024*1024) {
+                     private val cancel: AtomicBoolean, private val maximumBytes: Long = 4L*1024*1024*1024,
+                     private val diagnostic: (String, JSONObject) -> Unit = { _, _ -> }) {
     private val lock = java.lang.Object()
     private val frames = mutableListOf<JSONObject>()
     private val verdicts = mutableListOf<JSONObject>()
@@ -19,6 +20,7 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
     private var lastProgress = System.nanoTime()
     private var publishedBytes = 0L
     private var reservedAttempts = 0
+    private var verdictWaitNs = 0L
     init { require(maximumBytes in 1..4L*1024*1024*1024) }
     val limit = request.getInt("frameCount") * 2
     val isFrozen: Boolean get() = synchronized(lock) { frozen != null }
@@ -41,7 +43,8 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
         while (frozen == null && reservedAttempts < limit && !hasRoom()) {
             checkLive()
             if (!wait) return@synchronized false
-            lock.wait(50)
+            val started = System.nanoTime()
+            try { lock.wait(50) } finally { verdictWaitNs += System.nanoTime()-started }
         }
         checkLive()
         if (frozen != null || reservedAttempts >= limit) return@synchronized false
@@ -69,6 +72,15 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
         JSONObject().put("mode","originals-v1").put("frames",JSONArray(frames.map { JSONObject(it.toString()) }))
             .put("verdictCount",verdicts.size).put("frozen",frozen!=null)
     }
+    fun diagnostics(): JSONObject = synchronized(lock) {
+        JSONObject().put("policy", "original-stream-counts-v1").put("requested", request.getInt("frameCount"))
+            .put("submittedReservations", reservedAttempts).put("published", frames.size)
+            .put("accepted", verdicts.count { it.getBoolean("accepted") })
+            .put("rejected", verdicts.count { !it.getBoolean("accepted") })
+            .put("pendingVerdicts", reservedAttempts-verdicts.size)
+            .put("extraReservationsBeyondTarget", (reservedAttempts-request.getInt("frameCount")).coerceAtLeast(0))
+            .put("verdictWaitSeconds", verdictWaitNs/1e9).put("verdicts", JSONArray(verdicts))
+    }
     fun file(name: String): File? = synchronized(lock) { files[name] }
     fun verdict(value: JSONObject) = synchronized(lock) {
         require(value.keys().asSequence().toSet()==setOf("index","sha256","accepted","reason") &&
@@ -83,6 +95,7 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
         require(frozen==null && index==verdicts.size+1 && index<=frames.size &&
             value.getString("sha256")==frames[index-1].getJSONObject("file").getString("sha256")) { "Wrong or late frame verdict" }
         verdicts.add(JSONObject(value.toString())); lastProgress=System.nanoTime()
+        runCatching { diagnostic("frame_selection_summary", diagnostics()) }
         val accepted=verdicts.mapIndexedNotNull { i,v -> if(v.getBoolean("accepted")) i+1 else null }
         if (accepted.size==request.getInt("frameCount") || verdicts.size==limit) {
             val descriptor=JSONObject().put("mode","originals-v1")
@@ -92,12 +105,17 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
                     if(v.getBoolean("accepted")) null else JSONObject().put("index",i+1).put("reason",v.getString("reason")) }))
             frozen=JSONObject(requireNotNull(base).toString()).put("frames",JSONArray(frames.take(verdicts.size)))
                 .put("streaming",descriptor).put("completedAt",Instant.now().toString())
+                .put("performance",JSONObject().put("controllerVerdictWaitBeforeFreezeSeconds",verdictWaitNs/1e9))
         }
         lock.notifyAll()
     }
     fun result(): JSONObject? = synchronized(lock) { frozen?.let { JSONObject(it.toString()) } }
     fun finish(): JSONObject = synchronized(lock) {
-        while (frozen==null) { checkLive(); lock.wait(50) }
+        while (frozen==null) {
+            checkLive()
+            val started = System.nanoTime()
+            try { lock.wait(50) } finally { verdictWaitNs += System.nanoTime()-started }
+        }
         JSONObject(frozen.toString())
     }
 }

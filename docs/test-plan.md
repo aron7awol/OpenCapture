@@ -3,8 +3,12 @@
 ## Continuous Preview RAW Compatibility (November 18 Development)
 
 - Default and `sequential` preserve stopped-preview behavior. Explicit
-  `sequential-preview` forces sequential stills and fresh manual preview
-  readback; it must work for batch, original streaming and phone averaging.
+  `sequential-preview` forces sequential stills and keeps repeating preview
+  active; it must work for batch, original streaming and phone averaging.
+  Fresh setup requires manual readback; an identical fully specified capture
+  may reuse verified controls-only preview or still evidence in the same
+  session. Inspect `reusedVerification.source` and every new RAW's actual
+  controls. Controls-only requests themselves always obtain fresh readback.
 - Verify abundant preview callbacks cannot evict a RAW result, satisfy a RAW
   frame count or bypass generation/session checks. Still images continue to
   match their own sensor timestamps and tags; late/ended callbacks are ignored.

@@ -97,7 +97,7 @@ def validate_request(request):
         raise Invalid("Invalid settling interval")
     if 'includePreview' in request and type(request['includePreview']) is not bool:
         raise Invalid('includePreview must be boolean')
-    if 'captureScheduling' in request and request['captureScheduling'] not in ('sequential', 'sequential-preview'):
+    if 'captureScheduling' in request and request['captureScheduling'] not in ('sequential', 'sequential-preview', 'sequential-short-preview'):
         raise Invalid('Unknown capture scheduling')
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
     if (exposure is None) != (iso is None):

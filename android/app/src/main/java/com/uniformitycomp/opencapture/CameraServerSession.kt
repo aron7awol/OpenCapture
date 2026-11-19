@@ -16,6 +16,7 @@ class CameraServerSession(
     private val notice: (String) -> Unit,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val streamCapture: ((JSONObject, AtomicBoolean, (String) -> Unit, OriginalStream) -> Pair<JSONObject, File?>)? = null,
+    private val diagnostic: (String, JSONObject) -> Unit = { _, _ -> },
 ) {
     private data class Job(val request: String, val cancel: AtomicBoolean = AtomicBoolean(false),
         var status: String = "running", var message: String = "Capturing", var result: ByteArray? = null,
@@ -53,11 +54,14 @@ class CameraServerSession(
         if (id == null || owner == null || owner != id || draining || closed) fail(409, "No active session; connect again")
         touched = now()
     }
-    @Synchronized fun expire() { if (owner != null && now() - touched > 120_000) end() }
-    @Synchronized fun end() {
+    @Synchronized fun expire() { if (owner != null && now() - touched > 120_000) end("session_expired") }
+    @Synchronized fun end(reason: String = "controller_disconnect") {
         if (draining || closed) return
         owner = null; draining = true
-        jobs.values.forEach { it.cancel.set(true) }
+        jobs.forEach { (id, job) ->
+            if (job.writing) diagnostic("job_cancel_requested", JSONObject().put("jobID", id).put("reason", reason))
+            job.cancel.set(true)
+        }
         worker.execute {
             synchronized(this) {
                 try { clearFiles(); jobs.clear(); notice("Ready") }
@@ -65,7 +69,7 @@ class CameraServerSession(
             }
         }
     }
-    @Synchronized fun close() { if (closed) return; end(); closed = true; worker.shutdown() }
+    @Synchronized fun close() { if (closed) return; end("session_closed"); closed = true; worker.shutdown() }
     @Synchronized fun state(): JSONObject = JSONObject().put("protocolVersion", 1)
         .put("cameraReady", !switching && jobs.values.none { it.writing })
         .put("connected", owner != null).put("job", jobs.keys.lastOrNull()?.let { jobState(it) } ?: JSONObject.NULL)
@@ -97,7 +101,7 @@ class CameraServerSession(
         ledger.mkdirs()
         if (!File(ledger, id).createNewFile()) fail(409, "Capture ID was already used; do not replay it")
         val job = Job(serialized); jobs[id] = job
-        if(request.has("streaming")) job.stream=OriginalStream(request,File(root,id),job.cancel)
+        if(request.has("streaming")) job.stream=OriginalStream(request,File(root,id),job.cancel, diagnostic=diagnostic)
         worker.execute {
             try {
                 check(!job.cancel.get()) { "Cancelled" }
@@ -188,7 +192,10 @@ class CameraServerSession(
         return jobState(id)
     }
     @Synchronized fun cancel(id: String): JSONObject {
-        val job = job(id); job.cancel.set(true)
+        val job = job(id)
+        diagnostic("job_cancel_requested", JSONObject().put("jobID", id).put("reason", "controller_cancel")
+            .put("writing", job.writing).put("alreadyCancelled", job.cancel.get()))
+        job.cancel.set(true)
         if (!job.writing) { cleanup(id, job); job.status = "cancelled"; job.message = "Cancelled" }
         return jobState(id)
     }
