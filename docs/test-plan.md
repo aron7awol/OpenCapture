@@ -1,5 +1,23 @@
 # Verification and Device Test Plan
 
+## iOS Session Diagnostics (November 20 Development)
+
+Core tests cover event/encoded-byte/retained-job bounds, first-fault retention,
+opaque-context and NSError userInfo exclusion, concurrent notification writes,
+late callbacks attributed to their original request, zero-photo preparation
+failure and cancellation evidence surviving file cleanup. Run both debug and
+release Swift tests, the iOS device build and simulator UI tests.
+
+On the real iPhone, establish a fresh fully manual baseline for this app build.
+Then change only initial exposure to automatic, returning to the baseline
+manual RAW request. Inspect the failed job's `cameraDiagnostics` even if no RAW
+was delivered: modes, adjustment flags, requested/observed key matches, custom
+exposure completion, session error domain/code/underlying errors, and any
+interruption or explicit stop. Reopen the same lens and recheck manual capture.
+Test autofocus and WB separately only after preserving the exposure failure.
+Verify diagnostics add no new photographs or changed control requests. A
+passing build is not evidence that the physical session failure has been fixed.
+
 ## Continuous Preview RAW Compatibility (November 18 Development)
 
 - Default and `sequential` preserve stopped-preview behavior. Explicit

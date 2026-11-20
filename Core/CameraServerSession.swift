@@ -21,6 +21,7 @@ public struct CameraJobState: Encodable {
     public var resultSha256: String?
     public var cameraReady = false
     public var streaming: OriginalStreamState? = nil
+    public var cameraDiagnostics: CameraDiagnosticSnapshot? = nil
 }
 
 /// Main-actor ownership serializes HTTP mutations with camera/UI lifecycle changes.
@@ -48,13 +49,19 @@ public struct CameraJobState: Encodable {
     private let streamCapture: ((CaptureRequest,OriginalStream) async throws -> CameraServerResult)?
     private let hash: (Data) -> String
     private let clock: () -> Double
+    private let diagnostics: ((String) -> CameraDiagnosticSnapshot?)?
+    private let diagnosticEvent: ((String,String) -> Void)?
 
     public init(root: URL, hash: @escaping (Data) -> String,
                 clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
                 streamCapture: ((CaptureRequest,OriginalStream) async throws -> CameraServerResult)? = nil,
+                diagnostics: ((String) -> CameraDiagnosticSnapshot?)? = nil,
+                diagnosticEvent: ((String,String) -> Void)? = nil,
                 capture: @escaping (CaptureRequest) async throws -> CameraServerResult) throws {
         self.root = root; self.hash = hash; self.clock = clock; self.capture = capture
         self.streamCapture = streamCapture
+        self.diagnostics = diagnostics
+        self.diagnosticEvent = diagnosticEvent
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try clearFiles()
     }
@@ -82,10 +89,11 @@ public struct CameraJobState: Encodable {
         guard let id, owner == id, ending == nil else { throw CameraServerError(409, "No active session; connect again") }
         touched = clock()
     }
-    public func expire() async throws { if owner != nil, clock() - touched > 120 { try await end() } }
-    public func end() async throws {
+    public func expire() async throws { if owner != nil, clock() - touched > 120 { try await end(reason:"lease_expired") } }
+    public func end(reason: String = "session_disconnected") async throws {
         if let ending { return try await ending.value }
         owner = nil
+        for job in jobs.values where job.writing { diagnosticEvent?(job.request.id,reason) }
         let active = task
         active?.cancel()
         let cleanup = Task { @MainActor in
@@ -166,6 +174,7 @@ public struct CameraJobState: Encodable {
     public func state(_ id: String) throws -> CameraJobState {
         let job = try job(id);var state=job.state
         state.cameraReady=cameraReady;state.streaming=job.stream?.state
+        state.cameraDiagnostics=diagnostics?(id)
         return state
     }
     public func verdict(_ id: String, _ value: StreamVerdict) throws -> CameraJobState {
@@ -211,6 +220,7 @@ public struct CameraJobState: Encodable {
     }
     public func cancel(_ id: String) async throws -> CameraJobState {
         let job = try job(id)
+        diagnosticEvent?(id,"controller_cancel_requested")
         // A stream can freeze its result while the extra exposure still owns
         // the writer. Cancellation must wait for that writer before deletion.
         if job.writing { let active = task; active?.cancel(); await active?.value }

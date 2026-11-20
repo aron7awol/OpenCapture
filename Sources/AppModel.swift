@@ -54,7 +54,8 @@ private struct CameraServerInfo: Encodable {
                         streamCapture: { [weak self] request,stream in
                             guard let self else { throw CancellationError() }
                             return try await self.capture(request,stream:stream)
-                        }, capture: { [weak self] request in
+                        }, diagnostics: { [weak self] id in self?.camera.diagnostics.snapshot(id) },
+                        diagnosticEvent: { [weak self] id,kind in self?.camera.diagnostics.record(kind,requestID:id) }, capture: { [weak self] request in
                             guard let self else { throw CancellationError() }
                             return try await self.capture(request)
                         })
@@ -88,6 +89,7 @@ private struct CameraServerInfo: Encodable {
         else { beginShutdown() }
     }
     private func beginShutdown() {
+        camera.diagnostics.record("lifecycle_shutdown",["reason":foregrounded ? "operator_disabled" : "app_backgrounded"])
         UIApplication.shared.isIdleTimerDisabled = false
         UIDevice.current.isBatteryMonitoringEnabled = false
         guard shutdownTask == nil else { return }
@@ -98,7 +100,7 @@ private struct CameraServerInfo: Encodable {
             await previous?.value
             do { try await stopNetwork(); status = "Stopped" }
             catch { status = "Temporary-file cleanup failed: \(error.localizedDescription)" }
-            camera.stop(); capabilities = nil
+            camera.stop(reason:foregrounded ? "operator_disabled" : "app_backgrounded"); capabilities = nil
         }
     }
     private func configure(_ id: String?) async throws {
@@ -106,7 +108,7 @@ private struct CameraServerInfo: Encodable {
         configuring = true
         defer { configuring = false }
         let caps = try await camera.configure(cameraID: id)
-        guard foregrounded, enabled else { camera.stop(); throw CancellationError() }
+        guard foregrounded, enabled else { camera.stop(reason:"configuration_no_longer_foreground"); throw CancellationError() }
         capabilities = caps
         cameraName = CameraService.cameras.first(where: { $0.id == caps.cameraID })?.name ?? caps.name
     }
@@ -225,6 +227,18 @@ private struct CameraServerInfo: Encodable {
     }
 
     private func capture(_ request: CaptureRequest, stream: OriginalStream? = nil) async throws -> CameraServerResult {
+        camera.diagnostics.begin(request)
+        do {
+            let result=try await performCapture(request,stream:stream)
+            camera.diagnostics.finish(request.id)
+            return result
+        } catch {
+            camera.diagnostics.finish(request.id,error:error)
+            throw error
+        }
+    }
+
+    private func performCapture(_ request: CaptureRequest, stream: OriginalStream? = nil) async throws -> CameraServerResult {
         guard let capabilities else { throw CaptureError.unavailable("Camera is not ready") }
         try request.validate()
         guard capabilities.formats.contains(request.format) else { throw CaptureError.unavailable("Capture format unavailable on this lens") }

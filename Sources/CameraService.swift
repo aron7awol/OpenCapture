@@ -19,6 +19,8 @@ struct DeviceReading {
 // Session state is queue-confined; the preview mailbox is protected by previewLock.
 final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
+    let diagnostics = CameraDiagnostics()
+    private var sessionObservers: [NSObjectProtocol] = []
     private let queue = DispatchQueue(label: "OpenCapture.camera")
     private let previewQueue = DispatchQueue(label: "OpenCapture.preview", qos: .utility)
     private let output = AVCapturePhotoOutput()
@@ -36,6 +38,47 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var previewPaused = false
     private var standardDimensions = CMVideoDimensions(width: 0, height: 0)
     private var proRAWDimensions: CMVideoDimensions?
+
+    override init() {
+        super.init()
+        let notifications: [(Notification.Name,String)] = [
+            (AVCaptureSession.runtimeErrorNotification,"session_runtime_error"),
+            (AVCaptureSession.wasInterruptedNotification,"session_interrupted"),
+            (AVCaptureSession.interruptionEndedNotification,"session_interruption_ended"),
+            (AVCaptureSession.didStartRunningNotification,"session_started"),
+            (AVCaptureSession.didStopRunningNotification,"session_stopped")]
+        sessionObservers=notifications.map { name,kind in
+            NotificationCenter.default.addObserver(forName:name,object:session,queue:nil) { [weak self] note in
+                guard let self else { return }
+                var fields=["running":String(self.session.isRunning),"interrupted":String(self.session.isInterrupted)]
+                if let error=note.userInfo?[AVCaptureSessionErrorKey] as? NSError {
+                    fields.merge(CameraDiagnostics.errorFields(error)) { _,new in new }
+                }
+                if let reason=note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber {
+                    fields["interruptionReason"]=reason.stringValue
+                }
+                self.diagnostics.record(kind,fields,fault:kind=="session_runtime_error" || kind=="session_interrupted")
+            }
+        }
+    }
+    deinit { for observer in sessionObservers { NotificationCenter.default.removeObserver(observer) } }
+
+    // Called only on the camera queue. Diagnostic reads do not mutate camera controls.
+    private func traceState(_ kind: String, requestID: String? = nil, extra: [String:String] = [:]) {
+        var fields=["running":String(session.isRunning),"interrupted":String(session.isInterrupted),
+            "unfinishedPhotos":String(delegates.count),"readiness":String(output.captureReadiness.rawValue)]
+        if let d=device {
+            let actual=Self.read(d)
+            fields.merge(["exposureSeconds":String(actual.exposure),"iso":String(actual.iso),
+                "focusPosition":String(actual.focus),"wbRed":String(actual.whiteBalance.red),
+                "wbGreen":String(actual.whiteBalance.green),"wbBlue":String(actual.whiteBalance.blue),
+                "exposureMode":String(d.exposureMode.rawValue),"focusMode":String(d.focusMode.rawValue),
+                "whiteBalanceMode":String(d.whiteBalanceMode.rawValue),"adjustingExposure":String(d.isAdjustingExposure),
+                "adjustingFocus":String(d.isAdjustingFocus),"adjustingWhiteBalance":String(d.isAdjustingWhiteBalance)]) { _,new in new }
+        }
+        fields.merge(extra) { _,new in new }
+        diagnostics.record(kind,fields,requestID:requestID)
+    }
 
     static var cameras: [CameraChoice] {
         AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera, .builtInTelephotoCamera], mediaType: .video, position: .back).devices.map {
@@ -58,6 +101,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         return try await onQueue { [self] in
             guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
             preparedKey=nil; preparedActualKey=nil; preparationTiming=[:]
+            diagnostics.record("session_stop_requested",["reason":"reconfigure"])
             session.stopRunning()
             session.beginConfiguration()
             do {
@@ -98,7 +142,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
                 }
                 session.commitConfiguration()
+                diagnostics.record("session_start_requested",["reason":"configured"])
                 session.startRunning()
+                traceState("configuration_completed")
                 return capabilities(chosen)
             } catch {
                 session.commitConfiguration()
@@ -157,10 +203,19 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     focus:reading.focus,whiteBalance:reading.whiteBalance)
         }
         let canReuse=try await onQueue { [self] in
+            traceState("preparation_started",requestID:request.id)
             guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
             guard let key, let d=device, session.isRunning,
-                  key == preparedKey || key == preparedActualKey else { return false }
-            return reusable(d,key)
+                  key == preparedKey || key == preparedActualKey else {
+                traceState("reuse_declined",requestID:request.id,extra:["reason":key == nil ? "partial_or_automatic_request" :
+                    (device == nil ? "no_device" : (!session.isRunning ? "session_stopped" : "control_key_changed"))])
+                return false
+            }
+            let reuse=reusable(d,key)
+            traceState(reuse ? "reuse_eligible" : "reuse_declined",requestID:request.id,
+                extra:["reason":reuse ? "verified_matching_key" : "actual_controls_modes_or_adjusting_flags",
+                       "requestedKeyMatches":String(key==preparedKey),"observedKeyMatches":String(key==preparedActualKey)])
+            return reuse
         }
         if canReuse {
             // Physical pattern settling remains independent of control reuse.
@@ -169,9 +224,11 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
                 guard let key, let d=device, session.isRunning, reusable(d,key) else { return false }
                 preparationTiming=["preparationStartedElapsedNs":started,"controlsLockedElapsedNs":RawCaptureDiagnostics.now,"controlsReused":1]
+                traceState("preparation_completed_reused",requestID:request.id)
                 return true
             }
             if valid { return }
+            diagnostics.record("reuse_invalidated_after_settle",requestID:request.id)
         }
         try await onQueue { [self] in
             guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
@@ -192,10 +249,14 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                       (d.activeFormat.minISO...d.activeFormat.maxISO).contains(iso) else {
                     throw CaptureError.invalid("Exposure or ISO is outside this camera's supported range")
                 }
-                d.setExposureModeCustom(duration: CMTime(seconds: seconds, preferredTimescale: 1_000_000_000), iso: iso)
+                traceState("custom_exposure_submitted",requestID:request.id,extra:["requestedSeconds":String(seconds),"requestedISO":String(iso)])
+                d.setExposureModeCustom(duration: CMTime(seconds: seconds, preferredTimescale: 1_000_000_000), iso: iso) { [weak self] syncTime in
+                    self?.diagnostics.record("custom_exposure_completed",["syncTimeSeconds":String(syncTime.seconds)],requestID:request.id)
+                }
             } else {
                 guard d.isExposureModeSupported(.continuousAutoExposure) else { throw CaptureError.unavailable("Auto exposure is unavailable") }
                 d.exposureMode = .continuousAutoExposure
+                traceState("automatic_exposure_enabled",requestID:request.id)
             }
             if let focus = request.focusPosition {
                 guard d.isLockingFocusWithCustomLensPositionSupported else { throw CaptureError.unavailable("Manual focus is unavailable") }
@@ -213,9 +274,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         var settled = false
         var stableSamples = 0
         let attempts = Int(max(10, (request.exposureSeconds ?? 0) * 2 + 2) * 10)
-        for _ in 0..<attempts {
+        for attempt in 0..<attempts {
             try Task.checkCancellation()
             settled = try await onQueue { [self] in
+                if attempt==0 || attempt%10==0 { traceState("settling_sample",requestID:request.id,extra:["attempt":String(attempt)]) }
                 guard let d = device else { return false }
                 guard !d.isAdjustingExposure && !d.isAdjustingFocus && !d.isAdjustingWhiteBalance else { return false }
                 if let seconds = request.exposureSeconds, let iso = request.iso {
@@ -235,18 +297,21 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         guard stableSamples >= 3 else { throw CaptureError.unavailable("Camera did not settle or honor the requested controls. Check the supported ranges.") }
         try await onQueue { [self] in
+            traceState("controls_settled",requestID:request.id)
             guard let d = device else { throw CaptureError.unavailable("Camera disconnected") }
             try d.lockForConfiguration()
             defer { d.unlockForConfiguration() }
             if request.exposureSeconds == nil {
                 guard d.isExposureModeSupported(.locked) else { throw CaptureError.unavailable("Exposure lock is unavailable") }
                 d.exposureMode = .locked
+                traceState("automatic_exposure_locked",requestID:request.id)
             }
             if d.isFocusModeSupported(.locked) { d.focusMode = .locked }
             if d.isWhiteBalanceModeSupported(.locked) { d.whiteBalanceMode = .locked }
         }
         try await Task.sleep(nanoseconds: UInt64(max(250, request.settleMilliseconds)) * 1_000_000)
         try await onQueue { [self] in
+            traceState("preparation_final_state",requestID:request.id)
             guard let d=device, session.isRunning else { throw CaptureError.unavailable("Camera stopped during preparation") }
             let actual=Self.read(d)
             var observed=request
@@ -254,6 +319,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             observed.focusPosition=actual.focus; observed.whiteBalance=actual.whiteBalance
             preparedKey=key; preparedActualKey=CaptureControlKey(observed)
             preparationTiming=["preparationStartedElapsedNs":started,"controlsLockedElapsedNs":RawCaptureDiagnostics.now,"controlsReused":0]
+            traceState("preparation_completed",requestID:request.id)
         }
     }
 
@@ -302,15 +368,23 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                         reading: { Self.read(d) }) { [weak self] result in
                         guard let self else { continuation.resume(with: result); return }
                         self.queue.async {
+                            switch result {
+                            case .success:
+                                self.traceState("photo_completed",requestID:request.id,extra:["index":String(index),"photoID":String(id)])
+                            case .failure(let error):
+                                self.diagnostics.record("photo_failed",CameraDiagnostics.errorFields(error),requestID:request.id,fault:true)
+                            }
                             self.delegates.removeValue(forKey: id)
                             if case .failure = result { self.preparedKey=nil; self.preparedActualKey=nil }
                             continuation.resume(with: result)
                         }
                     }
                     delegates[id] = capture
+                    traceState("photo_submitted",requestID:request.id,extra:["index":String(index),"photoID":String(id)])
                     output.capturePhoto(with: settings, delegate: capture)
                     queue.asyncAfter(deadline: .now() + max(60, d.exposureDuration.seconds * 4 + 15)) { [weak self, weak capture] in
                         guard let self, let capture, self.delegates[id] === capture else { return }
+                        self.diagnostics.record("session_stop_requested",["reason":"photo_timeout","photoID":String(id)],requestID:request.id,fault:true)
                         self.session.stopRunning()
                         for pending in Array(self.delegates.values) {
                             pending.fail(CaptureError.unavailable("Photo timed out; reconnect the camera before retrying"))
@@ -329,8 +403,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         previewLock.lock(); defer { previewLock.unlock() }; return previewData
     }
 
-    func stop() {
+    func stop(reason: String = "explicit_stop") {
         queue.async {
+            self.diagnostics.record("session_stop_requested",["reason":reason])
             self.preparedKey=nil; self.preparedActualKey=nil
             self.session.stopRunning()
             for pending in Array(self.delegates.values) { pending.fail(CancellationError()) }

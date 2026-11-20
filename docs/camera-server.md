@@ -1,5 +1,35 @@
 # Foreground Camera Server v1
 
+### iOS Session Diagnostics (November 20 Development)
+
+iOS job states now optionally include `cameraDiagnostics` (schemaVersion 1,
+platform `ios`, policy `ios-session-v1`). Existing state/result/file routes and
+their ownership guards are unchanged. The diagnostics are available even when
+preparation fails before a photo exists, and survive that job's file cleanup.
+They do not advertise the Android `persistent-camera-v1` mode.
+
+Each snapshot includes an allowlisted `request` (string values; never opaque
+context), `startedSequence`, up to 32 `events`, eight `priorEvents`, and a
+separately preserved `firstFault`. Events contain sequence, monotonic `elapsedNs`,
+wall `unixMs`, type, optional requestID and bounded string fields. Each encoded
+event is at most 2048 bytes; a snapshot stays below 96 KiB. The active job and
+eight completed snapshots are kept in memory. They are not a crash-persistent
+archive and can be lost on process exit. Existing desktop clients may ignore
+the optional field; clients saving it should retain it before starting many
+more jobs. Previous-job context is explicitly separated from current events.
+
+Evidence includes AVFoundation runtime NSError domain/code and up to three
+underlying errors (no userInfo or localized descriptions), interruption reason,
+session start/stop notifications, explicit stop/cancel causes, requested and
+actual controls, modes/adjusting flags, reuse decisions, custom-exposure
+submission/completion, settling samples and photo lifecycle. Late callbacks
+carry their original request ID and cannot become another job's first fault.
+Notification logging uses a small lock only; it does not wait for the camera
+queue, capture extra images, write files or upload independently.
+
+This build adds evidence, not a new exposure policy or an automatic retry.
+Physical automatic-exposure transition recovery remains unverified.
+
 ### Experimental Short Preview Exposure (November 19 Development)
 
 New Android builds advertise `sequential-short-preview` in captureSchedulingModes.

@@ -3,6 +3,47 @@ import XCTest
 @testable import OpenCaptureCore
 
 @MainActor final class CameraServerSessionTests: XCTestCase {
+    func testFailedPreparationReturnsDiagnosticsWithoutAnyPhotoFiles() async throws {
+        let root=try temporaryRoot();let log=CameraDiagnostics()
+        let session=try CameraServerSession(root:root,hash:{ _ in "hash" },
+            diagnostics:{ log.snapshot($0) }) { request in
+                log.begin(request)
+                log.record("session_runtime_error",["error0Domain":"AVFoundationErrorDomain","error0Code":"-11800"],fault:true)
+                let error=CaptureError.unavailable("Camera stopped during preparation")
+                log.finish(request.id,error:error)
+                throw error
+            }
+        try await session.connect(id:UUID().uuidString.lowercased(),client:"test")
+        let request=CaptureRequest();_ = try session.submit(request)
+        try await wait { try session.state(request.id).status=="failed" }
+        let state=try session.state(request.id)
+        XCTAssertEqual(state.message,"Camera stopped during preparation")
+        XCTAssertEqual(state.cameraDiagnostics?.request["id"],request.id)
+        XCTAssertEqual(state.cameraDiagnostics?.firstFault?.type,"session_runtime_error")
+        XCTAssertFalse(FileManager.default.fileExists(atPath:root.appendingPathComponent(request.id).path))
+        _ = try await session.cancel(request.id)
+        XCTAssertEqual(try session.state(request.id).cameraDiagnostics?.firstFault?.type,"session_runtime_error")
+    }
+
+    func testExplicitCancellationReasonPrecedesWriterCleanup() async throws {
+        let root=try temporaryRoot();let log=CameraDiagnostics()
+        let session=try CameraServerSession(root:root,hash:{ _ in "hash" },
+            diagnostics:{ log.snapshot($0) },diagnosticEvent:{ id,kind in log.record(kind,requestID:id) }) { request in
+                log.begin(request)
+                do { try await Task.sleep(nanoseconds:60_000_000_000) }
+                catch { log.finish(request.id,error:error);throw error }
+                return CameraServerResult(data:Data())
+            }
+        try await session.connect(id:UUID().uuidString.lowercased(),client:"test")
+        let request=CaptureRequest();_ = try session.submit(request)
+        try await wait { log.snapshot(request.id) != nil }
+        _ = try await session.cancel(request.id)
+        let events=try XCTUnwrap(log.snapshot(request.id)).events
+        XCTAssertLessThan(try XCTUnwrap(events.firstIndex { $0.type=="controller_cancel_requested" }),
+                          try XCTUnwrap(events.firstIndex { $0.type=="operation_failed" }))
+        XCTAssertTrue(try session.state(request.id).cameraReady)
+    }
+
     private func temporaryRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("Transfers")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

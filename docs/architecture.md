@@ -11,6 +11,12 @@ the default and retains each requested original unchanged.
 
 ## Boundaries
 
+- `Core/CameraDiagnostics.swift`: bounded thread-safe iOS session evidence;
+  active plus eight completed job snapshots, no pixels/context/userInfo,
+  first fault retained independently of the ring. CameraService observes
+  session/control events; CameraServerSession attaches optional snapshots to
+  existing job states. No exposure policy or retry behavior changes.
+
 - `Core/CameraServerSession.swift`: automatic single-PC reservation, bounded
   session/job state, replay protection, result-hash ACK and temporary-file cleanup.
 - `Core/ExposurePipeline.swift`: ordered original-file consumers with at most
