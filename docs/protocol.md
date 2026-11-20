@@ -104,6 +104,12 @@ Omitted focus/WB means auto then lock where supported. Explicit unsupported
 manual controls fail. `context` is opaque string-to-string data; its values
 must not influence paths, commands, or camera settings.
 
+For request identity, ISO, focus position and the three WB gains compare at
+IEEE Float32 precision, matching the iOS camera-control representation and its
+shortest-decimal JSON echo. Exposure remains Double; other request fields retain
+exact comparison. This does not change actual-result control verification or
+permit differences larger than Float32 representation of the same value.
+
 Formats: `bayerRaw`, `appleProRaw` or `jpeg`. Only request formats in the
 camera's capabilities. Quality: `speed` or `quality`; Bayer RAW requires
 speed, Apple ProRAW requires quality. 1...32 frames, 0...10000 ms additional settling. Schema and runtime

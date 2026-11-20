@@ -218,6 +218,77 @@ class ManualCaptureStateTest {
             value.copy(physicalCamera="tele") to "physical_camera_changed")
         for((changed,reason) in changes) assertEquals(reason,value.difference(changed,10f))
     }
+
+    private val samsungRequestedMatrix = listOf(1.46875, -.375, -.078125,
+        -.13671875, 1.390625, -.23828125, .08203125, -.4296875, 1.35546875)
+    private fun samsungPreview() = actual().copy(exposureNs=100_000_000, iso=1920,
+        focus=.9467119f, gains=listOf(1.484375f,1f,1f,1.7861328f),
+        crop=listOf(0,0,4000,3000), physicalCamera=null,
+        transform=listOf(1.46875, -.37109375, -.07421875,
+            -.1328125, 1.390625, -.234375, .08203125, -.42578125, 1.35546875))
+
+    @Test fun samsungPreviewToRawTransitionAcceptsTheExactRequestedMatrix() {
+        val preview = samsungPreview()
+        val still = preview.copy(transform=samsungRequestedMatrix)
+        assertEquals("transform_changed",preview.difference(still,10f))
+        assertNull(preview.differenceForStill(still,10f,samsungRequestedMatrix,true))
+        assertNull(preview.differenceForStill(preview,10f,samsungRequestedMatrix,true))
+        // The immutable readbacks stay intact for diagnostics and later preview setup.
+        assertEquals(-.37109375,preview.transform!![1],0.0)
+        assertEquals(-.375,still.transform!![1],0.0)
+    }
+
+    @Test fun requestedMatrixFallbackNeverAppliesBetweenStills() {
+        val preview = samsungPreview()
+        val still = preview.copy(transform=samsungRequestedMatrix)
+        assertEquals("transform_changed",preview.differenceForStill(still,10f,samsungRequestedMatrix,false))
+        assertNull(still.differenceForStill(still,10f,samsungRequestedMatrix,false))
+        assertEquals("transform_changed",still.differenceForStill(preview,10f,preview.transform,false))
+        val changed = still.copy(transform=samsungRequestedMatrix.map { it + .00390625 })
+        assertEquals("transform_changed",preview.differenceForStill(changed,10f,samsungRequestedMatrix,true))
+        assertEquals("transform_changed",still.differenceForStill(changed,10f,changed.transform,false))
+    }
+
+    @Test fun requestedMatrixFallbackCannotHideAnyOtherStateMismatch() {
+        val preview = samsungPreview()
+        val still = preview.copy(transform=samsungRequestedMatrix)
+        val changes = listOf(still.copy(exposureNs=200_000_000) to "exposure_changed",
+            still.copy(iso=100) to "iso_changed", still.copy(focus=2f) to "focus_changed",
+            still.copy(gains=listOf(3f,1f,1f,2f)) to "wb_changed",
+            still.copy(crop=listOf(0,0,2000,1500)) to "crop_changed",
+            still.copy(opticalStabilization=1) to "optical_stabilization_changed",
+            still.copy(videoStabilization=1) to "video_stabilization_changed",
+            still.copy(shadingMode=0) to "shading_mode_changed",
+            still.copy(shadingMapMode=0) to "shading_mode_changed",
+            still.copy(physicalCamera="other") to "physical_camera_changed",
+            still.copy(modes=listOf(0,0,0,0,1)) to "controls_not_manual",
+            still.copy(lensMoving=true) to "lens_moving")
+        for ((changed, reason) in changes)
+            assertEquals(reason,preview.differenceForStill(changed,10f,samsungRequestedMatrix,true))
+    }
+
+    @Test fun matrixFallbackRequiresCompleteFiniteRequestAndReadbacks() {
+        val preview = samsungPreview()
+        val still = preview.copy(transform=samsungRequestedMatrix)
+        for (bad in listOf(null, emptyList(), List(8){1.0}, List(9){Double.NaN}, List(9){Double.POSITIVE_INFINITY})) {
+            assertEquals("transform_changed",preview.differenceForStill(still,10f,bad,true))
+            assertEquals("missing_transform",preview.differenceForStill(still.copy(transform=bad),10f,samsungRequestedMatrix,true))
+            assertEquals("reference_missing_transform",preview.copy(transform=bad).differenceForStill(still,10f,samsungRequestedMatrix,true))
+        }
+    }
+
+    @Test fun exposureChangesComparePreviewWithPreviewThenStillWithItsRequest() {
+        val retainedPreview = samsungPreview()
+        val previousStill = retainedPreview.copy(transform=samsungRequestedMatrix)
+        val newPreview = retainedPreview.copy(exposureNs=200_000_000,iso=960)
+        val newStill = newPreview.copy(transform=samsungRequestedMatrix)
+        // Reusing the RAW readback for preview settling caused the reverse mismatch.
+        assertEquals("transform_changed",previousStill.copy(exposureNs=200_000_000,iso=960).difference(newPreview,10f))
+        assertNull(retainedPreview.copy(exposureNs=200_000_000,iso=960).difference(newPreview,10f))
+        assertNull(newPreview.differenceForStill(newStill,10f,samsungRequestedMatrix,true))
+        assertNull(newStill.differenceForStill(newStill,10f,samsungRequestedMatrix,false))
+    }
+
     @Test fun missingOrNonfiniteMetadataDoesNotVerifyAndMovingLensDoesNotSeedReuse() {
         val value=actual()
         for(bad in listOf(value.copy(iso=null),value.copy(focus=Float.NaN),value.copy(gains=listOf(Float.NaN,1f,1f,1f)),

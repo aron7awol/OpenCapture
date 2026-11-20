@@ -73,14 +73,23 @@ Android 0.4.5/build 13 skips the manual-preview round trip
 for explicitly identical fully manual captures in the same healthy camera,
 RAW reader, preview surface and session. `ManualCaptureState.kt` owns exact
 request keys, generation-based invalidation, actual-state comparisons and
-per-run callback tags. Only a completed, timing/sample-verified still can seed
-reuse; automatic/partial requests and `applyControls` still obtain fresh setup
-readings. The requested scene wait (minimum 250 ms) remains, without waiting
+per-run callback tags. Since Android 0.4.13/build 21, a verified controls-only
+manual preview can also seed reuse, including continuous-preview mode;
+automatic/partial requests and `applyControls` still obtain fresh setup
+readings. Preview verification establishes controls, never RAW quality.
+The requested scene wait (minimum 250 ms) remains, without waiting
 for another long-exposure preview result. This is not scene-pixel stability detection.
 
 Exposure, ISO, focus, both WB greens, color transform, crop, stabilization,
 processing modes and physical-lens identity are checked against actual still
 metadata. Every DNG uses its own timestamp-matched full result and shading map.
+The unreleased November 20 fix retains separate actual preview and still
+readbacks. For the first still compared with preview, a differing color matrix
+is accepted only when it matches the explicitly submitted still matrix within
+the unchanged 1e-6 tolerance; all other state fields must still match. Later
+stills compare strictly with the preceding still. Exposure-only setup compares
+preview with the retained preview reading, not with a still-template matrix.
+Original metadata is not rewritten and no extra capture is added.
 A reused-state mismatch terminates the job before publishing that frame,
 invalidates verification and makes the next job prepare normally; there is no
 hidden retry or extra attempt budget. Cancellation/errors drain the bounded

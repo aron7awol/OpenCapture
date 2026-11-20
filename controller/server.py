@@ -120,7 +120,20 @@ def validate_request(request):
 
 
 def canonical_request(request):
-    return {key: value for key, value in request.items() if value is not None}
+    # AVFoundation ISO, lens position and WB gains are Float32. Swift's JSON
+    # encoder emits the shortest Float32 decimal, not Python's original Double
+    # spelling. Compare their exact Float32 values; exposure remains Double and
+    # all identity, count, format and context fields retain exact comparison.
+    import struct
+    def f32(value):
+        return struct.unpack('!f', struct.pack('!f', value))[0]
+    result = {key: value for key, value in request.items() if value is not None}
+    for key in ('iso', 'focusPosition'):
+        if key in result:
+            result[key] = f32(result[key])
+    if 'whiteBalance' in result:
+        result['whiteBalance'] = {key: f32(value) for key, value in result['whiteBalance'].items()}
+    return result
 
 
 def stream_selection(manifest):

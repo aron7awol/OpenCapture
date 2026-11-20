@@ -3,6 +3,33 @@
 iOS and Android have different native capture APIs and therefore different
 diagnostic scopes. Do not relabel one platform's checks as the other's.
 
+## Android Preview/Still Matrix Comparison (November 20, Unreleased)
+
+A captured S20 Ultra failure had a RAW color matrix exactly matching its
+request, but five preview coefficients differed by 1/256. Build 21's newly
+reusable controls-only preview state made this a fatal `transform_changed`
+despite all other recorded controls matching. This is a color-metadata check,
+not an image alignment transform or evidence that preview stopped running.
+
+The fix keeps separate preview/still readbacks. Only the first still compared
+to preview can use its explicit requested matrix as an alternative reference;
+the 1e-6 tolerance and all other field checks remain unchanged. Later stills
+use strict still-to-still comparison. Exposure-only preview settling uses the
+retained preview readback. Timing and sampled-buffer checks still gate reuse.
+
+New evidence is metadata-only:
+
+- Per-frame `manualStateReferenceSource`: `manual_preview` or `completed_still`.
+- `manualStateTransformComparison: matched_requested_still_transform` and
+  `manual_state_template_transition` when the request-matrix alternative was
+  used successfully. The event contains unmodified reference/actual fields
+  and submitted request values.
+- `manual_state_mismatch.referenceSource` identifies the template comparison
+  behind a failure; existing request, reference, actual and checks remain.
+
+JVM fixtures reproduce the exact matrix pair. Physical S20 retesting is still
+required; a matched matrix is not proof that the RAW is photometrically usable.
+
 ## Failure Timelines And Retained Evidence (November 19 Development)
 
 Android now preserves metadata checkpoints before a frame can fail:

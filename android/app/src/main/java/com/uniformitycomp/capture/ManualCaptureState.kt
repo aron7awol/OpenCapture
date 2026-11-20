@@ -140,6 +140,17 @@ internal data class ManualStateReading(
         else -> null
     }
 
+    /** Preview and still templates can report different matrices for the same explicit request. */
+    fun differenceForStill(actual: ManualStateReading, maximumFocus: Float,
+                           requestedTransform: List<Double>?, referenceIsPreview: Boolean): String? {
+        val mismatch = difference(actual, maximumFocus)
+        if (!referenceIsPreview || mismatch != "transform_changed" ||
+            requestedTransform == null || requestedTransform.size != 9 ||
+            requestedTransform.any { !it.isFinite() }) return mismatch
+        // Recheck every field: accepting the requested matrix must not hide a crop/lens change.
+        return copy(transform = requestedTransform).difference(actual, maximumFocus)
+    }
+
     /** Keep existing exposure/ISO/focus/WB tolerances; geometry, processing modes and lens must agree. */
     fun difference(actual: ManualStateReading, maximumFocus: Float): String? {
         incomplete()?.let { return "reference_$it" }

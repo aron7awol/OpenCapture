@@ -1,5 +1,21 @@
 # Verification and Device Test Plan
 
+## Android Preview/Still Comparison (November 20, Unreleased)
+
+`ManualCaptureStateTest` covers the S20's exact preview/request/still matrix
+pair, unchanged strict still-to-still checking, malformed/non-finite matrices,
+and simultaneous crop, focus, exposure, ISO, WB, mode and camera mismatches.
+It also models exposure-only preview settling with separate preview readback.
+
+On the physical S20, repeat the failed 10% job with Keep preview running and
+inspect `manual_state_template_transition`: the first RAW should match its
+submitted matrix and retain both original readbacks. Subsequent frames should
+use `manualStateReferenceSource: completed_still`. Change exposure/ISO, then
+repeat the identical capture: fresh preview readback must settle without a
+spurious transform mismatch, and still controls must honor the new request.
+Exercise original streaming and on-device averaging. Check timing/sample
+integrity independently. No physical success is implied by passing JVM tests.
+
 ## iOS Session Diagnostics (November 20 Development)
 
 Core tests cover event/encoded-byte/retained-job bounds, first-fault retention,

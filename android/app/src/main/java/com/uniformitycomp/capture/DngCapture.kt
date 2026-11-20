@@ -49,7 +49,7 @@ data class DngSequence(val locked: DngLockedSettings, val reading: TotalCaptureR
 
 internal data class DngVerifiedState(val locked: DngLockedSettings, val actual: ManualStateReading,
     val frameNumber: Long, val sensorTimestampNs: Long, val verifiedElapsedNs: Long,
-    val source: String = "previous_completed_still") {
+    val source: String = "previous_completed_still", val previewActual: ManualStateReading? = null) {
     fun provenance(): Map<String, Any> = mapOf("source" to source,
         "frameNumber" to frameNumber, "sensorTimestampNs" to sensorTimestampNs,
         "verifiedElapsedNs" to verifiedElapsedNs)
@@ -407,7 +407,8 @@ internal class DngCapture(
                         diagnosticEvent?.invoke("manual_first_result", setupReading(observed))
                         manualReadbackReported = true
                     }
-                    val retainedReference = exposureSource?.actual?.copy(exposureNs = locked.exposureNs, iso = locked.iso)
+                    val retainedReference = (exposureSource?.previewActual ?: exposureSource?.actual)
+                        ?.copy(exposureNs = locked.exposureNs, iso = locked.iso)
                     val retainedDifference = retainedReference?.difference(stateReading(observed), minFocus)
                     val checks = controlChecks(observed, locked, minFocus)
                     setup["manualLatestResult"] = setupReading(observed)
@@ -468,6 +469,10 @@ internal class DngCapture(
             val setupEvidence = setup.toMap()
             val controlsLocked = setup["manualSettledElapsedNs"] as? Long
             val reference = fast?.actual ?: observed?.let { stateReading(it) }
+            val previewReference = if (fast == null) reference else fast.previewActual
+                ?: fast.actual.takeIf { fast.source == "previous_manual_preview" }
+            var stillReference = reference
+            var referenceIsPreview = fast == null || fast.source == "previous_manual_preview"
             var verified: DngVerifiedState? = null
             var verificationUnavailable: String? = reference?.incomplete() ?: if (reference == null) "no_setup_readback" else null
             if (locked.crop == null) verificationUnavailable = "crop_not_lockable"
@@ -482,7 +487,7 @@ internal class DngCapture(
                 val reading = requireNotNull(observed)
                 verified = DngVerifiedState(locked, requireNotNull(reference), reading.frameNumber,
                     requireNotNull(reading.get(CaptureResult.SENSOR_TIMESTAMP)), SystemClock.elapsedRealtimeNanos(),
-                    source = "previous_manual_preview")
+                    source = "previous_manual_preview", previewActual = reference)
             }
             val frames = mutableListOf<DngFrame>()
             if (count > 0) {
@@ -586,8 +591,14 @@ internal class DngCapture(
                         shading(result, "raw_${index+1}")
                         if (reportLensShading) {
                             val checks = controlChecks(result, locked, minFocus)
+                            val actualState = stateReading(result)
+                            val requestedTransform = result.request.get(CaptureRequest.COLOR_CORRECTION_TRANSFORM)?.let { matrix ->
+                                (0..8).map { matrix.getElement(it % 3, it / 3).toDouble() }
+                            }
                             val mismatch = if (checks.any { it["status"] != "matched" }) "still_controls_not_honored"
-                                else if (reference == null) "no_setup_readback" else reference.difference(stateReading(result), minFocus)
+                                else if (stillReference == null) "no_setup_readback" else stillReference.differenceForStill(
+                                    actualState, minFocus, requestedTransform, referenceIsPreview)
+                            timing["manualStateReferenceSource"] = if (referenceIsPreview) "manual_preview" else "completed_still"
                             if (mismatch != null) {
                                 diagnosticEvent?.invoke("manual_state_mismatch", mapOf("detail" to mismatch,
                                     "fatal" to (fast != null || mismatch == "still_controls_not_honored"),
@@ -595,9 +606,22 @@ internal class DngCapture(
                                     "lockedControls" to lockedReading(locked), "checks" to checks,
                                     "submittedRequest" to requestReading(result.request),
                                     "actual" to setupReading(result),
-                                    "reference" to (reference?.diagnosticFields() ?: "missing")))
+                                    "referenceSource" to timing["manualStateReferenceSource"]!!,
+                                    "reference" to (stillReference?.diagnosticFields() ?: "missing")))
                                 if (fast != null || mismatch == "still_controls_not_honored") throw ManualStateMismatch(mismatch)
                                 verificationUnavailable = mismatch
+                            } else {
+                                if (referenceIsPreview && stillReference?.difference(actualState, minFocus) == "transform_changed") {
+                                    timing["manualStateTransformComparison"] = "matched_requested_still_transform"
+                                    record("manual_state_template_transition", mapOf("requestIndex" to index + 1,
+                                        "comparison" to "matched_requested_still_transform",
+                                        "reference" to requireNotNull(stillReference).diagnosticFields(),
+                                        "actual" to actualState.diagnosticFields(),
+                                        "submittedRequest" to requestReading(result.request)))
+                                }
+                                // Only the preview-to-first-still transition has the request fallback.
+                                stillReference = actualState
+                                referenceIsPreview = false
                             }
                             // Timing-invalid originals still follow the existing diagnostic /
                             // bounded replacement policy. They must not refresh cached evidence.
@@ -668,7 +692,8 @@ internal class DngCapture(
                             if ((timing["sampleIntegrity"] as? Map<*, *>)?.get("assessment") != "consistent_sampled_path")
                                 verificationUnavailable = "samples_not_verified"
                             if (verificationUnavailable == null) verified = DngVerifiedState(locked, stateReading(result),
-                                result.frameNumber, image.timestamp, SystemClock.elapsedRealtimeNanos())
+                                result.frameNumber, image.timestamp, SystemClock.elapsedRealtimeNanos(),
+                                previewActual = previewReference)
                         }
                         DngFrame(file, result, image.width, image.height, image.timestamp)
                     } finally {
