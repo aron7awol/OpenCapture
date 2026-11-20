@@ -3,6 +3,13 @@
 A remote-controlled camera for iPhone and Android. Aim the phone, then control
 the lens and capture settings from your computer.
 
+In development builds, About offers **Dim screen during capture** (off by
+default, remembered on this phone). It requests minimum display brightness
+during camera preparation, capture and processing, then restores the previous
+brightness on completion, failure, cancellation, Stop, or leaving the app.
+It changes neither camera exposure nor system auto-brightness settings.
+The display stays on; minimum brightness is not a completely black screen.
+
 ## Install
 
 - **iPhone:** iOS 17+. Install `OpenCapture.ipa` from

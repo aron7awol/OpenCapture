@@ -54,6 +54,10 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private val ui = Handler(Looper.getMainLooper())
     private val updates = Executors.newSingleThreadExecutor()
     private val updating = AtomicBoolean(false)
+    private val captureActive = AtomicBoolean(false)
+    private var brightnessVisible = false
+    private var dimScreenDuringCapture = false
+    private var savedScreenBrightness: Float? = null
     private var updater: OpenCaptureUpdates? = null
     private var updateCancel = AtomicBoolean(false)
     private var server: CameraServer? = null
@@ -114,12 +118,17 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         window.statusBarColor = android.graphics.Color.BLACK
         window.navigationBarColor = android.graphics.Color.BLACK
         val prefs = getSharedPreferences("opencapture", MODE_PRIVATE)
+        dimScreenDuringCapture = prefs.getBoolean("dimScreenDuringCapture", false)
         deviceID = prefs.getString("deviceID", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceID", it).apply() }
         camera = CameraController(this, (application as OpenCaptureApplication).events)
         val staging = File(filesDir, "server-transfers")
         capture = OpenCaptureCamera(camera, deviceID, staging)
-        session = CameraServerSession(staging, capture::capture, { text -> runOnUiThread { if (server != null) message(text) } },
-            streamCapture=capture::captureStreaming, diagnostic = { event, detail -> camera.events.record(event, detail) })
+        session = CameraServerSession(staging,
+            { request, cancel, progress -> withDimmedCapture { capture.capture(request, cancel, progress) } },
+            { text -> runOnUiThread { if (server != null) message(text) } },
+            streamCapture={ request, cancel, progress, stream ->
+                withDimmedCapture { capture.captureStreaming(request, cancel, progress, stream) }
+            }, diagnostic = { event, detail -> camera.events.record(event, detail) })
         screen = OpenCaptureScreens(this, ::toggle, ::showAbout)
         texture.surfaceTextureListener = this
     }
@@ -171,6 +180,26 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         if (shouldKeepScreenAwake(resumed, enabled, updating.get())) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
+    private fun updateScreenBrightness() {
+        val attributes = window.attributes
+        if (dimScreenDuringCapture && captureActive.get() && brightnessVisible && enabled) {
+            if (savedScreenBrightness == null) savedScreenBrightness = attributes.screenBrightness
+            attributes.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_OFF
+        } else {
+            attributes.screenBrightness = savedScreenBrightness ?: return
+            savedScreenBrightness = null
+        }
+        window.attributes = attributes
+    }
+    private fun <T> withDimmedCapture(action: () -> T): T {
+        captureActive.set(true)
+        runOnUiThread { updateScreenBrightness() }
+        try { return action() }
+        finally {
+            captureActive.set(false)
+            runOnUiThread { updateScreenBrightness() }
+        }
+    }
     private fun logLifecycle(event: String) {
         val awakeFlag = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
         val interactive = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
@@ -186,6 +215,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun toggle() {
         enabled = !enabled; screen.serving(enabled)
+        updateScreenBrightness()
         keepAwake()
         logLifecycle("toggle")
         if (enabled) { recovery.invalidate(resetAttempts = true); openCamera(); message("Opening camera") }
@@ -269,10 +299,15 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
     override fun onResume() {
         super.onResume(); resumed = true; keepAwake()
+        brightnessVisible = true; updateScreenBrightness()
         recovery.resetAttempts()
         logLifecycle("resume")
         if (enabled) openCamera()
         ui.removeCallbacks(tick); ui.post(tick)
+    }
+    override fun onPause() {
+        brightnessVisible = false; updateScreenBrightness()
+        super.onPause()
     }
     override fun onStop() {
         resumed = false; displayManager.unregisterDisplayListener(displayListener)
@@ -332,8 +367,28 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         screen.outline(android.graphics.RectF(0f, 0f, texture.width.toFloat(), texture.height.toFloat()).apply { transform.mapRect(this) })
     }
     private fun showAbout() {
+        val content = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val padding = (20 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding, padding, padding)
+            addView(android.widget.TextView(this@OpenCaptureActivity).apply {
+                text = "Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})\nGPL-3.0-only"
+            })
+            addView(android.widget.Switch(this@OpenCaptureActivity).apply {
+                text = "Dim screen during capture"
+                isChecked = dimScreenDuringCapture
+                setOnCheckedChangeListener { _, checked ->
+                    dimScreenDuringCapture = checked
+                    getSharedPreferences("opencapture", MODE_PRIVATE).edit().putBoolean("dimScreenDuringCapture", checked).apply()
+                    updateScreenBrightness()
+                }
+            })
+            addView(android.widget.TextView(this@OpenCaptureActivity).apply {
+                text = "Use minimum screen brightness while preparing, capturing and processing photos. Restore brightness when finished or when leaving the app. Camera exposure is unchanged."
+            })
+        }
         AlertDialog.Builder(this).setTitle("OpenCapture")
-            .setMessage("Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})\nGPL-3.0-only")
+            .setView(content)
             .setPositiveButton("Check for updates") { _, _ -> checkUpdate() }
             .setNeutralButton("Licenses") { _, _ ->
                 val text = resources.openRawResource(R.raw.third_party_notices).bufferedReader().use { it.readText() }

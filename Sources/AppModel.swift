@@ -25,6 +25,25 @@ private struct CameraServerInfo: Encodable {
     @Published var update: AppUpdate?
     @Published var updateStatus = ""
     @Published var checkingUpdate = false
+    @Published var dimScreenDuringCapture = UserDefaults.standard.bool(forKey: "dimScreenDuringCapture") {
+        didSet {
+            UserDefaults.standard.set(dimScreenDuringCapture, forKey: "dimScreenDuringCapture")
+            updateScreenBrightness()
+        }
+    }
+    private var captureActive = false
+    private var sceneActive = false
+    private var savedScreenBrightness: CGFloat?
+
+    private func updateScreenBrightness() {
+        if dimScreenDuringCapture && captureActive && sceneActive && enabled {
+            if savedScreenBrightness == nil { savedScreenBrightness = UIScreen.main.brightness }
+            UIScreen.main.brightness = 0
+        } else if let previous = savedScreenBrightness {
+            UIScreen.main.brightness = previous
+            savedScreenBrightness = nil
+        }
+    }
     private var foregrounded = false
     private var configuring = false
     private var server: LANHTTPServer?
@@ -40,6 +59,7 @@ private struct CameraServerInfo: Encodable {
 
     func foreground() async {
         foregrounded = true
+        sceneActive = true; updateScreenBrightness()
         UIDevice.current.isBatteryMonitoringEnabled = true
         if let shutdownTask { await shutdownTask.value }
         guard foregrounded, enabled else { return }
@@ -79,7 +99,10 @@ private struct CameraServerInfo: Encodable {
             } catch { if !Task.isCancelled { status = error.localizedDescription } }
         }
     }
-    func inactive() { UIApplication.shared.isIdleTimerDisabled = false }
+    func inactive() {
+        sceneActive = false; updateScreenBrightness()
+        UIApplication.shared.isIdleTimerDisabled = false
+    }
     func background() {
         foregrounded = false; beginShutdown()
     }
@@ -89,6 +112,7 @@ private struct CameraServerInfo: Encodable {
         else { beginShutdown() }
     }
     private func beginShutdown() {
+        sceneActive = false; updateScreenBrightness()
         camera.diagnostics.record("lifecycle_shutdown",["reason":foregrounded ? "operator_disabled" : "app_backgrounded"])
         UIApplication.shared.isIdleTimerDisabled = false
         UIDevice.current.isBatteryMonitoringEnabled = false
@@ -227,6 +251,8 @@ private struct CameraServerInfo: Encodable {
     }
 
     private func capture(_ request: CaptureRequest, stream: OriginalStream? = nil) async throws -> CameraServerResult {
+        captureActive = true; updateScreenBrightness()
+        defer { captureActive = false; updateScreenBrightness() }
         camera.diagnostics.begin(request)
         do {
             let result=try await performCapture(request,stream:stream)

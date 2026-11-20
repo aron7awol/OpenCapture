@@ -519,6 +519,15 @@ accuracy. Keep the original DNGs for the initial parity test.
 
 ## Acceptance before calibration integration
 
+For **Dim screen during capture**, verify on each physical platform that the
+off-by-default About preference persists, reduces screen brightness during
+manual controls/original bursts/averaging, and restores the previous brightness
+after success, failure, cancellation, Stop, backgrounding and disabling the
+option mid-capture. On Android the previous per-window override (including
+system-default `-1`) must be restored; do not request system-settings permission.
+Check that camera metadata and retained originals follow the same capture path.
+Simulator/build success alone does not establish physical brightness behavior.
+
 Repeat fixed-geometry dark/baseline/synthetic-pattern runs at identical manual
 settings. Quantify temporal noise, clipping, spatial repeatability, optical
 resolution, and known perturbation recovery. Do not generate a correction map

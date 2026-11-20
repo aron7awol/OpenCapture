@@ -66,6 +66,12 @@ struct AboutView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Toggle("Dim screen during capture", isOn: $model.dimScreenDuringCapture)
+                        .accessibilityIdentifier("dimDuringCapture")
+                } footer: {
+                    Text("Use minimum screen brightness while preparing, capturing and processing photos. Restore brightness when finished or when leaving the app. Camera exposure is unchanged.")
+                }
                 LabeledContent("Version", value: "\(version) (build \(build))")
                 Button { Task { await model.checkUpdate() } } label: { Label("Check for updates", systemImage: "arrow.clockwise") }
                     .disabled(model.checkingUpdate)
