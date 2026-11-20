@@ -48,6 +48,34 @@ requested preview exposure separately and actual preview/RAW results when delive
 The feature is experimental, default off, exact-capability-gated, and unavailable
 on iOS/older Android clients. Software tests are not physical compatibility proof.
 
+### Experimental Queued Stills With Preview (November 20 Development)
+
+New Android builds advertise `queued-preview` in captureSchedulingModes. The
+optional request value keeps the manually locked preview running at the full
+requested exposure, as `sequential-preview` does, and submits up to four RAW
+stills before the earlier ones finish (`queued-ahead-v1`). Camera2 serves
+single captures ahead of the repeating request, so queued stills are meant to
+expose back to back with no preview frame between them. With one still at a
+time, a saved Xiaomi run showed each still waiting behind about six preview
+frames as long as the still itself.
+
+The limit of four is the RAW reader's buffer count: a still is counted from
+submission until its image is closed, so no more than four buffers are held.
+Stills are processed, verified, written and published strictly in request
+order; controls, per-still verification, timing integrity and sample checks
+are unchanged. With streaming, each still is reserved first and at most four
+attempts may be unjudged; accepted plus pending attempts still never exceed
+the target. Phone averaging keeps one still at a time under this mode. A
+failure or cancellation aborts the outstanding requests as before.
+
+Sidecars record `exposureOverlapPolicy:"queued-ahead-v1"`, `queuedAheadWindow`
+and `unfinishedStillsAtSubmission`; `raw_preview_policy` records the requested
+and actual window. Frame numbers of consecutive stills show whether preview
+frames ran between them. The mode is experimental, default off, exact-
+capability-gated and unavailable on iOS and older Android clients. Whether a
+given phone runs queued stills back to back, and whether the first still after
+preview matches the following ones, is unverified on hardware.
+
 Development Android info/state includes optional boolean `cameraPreviewReady`:
 the current preview is configured and has delivered a result since camera
 close/reopen. It is false during capture/recovery; it is not a signal/noise or

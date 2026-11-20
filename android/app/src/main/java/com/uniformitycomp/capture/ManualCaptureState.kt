@@ -6,6 +6,15 @@ internal object ShortPreviewExposure {
     fun exposure(stillNs: Long, enabled: Boolean): Long = if (enabled) minOf(stillNs, CAP_NS) else stillNs
 }
 
+/** Stills submitted before earlier ones finish, so preview frames do not run between them. */
+internal object QueuedStills {
+    const val POLICY = "queued-ahead-v1"
+    const val MAXIMUM = 4
+    /** Submitted and not yet closed. Each may hold one RAW buffer of the reader. */
+    fun window(enabled: Boolean, maxImages: Int): Int =
+        if (enabled) maxImages.coerceIn(1, MAXIMUM) else 1
+}
+
 /** Immutable request identity. Omitted/automatic values never mean "keep the previous value". */
 internal data class ManualRequestKey(
     val exposureNs: Long, val iso: Int, val focus: Float, val gains: List<Float>

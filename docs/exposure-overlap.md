@@ -41,8 +41,14 @@ reader. The merged performance source also reuses compatible RAW+preview session
 and verified unchanged manual controls; compare overlap with those settings
 held constant.
 
-Per-frame diagnostics add `exposureOverlapPolicy` (`two-frame-after-image-v1`
-or `sequential-v1`) and `submittedWhilePreviousUnfinished`. Existing submission,
+`captureScheduling:"queued-preview"` is a separate policy, `queued-ahead-v1`:
+with continuous preview, up to four stills are submitted before earlier ones
+finish, bounded by the reader's four RAW buffers. It does not combine with the
+two-frame overlap above. See [camera server](camera-server.md).
+
+Per-frame diagnostics add `exposureOverlapPolicy` (`two-frame-after-image-v1`,
+`queued-ahead-v1` or `sequential-v1`) and
+`submittedWhilePreviousUnfinished`. Existing submission,
 image-arrival, result-arrival and image-close times demonstrate actual overlap.
 `previousImageClosedElapsedNs` may be later than the current submission; that
 is valid overlap, not a negative-duration exposure. Partial-result and setup

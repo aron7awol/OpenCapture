@@ -19,6 +19,10 @@ locked preview requests running between sequential RAW stills. It disables
 the skip-preview fast path and separates preview callbacks from RAW metadata
 matching. Gate this exact mode; see `camera-server.md` for evidence fields.
 
+`captureScheduling:"queued-preview"` keeps that preview and submits up to four
+RAW stills ahead, so preview frames need not run between them. Results keep
+request order. Gate this exact mode; see `camera-server.md`.
+
 Optional `streaming:{"mode":"originals-v1"}` is defined by
 [the foreground original-streaming extension](original-streaming.md). It is
 capture-only, capability-gated and mutually exclusive with phone averaging.

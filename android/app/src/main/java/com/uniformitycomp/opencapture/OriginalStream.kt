@@ -7,7 +7,7 @@ import java.io.File
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Immutable frame publication, one-frame lookahead, and controller-owned selection. */
+/** Immutable frame publication, bounded lookahead, and controller-owned selection. */
 class OriginalStream(private val request: JSONObject, private val directory: File,
                      private val cancel: AtomicBoolean, private val maximumBytes: Long = 4L*1024*1024*1024,
                      private val diagnostic: (String, JSONObject) -> Unit = { _, _ -> }) {
@@ -21,6 +21,8 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
     private var publishedBytes = 0L
     private var reservedAttempts = 0
     private var verdictWaitNs = 0L
+    // Unjudged attempts, counting exposures in flight. Queued stills need more than one ahead.
+    private val unjudged = if (OpenCaptureProtocol.queueAhead(request)) com.uniformitycomp.capture.QueuedStills.MAXIMUM else 2
     init { require(maximumBytes in 1..4L*1024*1024*1024) }
     val limit = request.getInt("frameCount") * 2
     val isFrozen: Boolean get() = synchronized(lock) { frozen != null }
@@ -36,7 +38,7 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
     }
     fun next(): Boolean = reserve(wait = true)
     fun tryNext(): Boolean = reserve(wait = false)
-    private fun hasRoom(): Boolean = reservedAttempts-verdicts.size < 2 &&
+    private fun hasRoom(): Boolean = reservedAttempts-verdicts.size < unjudged &&
         reservedAttempts-verdicts.count { !it.getBoolean("accepted") } < request.getInt("frameCount")
     private fun reserve(wait: Boolean): Boolean = synchronized(lock) {
         // Pending originals may all pass. Only a rejection justifies crossing the target.
@@ -77,7 +79,7 @@ class OriginalStream(private val request: JSONObject, private val directory: Fil
             .put("submittedReservations", reservedAttempts).put("published", frames.size)
             .put("accepted", verdicts.count { it.getBoolean("accepted") })
             .put("rejected", verdicts.count { !it.getBoolean("accepted") })
-            .put("pendingVerdicts", reservedAttempts-verdicts.size)
+            .put("pendingVerdicts", reservedAttempts-verdicts.size).put("unjudgedLimit", unjudged)
             .put("extraReservationsBeyondTarget", (reservedAttempts-request.getInt("frameCount")).coerceAtLeast(0))
             .put("verdictWaitSeconds", verdictWaitNs/1e9).put("verdicts", JSONArray(verdicts))
     }

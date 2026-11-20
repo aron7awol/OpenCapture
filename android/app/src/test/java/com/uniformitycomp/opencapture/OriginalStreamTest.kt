@@ -90,6 +90,38 @@ class OriginalStreamTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun queuedPreviewAdmitsFourUnjudgedAttemptsButNeverPastTheTarget() {
+        val root=Files.createTempDirectory("stream-queued").toFile()
+        try {
+            val request=OpenCaptureProtocol.localRequest(6,null,null,null).put("captureScheduling","queued-preview")
+            val stream=OriginalStream(request,root,AtomicBoolean())
+            stream.begin(JSONObject(),"start","fixture")
+            assertTrue(stream.next())
+            for(i in 2..4) assertTrue(stream.tryNext()) // Four exposures requested together.
+            assertFalse(stream.tryNext())
+            assertEquals(4,stream.diagnostics().getInt("unjudgedLimit"))
+            val records=(1..4).map { frame(root,it).also { record -> stream.publish(record) } }
+            assertFalse(stream.tryNext()) // Publication is not a verdict.
+            stream.verdict(verdict(records[0],true));assertTrue(stream.tryNext());assertFalse(stream.tryNext())
+            stream.verdict(verdict(records[1],true));assertTrue(stream.tryNext())
+            // Six reserved, none rejected: the target is covered, whatever the window allows.
+            stream.verdict(verdict(records[2],true));assertFalse(stream.tryNext())
+            stream.verdict(verdict(records[3],false));assertTrue(stream.tryNext());assertFalse(stream.tryNext())
+            for(i in 5..7) { val record=frame(root,i);stream.publish(record);stream.verdict(verdict(record,true)) }
+            val result=stream.finish().getJSONObject("streaming")
+            assertEquals("complete",result.getString("status"));assertEquals(7,result.getInt("attemptedFrames"))
+            assertFalse(stream.tryNext())
+        } finally { root.deleteRecursively() }
+        // Without the mode the limit stays at two.
+        val plain=Files.createTempDirectory("stream-plain").toFile()
+        try {
+            val stream=OriginalStream(OpenCaptureProtocol.localRequest(6,null,null,null),plain,AtomicBoolean())
+            stream.begin(JSONObject(),"start","fixture")
+            assertTrue(stream.next());assertTrue(stream.tryNext());assertFalse(stream.tryNext())
+            assertEquals(2,stream.diagnostics().getInt("unjudgedLimit"))
+        } finally { plain.deleteRecursively() }
+    }
+
     @Test fun reservationsCountUnpublishedCapturesAndFreezeStopsAdmission() {
         val root=Files.createTempDirectory("stream-exposure-overlap").toFile()
         try {

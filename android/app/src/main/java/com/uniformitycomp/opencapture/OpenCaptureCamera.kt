@@ -26,7 +26,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         val selected = sizes.filter { it.width.toLong() * it.height <= 13_000_000L }.maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.filter { it.width.toLong() * it.height <= 60_000_000L }.minByOrNull { it.width.toLong() * it.height }
         return JSONObject().put("protocolVersion", 1).put("cameraID", camera.cameraID())
-            .put("captureSchedulingModes", JSONArray(listOf("sequential", "sequential-preview", "sequential-short-preview")))
+            .put("captureSchedulingModes", JSONArray(listOf("sequential", "sequential-preview", "sequential-short-preview", "queued-preview")))
             .put("captureStreamingModes", JSONArray(if (usable && selected != null) listOf("originals-v1") else emptyList<String>()))
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
@@ -202,6 +202,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 overlap = OpenCaptureProtocol.overlap(request, selection != null, stream != null),
                 keepPreviewRunning = OpenCaptureProtocol.keepPreviewRunning(request),
                 shortPreviewExposure = OpenCaptureProtocol.shortPreviewExposure(request),
+                queueAhead = OpenCaptureProtocol.queueAhead(request),
                 tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->
                 if (processor == null) recordFrame(frame)
                 else {

@@ -20,6 +20,18 @@ class OpenCaptureProtocolTest {
         for (mode in listOf(true, 1, "parallel", "preview", JSONObject.NULL))
             rejected { OpenCaptureProtocol.request(request().put("captureScheduling", mode)) }
     }
+    @Test fun queuedPreviewKeepsThePreviewAndNeverUsesTheTwoFrameOverlap() {
+        val r = request().put("captureScheduling", "queued-preview")
+        OpenCaptureProtocol.request(r)
+        assertTrue(OpenCaptureProtocol.queueAhead(r))
+        assertTrue(OpenCaptureProtocol.keepPreviewRunning(r))
+        assertFalse(OpenCaptureProtocol.shortPreviewExposure(r))
+        for (average in listOf(false, true)) for (stream in listOf(false, true))
+            assertFalse(OpenCaptureProtocol.overlap(r, average, stream))
+        for (mode in listOf("sequential", "sequential-preview", "sequential-short-preview"))
+            assertFalse(OpenCaptureProtocol.queueAhead(request().put("captureScheduling", mode)))
+        assertFalse(OpenCaptureProtocol.queueAhead(request()))
+    }
     @Test fun experimentalExposureDoesNotRewriteReportedLimits() {
         val minimum = 100_000L
         val samsungMaximum = 100_000_000L

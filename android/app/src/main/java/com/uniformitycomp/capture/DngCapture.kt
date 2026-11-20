@@ -58,7 +58,7 @@ internal data class DngVerifiedState(val locked: DngLockedSettings, val actual: 
 internal class ManualStateMismatch(val reason: String) : IllegalStateException(
     "Manual state verification failed: $reason; normal setup required on the next job")
 
-/** At most two unfinished originals, bounded queues, no averaging or demosaicing. Called off the UI thread. */
+/** At most two unfinished originals (QueuedStills.MAXIMUM when queued), bounded queues, no averaging or demosaicing. Called off the UI thread. */
 internal class DngCapture(
     private val camera: CameraDevice,
     private val reader: ImageReader,
@@ -77,7 +77,8 @@ internal class DngCapture(
     private val failure = AtomicReference<Throwable?>()
     private data class RawArrival(val image: Image, val elapsedNs: Long,
         val sampledElapsedNs: Long, val samples: Map<String, Any>, val queueDepth: Int)
-    private val images = ArrayBlockingQueue<RawArrival>(2)
+    private val images = ArrayBlockingQueue<RawArrival>(maxOf(2, QueuedStills.MAXIMUM))
+    @Volatile private var arrivalLimit = 2
     private val results = ArrayBlockingQueue<TotalCaptureResult>(16)
     private val timings = ConcurrentHashMap<Int, ConcurrentHashMap<String, Any>>()
     private var session: CameraCaptureSession? = null
@@ -205,7 +206,8 @@ internal class DngCapture(
             maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
             overlap: Boolean = false,
             tryReserveNext: (() -> Boolean)? = null,
-            keepPreviewRunning: Boolean = false, shortPreviewExposure: Boolean = false): DngSequence {
+            keepPreviewRunning: Boolean = false, shortPreviewExposure: Boolean = false,
+            queueAhead: Boolean = false): DngSequence {
         check()
         require(count in 0..32)
         require(maxAttempts in count..64 && (needsMore != null || maxAttempts == count))
@@ -213,6 +215,10 @@ internal class DngCapture(
         require(!overlap || reader.maxImages >= 2) { "Overlap requires two owned RAW buffers" }
         require(!keepPreviewRunning || !overlap) { "Continuous-preview compatibility requires sequential RAW captures" }
         require(!shortPreviewExposure || keepPreviewRunning) { "Short preview requires continuous sequential preview" }
+        require(!queueAhead || (keepPreviewRunning && !shortPreviewExposure)) { "Queued stills require continuous full-exposure preview" }
+        // Phone averaging admits attempts one at a time; it keeps sequential stills.
+        val window = QueuedStills.window(queueAhead && (needsMore == null || tryReserveNext != null), reader.maxImages)
+        arrivalLimit = maxOf(2, window)
         val caps = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         require(caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) &&
@@ -285,7 +291,8 @@ internal class DngCapture(
                         record("raw_image_arrived", timeline.image(acquired, image.timestamp, images.size) +
                             mapOf("samples" to samples, "closingWithoutDelivery" to (ended.get() || cancel.get())))
                         if (ended.get() || cancel.get()) image.close()
-                        else if (!images.offer(RawArrival(image, acquired, sampled, samples, images.size))) {
+                        else if (images.size >= arrivalLimit ||
+                            !images.offer(RawArrival(image, acquired, sampled, samples, images.size))) {
                             image.close()
                             failure.compareAndSet(null, IllegalStateException("RAW queue overflow"))
                         }
@@ -509,6 +516,7 @@ internal class DngCapture(
                 synchronized(images) { while (true) (images.poll() ?: break).image.close() }
                 diagnosticEvent?.invoke("raw_preview_policy", mapOf(
                     "repeatingPreviewDuringStill" to keepPreviewRunning, "overlap" to overlap,
+                    "queuedAheadRequested" to queueAhead, "queuedAheadWindow" to window,
                     "exposureNs" to locked.exposureNs, "iso" to locked.iso,
                     "shortPreviewExposure" to shortPreviewExposure, "requestedPreviewExposureNs" to previewExposureNs))
                 var physicalId: String? = null
@@ -524,7 +532,7 @@ internal class DngCapture(
                         if (!callbackGate.accepts(tag) || tag?.index == null) continue // Outstanding setup preview.
                         val sensor = requireNotNull(result.get(CaptureResult.SENSOR_TIMESTAMP))
                         if (sensor == timestamp) return result
-                        check(pendingResults.size < 2 && !pendingResults.containsKey(sensor)) { "Unexpected RAW result backlog" }
+                        check(pendingResults.size < maxOf(2, window) && !pendingResults.containsKey(sensor)) { "Unexpected RAW result backlog" }
                         pendingResults[sensor] = result
                     }
                 }
@@ -546,8 +554,13 @@ internal class DngCapture(
                     timing["controlsReused"] = reusable != null
                     if (reportLensShading) timing["timingPolicy"] = RawTiming.POLICY
                     timing["requestIndex"] = index+1
-                    timing["exposureOverlapPolicy"] = if (overlap) "two-frame-after-image-v1" else "sequential-v1"
+                    timing["exposureOverlapPolicy"] = if (window > 1) QueuedStills.POLICY else
+                        if (overlap) "two-frame-after-image-v1" else "sequential-v1"
                     timing["submittedWhilePreviousUnfinished"] = overlapping
+                    if (window > 1) {
+                        timing["queuedAheadWindow"] = window
+                        timing["unfinishedStillsAtSubmission"] = submittedStills - completedStills
+                    }
                     timing["imageReaderMaxImages"] = reader.maxImages
                     timing["requestTemplate"] = "TEMPLATE_STILL_CAPTURE"
                     timing["repeatingPreviewDuringStill"] = keepPreviewRunning
@@ -568,20 +581,29 @@ internal class DngCapture(
                     submittedStills++
                     return timing
                 }
-                var prefetched: ConcurrentHashMap<String, Any>? = null
+                // Submitted stills whose image has not been taken yet, in request order.
+                val ahead = java.util.ArrayDeque<ConcurrentHashMap<String, Any>>()
+                var next = 0
                 for (index in 0 until maxAttempts) {
-                    if (prefetched == null && needsMore != null && !needsMore()) break
-                    val timing = prefetched ?: submit(index, false)
-                    prefetched = null
+                    if (ahead.isEmpty()) {
+                        if (needsMore != null && !needsMore()) break
+                        ahead.add(submit(next++, false))
+                    }
+                    // Queued stills run back to back: single captures go ahead of the
+                    // repeating preview. Every earlier image is closed here, so at most
+                    // `window` RAW buffers can be held at once.
+                    while (ahead.size < window && next < maxAttempts &&
+                        (needsMore == null || tryReserveNext!!.invoke())) ahead.add(submit(next++, true))
+                    val timing = ahead.removeFirst()
                     previousCloseElapsed?.let { timing["previousImageClosedElapsedNs"] = it }
                     val arrival = await(images)
                     val image = arrival.image
                     val frame = try {
                         // The sensor has delivered this RAW. Start one subsequent exposure
                         // while retaining this Image for its own metadata and DNG write.
-                        if (overlap && index+1 < maxAttempts &&
+                        if (overlap && ahead.isEmpty() && next < maxAttempts &&
                             (needsMore == null || tryReserveNext!!.invoke())) {
-                            prefetched = submit(index+1, true)
+                            ahead.add(submit(next++, true))
                         }
                         val result = matchedResult(image.timestamp)
                         check(callbackGate.accepts(result.request.tag) &&

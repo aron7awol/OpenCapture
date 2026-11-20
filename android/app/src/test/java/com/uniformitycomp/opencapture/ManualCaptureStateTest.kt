@@ -6,6 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ManualCaptureStateTest {
+    @Test fun queuedStillsNeverExceedTheOwnedRawBuffers() {
+        assertEquals(1, QueuedStills.window(false, 4))
+        assertEquals(4, QueuedStills.window(true, 4))
+        assertEquals(4, QueuedStills.window(true, 8))
+        assertEquals(2, QueuedStills.window(true, 2))
+        assertEquals(1, QueuedStills.window(true, 1))
+        assertEquals(1, QueuedStills.window(true, 0))
+    }
     @Test fun shortPreviewCapNeverChangesTheRequestedStillOrValidationBounds() {
         assertEquals(200_000_000L, ShortPreviewExposure.exposure(5_000_000_000L,true))
         assertEquals(50_000_000L, ShortPreviewExposure.exposure(50_000_000L,true))

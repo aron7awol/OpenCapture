@@ -37,7 +37,10 @@ rejection frees a slot; N accepted frames still freeze immediately, and 2*N
 failed attempts still produce an insufficient result. Interior lookahead and
 controller validation remain enabled, including in sequential-preview mode.
 The historical sequential implementation used published count before submission;
-that was valid only with its single unfinished photo. Capture order
+that was valid only with its single unfinished photo. Under
+`captureScheduling:"queued-preview"` the unjudged limit is four instead of
+two; the target-aware bound is unchanged, and stream diagnostics report
+`unjudgedLimit`. Capture order
 and verdict order are sequential. At most 2*N total attempts are allowed, with
 the existing per-file, manifest and 4 GiB job limits.
 

@@ -24,7 +24,11 @@ object OpenCaptureProtocol {
             (value.getInt("frameCount") > 1 || streaming)
 
     internal fun keepPreviewRunning(value: JSONObject): Boolean =
-        value.optString("captureScheduling", "") in setOf("sequential-preview", "sequential-short-preview")
+        value.optString("captureScheduling", "") in setOf("sequential-preview", "sequential-short-preview", "queued-preview")
+
+    /** Preview stays on at the full exposure; several stills are requested ahead. */
+    internal fun queueAhead(value: JSONObject): Boolean =
+        value.optString("captureScheduling", "") == "queued-preview"
 
     internal fun shortPreviewExposure(value: JSONObject): Boolean =
         value.optString("captureScheduling", "") == "sequential-short-preview"
@@ -49,7 +53,7 @@ object OpenCaptureProtocol {
         val frames = integer(value, "frameCount", 1, 32)
         val operation = if (value.isNull("operation")) "capture" else value.getString("operation")
         require(operation in setOf("capture", "applyControls")) { "Unknown operation" }
-        require(!value.has("captureScheduling") || value.get("captureScheduling") in setOf("sequential", "sequential-preview", "sequential-short-preview")) { "Unknown capture scheduling" }
+        require(!value.has("captureScheduling") || value.get("captureScheduling") in setOf("sequential", "sequential-preview", "sequential-short-preview", "queued-preview")) { "Unknown capture scheduling" }
         require(operation != "applyControls" || frames == 1)
         averaging(value)
         if (value.has("streaming")) {
