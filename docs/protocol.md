@@ -23,6 +23,12 @@ matching. Gate this exact mode; see `camera-server.md` for evidence fields.
 RAW stills ahead, so preview frames need not run between them. Results keep
 request order. Gate this exact mode; see `camera-server.md`.
 
+`captureScheduling:"sequential-short-preview"` caps manual repeating preview
+at 0.2 seconds. Unreleased setup uses one separately tagged full-exposure preview
+request when needed, so applyControls still returns actual requested-exposure
+readback without queuing long repeating previews. RAW exposure and verification
+remain unchanged. Gate this exact mode; see `camera-server.md` for setup scope.
+
 Optional `streaming:{"mode":"originals-v1"}` is defined by
 [the foreground original-streaming extension](original-streaming.md). It is
 capture-only, capability-gated and mutually exclusive with phone averaging.

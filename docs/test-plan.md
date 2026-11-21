@@ -1,5 +1,24 @@
 # Verification and Device Test Plan
 
+## Short Preview During Setup (November 20, Unreleased)
+
+JVM regression cases use the failed Xiaomi's approximately seven-second requests:
+old auto tags, other-run tags and short preview readbacks cannot satisfy the
+full-exposure request; exposure tolerance and ISO/crop/matrix/mode/lens comparisons
+remain enforced. Ended generations cannot accept that request's late callback.
+
+Physical test: select `sequential-short-preview`, keep phone/lens/pattern fixed,
+and run one controls-only operation at the previously working 2.13 seconds,
+then one at approximately 7.05 seconds / ISO 3200. Retain setup diagnostics.
+Explicit bootstrap and manual repeating requests should be at most 0.2 seconds,
+followed by exactly one separately tagged full-exposure preview request. Its
+actual full exposure must be returned to Windows; zero RAW photos are expected.
+Stop at the first error. If controls pass, verify a bounded RAW pair at the same
+controls, including actual exposure, timestamp matching, sample integrity and
+metadata. Then exercise identical-state reuse, exposure changes, cancellation,
+streaming and phone averaging. Standard mode must retain its existing behavior.
+No installed-phone recovery or timing improvement is established by JVM tests.
+
 ## Android Preview/Still Comparison (November 20, Unreleased)
 
 `ManualCaptureStateTest` covers the S20's exact preview/request/still matrix

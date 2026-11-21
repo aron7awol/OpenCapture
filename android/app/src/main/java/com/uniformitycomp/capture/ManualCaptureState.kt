@@ -187,6 +187,7 @@ internal class CaptureCallbackGate {
     @Volatile private var stillsOnly = false
     fun tag(index: Int? = null) = Tag(this, index)
     fun accepts(tag: Any?): Boolean = !ended && tag is Tag && tag.owner === this
+    fun matches(tag: Any?, expected: Tag): Boolean = accepts(tag) && tag === expected
     fun queuesResult(tag: Any?): Boolean = accepts(tag) && (!stillsOnly || (tag as Tag).index != null)
     fun beginStills() { stillsOnly = true }
     fun end() { ended = true }

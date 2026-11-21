@@ -27,6 +27,44 @@ class ManualCaptureStateTest {
         assertEquals("mismatch",actual.controlChecks(5_000_000_000,1000,1f,listOf(2f,1f,1f,1.5f),10f)
             .single { it["field"]=="exposureNs" }["status"])
     }
+    @Test fun longExposureSetupCannotUseQueuedOrShortPreviewAsFullReadback() {
+        val gate = CaptureCallbackGate()
+        val autoTag = gate.tag()
+        val shortTag = gate.tag()
+        val fullTag = gate.tag()
+        val longNs = 7_048_386_114L // Failed Xiaomi setup request.
+        val full = actual().copy(exposureNs = longNs, iso = 3200)
+        val short = full.copy(exposureNs = ShortPreviewExposure.exposure(longNs, true))
+        fun accepted(tag: Any?, reading: ManualStateReading): Boolean = gate.matches(tag, fullTag) &&
+            reading.controlChecks(longNs, 3200, 1f, listOf(2f,1f,1f,1.5f), 10f)
+                .all { it["status"] == "matched" }
+        // Eight queued callbacks must not complete the controls-only operation,
+        // even when an older request reports the desired exposure.
+        repeat(8) { assertFalse(accepted(autoTag, full.copy(modes = listOf(1,0,0,0,0)))) }
+        assertFalse(accepted(shortTag, short))
+        assertFalse(accepted(fullTag, short))
+        assertFalse(accepted(CaptureCallbackGate().tag(), full))
+        assertTrue(accepted(fullTag, full))
+        gate.end()
+        assertFalse(accepted(fullTag, full))
+    }
+
+    @Test fun shortToFullSetupReadbackAllowsOnlyTheRequestedExposureChange() {
+        val longNs = 7_076_803_008L
+        val short = actual().copy(exposureNs = 200_000_000L)
+        val expected = short.copy(exposureNs = longNs)
+        assertNull(expected.difference(expected, 10f))
+        assertEquals("exposure_changed", expected.difference(short, 10f))
+        assertEquals("exposure_changed", expected.difference(expected.copy(exposureNs = longNs * 9 / 10), 10f))
+        assertEquals("iso_changed", expected.difference(expected.copy(iso = 100), 10f))
+        assertEquals("crop_changed", expected.difference(expected.copy(crop = listOf(0,0,900,800)), 10f))
+        assertEquals("transform_changed", expected.difference(expected.copy(transform = List(9) { .1 }), 10f))
+        assertEquals("controls_not_manual", expected.difference(expected.copy(modes = listOf(1,0,0,0,0)), 10f))
+        assertEquals("physical_camera_changed", expected.difference(expected.copy(physicalCamera = "different"), 10f))
+        // Stored preview evidence still describes the actual short exposure.
+        assertEquals(200_000_000L, short.exposureNs)
+    }
+
     private fun key(exposure: Long? = 4_290_200_432, iso: Int? = 5331, focus: Float? = .2f,
                     gains: FloatArray? = floatArrayOf(2f, 1f, 1.5f)) = ManualRequestKey.from(exposure, iso, focus, gains)
     private val scope = ManualCaptureScope(Any(), Any(), Any(), Any())

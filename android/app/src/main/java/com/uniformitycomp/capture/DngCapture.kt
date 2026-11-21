@@ -245,6 +245,8 @@ internal class DngCapture(
             "reason" to if (fast != null) "verified_identical_manual" else
                 if (keepPreviewRunning) "continuous_preview_fresh_manual_readback" else setupFallbackReason,
             "keepPreviewRunning" to keepPreviewRunning,
+            "shortPreviewExposure" to shortPreviewExposure,
+            "previewSetupPolicy" to if (shortPreviewExposure) "short-repeating-single-full-readback-v1" else "full-repeating-v1",
             "sessionRecreated" to (existingSession == null),
             "previousLockedAvailable" to (previousLocked != null),
             "setupStartedElapsedNs" to SystemClock.elapsedRealtimeNanos())
@@ -329,7 +331,7 @@ internal class DngCapture(
                 // A fully specified job never meters a new exposure on the next display pattern.
                 settings.exposureNs?.let {
                     auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                    applyExposure(auto, it, characteristics)
+                    applyExposure(auto, ShortPreviewExposure.exposure(it, shortPreviewExposure), characteristics)
                 }
                 settings.iso?.let { auto.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
                 settings.focusFraction?.let {
@@ -394,11 +396,13 @@ internal class DngCapture(
                 "advertisedISORange" to (setup["advertisedISORange"] ?: "missing"),
                 "advertisedExposureRangeNs" to (setup["advertisedExposureRangeNs"] ?: "missing")))
             if (fast == null) {
+                val previewLocked = locked.copy(exposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure))
+                setup["requestedSetupPreviewExposureNs"] = previewLocked.exposureNs
                 val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                 manual.addTarget(preview)
                 val lockTag = callbackGate.tag()
                 manual.setTag(lockTag)
-                applyLocked(manual, locked, characteristics, reportLensShading)
+                applyLocked(manual, previewLocked, characteristics, reportLensShading)
                 if (reusable == null && !keepPreviewRunning) active.stopRepeating()
                 results.clear()
                 setup["manualRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
@@ -415,9 +419,9 @@ internal class DngCapture(
                         manualReadbackReported = true
                     }
                     val retainedReference = (exposureSource?.previewActual ?: exposureSource?.actual)
-                        ?.copy(exposureNs = locked.exposureNs, iso = locked.iso)
+                        ?.copy(exposureNs = previewLocked.exposureNs, iso = locked.iso)
                     val retainedDifference = retainedReference?.difference(stateReading(observed), minFocus)
-                    val checks = controlChecks(observed, locked, minFocus)
+                    val checks = controlChecks(observed, previewLocked, minFocus)
                     setup["manualLatestResult"] = setupReading(observed)
                     setup["manualLatestComparison"] = mapOf("checks" to checks,
                         "requestTagMatches" to (observed.request.tag === lockTag),
@@ -445,6 +449,48 @@ internal class DngCapture(
                         characteristics.availableCaptureRequestKeys.contains(CaptureRequest.SCALER_CROP_REGION) }?.let { Rect(it) },
                     opticalStabilization = manual.get(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE),
                     videoStabilization = manual.get(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE))
+                if (previewLocked.exposureNs != locked.exposureNs) {
+                    // Keep the repeating queue short. One preview-only full-exposure
+                    // request supplies genuine controls readback for applyControls
+                    // and the existing preview-to-RAW verification. No photo is taken.
+                    val full = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    full.addTarget(preview)
+                    val fullTag = callbackGate.tag()
+                    full.setTag(fullTag)
+                    applyLocked(full, locked, characteristics, reportLensShading)
+                    results.clear()
+                    setup["fullExposureReadbackSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                    setup["fullExposureReadbackRequest"] = requestReading(full.build())
+                    diagnosticEvent?.invoke("setup_full_exposure_submitted", requestReading(full.build()))
+                    active.capture(full.build(), callback, handler)
+                    val fullStart = System.nanoTime()
+                    var ignored = 0
+                    do {
+                        val result = await(results)
+                        val tagged = callbackGate.matches(result.request.tag, fullTag)
+                        setup["fullExposureReadbackLatestResult"] = setupReading(result)
+                        setup["fullExposureReadbackTagMatches"] = tagged
+                        if (tagged) {
+                            val checks = controlChecks(result, locked, minFocus)
+                            setup["fullExposureReadbackChecks"] = checks
+                            check(checks.all { it["status"] == "matched" }) { "Full-exposure setup controls were not honored" }
+                            // Only exposure changes between these two preview requests.
+                            // Keep both original readbacks; compare all other state strictly.
+                            val difference = stateReading(requireNotNull(observed))
+                                .copy(exposureNs = locked.exposureNs).difference(stateReading(result), minFocus)
+                            setup["fullExposureReadbackStateDifference"] = difference ?: "matched"
+                            check(difference == null) { "Full-exposure setup state changed: $difference" }
+                            observed = result
+                            setup["fullExposureReadbackCompletedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                            setup["fullExposureReadbackResult"] = setupReading(result)
+                            shading(result, "setup_full_exposure")
+                            diagnosticEvent?.invoke("setup_full_exposure_result", setupReading(result))
+                            break
+                        }
+                        setup["fullExposureReadbackIgnoredResults"] = ++ignored
+                        check(System.nanoTime() - fullStart < TimeUnit.SECONDS.toNanos(45)) { "Full-exposure setup readback timed out" }
+                    } while (true)
+                }
             } else {
                 // Scene settling is independent of control verification. No preview round trip
                 // and no fabricated manualSettled timestamp for a skipped phase.
@@ -454,7 +500,8 @@ internal class DngCapture(
                     val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                     manual.addTarget(preview)
                     manual.setTag(callbackGate.tag())
-                    applyLocked(manual, locked, characteristics, reportLensShading)
+                    applyLocked(manual, locked.copy(exposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)),
+                        characteristics, reportLensShading)
                     active.setRepeatingRequest(manual.build(), callback, handler)
                 } else active.stopRepeating()
                 val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.settleMs.coerceAtLeast(250))
@@ -503,8 +550,8 @@ internal class DngCapture(
                 if (fast == null && !keepPreviewRunning) active.stopRepeating()
                 val previewExposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)
                 if (shortPreviewExposure) {
-                    // Verify setup at the full requested exposure first. Only the
-                    // repeating preview changes; still validation keeps the full tuple.
+                    // Setup's single full-exposure readback does not change the
+                    // capped repeating preview; RAW validation keeps the full tuple.
                     val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                     previewRequest.addTarget(preview)
                     previewRequest.setTag(callbackGate.tag())

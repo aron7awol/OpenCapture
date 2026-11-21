@@ -38,13 +38,23 @@ at `min(requested RAW exposure, 0.2 s)`. ISO, focus, WB, color transform, crop a
 processing policy stay locked. RAW requests and per-still verification retain
 the full original exposure; preview pixels are never measurement input.
 
-Fresh setup/applyControls still verifies the full exposure before switching to
-short preview for the RAW phase. applyControls returns that full-exposure reading;
-aiming preview after the operation uses the cap. This first implementation does
-not shorten fresh manual-settling waits. It must not pretend a short preview
-reading verifies a longer RAW exposure. Actual still mismatches fail normally;
+Unreleased November 20 setup also caps repeating previews while applying an
+explicit exposure and while verifying the manual lock. Automatic exposure
+metering remains automatic until an exposure has been selected. When the locked
+exposure exceeds the cap, one separately tagged, preview-only full-exposure
+request verifies the requested controls while repeating preview stays short.
+This avoids a queue of long repeating frames. It takes no RAW photo and returns
+a genuine full-exposure result from applyControls, preserving the existing
+controller contract. Unrelated preview results cannot satisfy that request;
+exposure/ISO/focus/WB tolerances and other-state comparisons remain enforced.
+Verified reuse and aiming preview also keep the cap. This cannot retroactively
+shorten frames already queued by another mode. Actual still mismatches fail normally;
 there is no silent retry in another mode or relaxed tolerance. Diagnostics record
 requested preview exposure separately and actual preview/RAW results when delivered.
+Setup records `previewSetupPolicy:short-repeating-single-full-readback-v1`,
+`requestedSetupPreviewExposureNs`, and separate `fullExposureReadback*` request,
+result, tag-match, control-check, state-difference and timing evidence. A short
+manual-settle timestamp is not a full-exposure verification timestamp.
 The feature is experimental, default off, exact-capability-gated, and unavailable
 on iOS/older Android clients. Software tests are not physical compatibility proof.
 
