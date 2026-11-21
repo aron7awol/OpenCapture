@@ -8,7 +8,7 @@ import java.security.MessageDigest
 import java.util.UUID
 
 object OpenCaptureProtocol {
-    const val EXPERIMENTAL_EXPOSURE_SECONDS = 5.0
+    const val EXPERIMENTAL_EXPOSURE_SECONDS = 30.0
 
     internal fun acceptsExposure(exposureNs: Long?, minimumNs: Long, reportedMaximumNs: Long): Boolean =
         exposureNs == null || exposureNs in minimumNs..maxOf(reportedMaximumNs,

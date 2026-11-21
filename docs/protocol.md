@@ -94,6 +94,8 @@ mode to its intended local interface and reject foreign browser origins.
 ## Request
 
 Android 0.4.8+ may advertise `experimentalMaxExposureSeconds:5`.
+Android 0.4.17/build 25 raises that capability to 30 seconds.
+Controllers must honor the advertised value; older builds still advertise 5.
 This permits manual requests beyond `maxExposureSeconds`, but does not claim
 that the camera honors them. The original reported maximum remains unchanged
 (and larger reported ranges remain usable). Requests below the minimum, above

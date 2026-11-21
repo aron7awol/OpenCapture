@@ -37,9 +37,14 @@ class OpenCaptureProtocolTest {
         val samsungMaximum = 100_000_000L
         assertTrue(OpenCaptureProtocol.acceptsExposure(null, minimum, samsungMaximum))
         assertTrue(OpenCaptureProtocol.acceptsExposure(5_000_000_000L, minimum, samsungMaximum))
-        assertFalse(OpenCaptureProtocol.acceptsExposure(5_000_000_001L, minimum, samsungMaximum))
+        assertTrue(OpenCaptureProtocol.acceptsExposure(30_000_000_000L, minimum, samsungMaximum))
+        assertFalse(OpenCaptureProtocol.acceptsExposure(30_000_000_001L, minimum, samsungMaximum))
         assertFalse(OpenCaptureProtocol.acceptsExposure(minimum - 1, minimum, samsungMaximum))
         assertTrue(OpenCaptureProtocol.acceptsExposure(16_000_000_000L, minimum, 16_000_000_000L))
+    }
+    @Test fun thirtySecondExposureSurvivesProtocolParsing() {
+        assertEquals(30_000_000_000L, OpenCaptureProtocol.request(request().put("exposureSeconds", 30.0)).exposureNs)
+        rejected { OpenCaptureProtocol.request(request().put("exposureSeconds", 30.000001)) }
     }
     private fun request() = OpenCaptureProtocol.localRequest(18, 1000.0, 800.0, .25)
     private fun rejected(action: () -> Unit) {
