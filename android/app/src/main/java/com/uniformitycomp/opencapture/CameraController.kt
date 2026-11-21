@@ -121,7 +121,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         val jpeg = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.JPEG)
         val result = mutableListOf<String>()
         if (!jpeg.isNullOrEmpty()) result.add("raw-jpeg-still")
-        if (SamsungCaptureCompatibility.available(c)) {
+        if (SamsungCaptureCompatibility.available()) {
             result.add("samsung-vendor-preview")
             if (!jpeg.isNullOrEmpty()) result.add("samsung-vendor-still")
         }
@@ -146,7 +146,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         val surface = requireNotNull(previewSurface) { "Start the aiming preview first" }
         val configured = requireNotNull(previewSession) { "Preview session is not ready" }
         val experimental = vendorCamera || separateStill
-        require(!vendorCamera || SamsungCaptureCompatibility.available(selectedCharacteristics())) {
+        require(!vendorCamera || SamsungCaptureCompatibility.available()) {
             "Samsung vendor controls are unavailable on this camera/firmware"
         }
         require(!experimental || (!overlap && !queueAhead && !shortPreviewExposure))
@@ -165,6 +165,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         var succeeded = false
         try {
             if (vendor != null) {
+                events.record("samsung_compatibility_probe", SamsungCaptureCompatibility.diagnostics(selectedCharacteristics()))
                 vendorAttempted = true
                 vendor.configure(camera, true)
             }

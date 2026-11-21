@@ -10,7 +10,12 @@ verified preview setup to a separate RAW + JPEG still-only session. The third
 combines both. Companion JPEGs are drained, not retained or used as measurements.
 
 Vendor modes require Samsung Exynos/s5e, Android 10+, a resolvable on-device
-framework helper, and an advertised shooting-mode request key. Separate still
+framework helper. Android 0.4.20/build 28 no longer requires shooting-mode key
+advertisement for these opt-in probes; `/oc/` still reports it, and the same
+eligibility evidence is included in job diagnostics. Framework calls, builder
+setting failures and RAW failures remain distinguishable. A successful builder
+setting is not driver acceptance; unsupported requests fail without silently
+falling back. Separate still
 sessions require JPEG output sizes; stream combination success remains a
 runtime check. `/oc/` reports `samsungCompatibility` eligibility details.
 These modes reject on-device averaging and disable lookahead. They force fresh

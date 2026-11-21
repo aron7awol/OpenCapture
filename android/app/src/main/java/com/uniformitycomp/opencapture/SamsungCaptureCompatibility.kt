@@ -21,22 +21,27 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
             PathClassLoader(JAR, CameraDevice::class.java.classLoader))
             .getMethod("setSamsungParameter", CameraDevice::class.java, String::class.java)
 
-        fun available(c: CameraCharacteristics): Boolean =
-            Build.VERSION.SDK_INT >= 29 && Build.MANUFACTURER.equals("samsung", ignoreCase = true) &&
-                (Build.HARDWARE.contains("exynos", ignoreCase = true) || Build.HARDWARE.startsWith("s5e")) &&
-                c.availableCaptureRequestKeys?.any { it.name == KEY } == true &&
+        internal fun eligible(api: Int, manufacturer: String, hardware: String, helperAvailable: Boolean): Boolean =
+            api >= 29 && manufacturer.equals("samsung", ignoreCase = true) &&
+                (hardware.contains("exynos", ignoreCase = true) || hardware.startsWith("s5e", ignoreCase = true)) &&
+                helperAvailable
+
+        fun available(): Boolean =
+            eligible(Build.VERSION.SDK_INT, Build.MANUFACTURER, Build.HARDWARE, true) &&
                 runCatching { method() }.isSuccess
 
         fun diagnostics(c: CameraCharacteristics): JSONObject {
             val samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
             val helper = if (samsung) runCatching { method() } else null
-            return JSONObject().put("policy", "samsung-exynos-probe-v1")
+            return JSONObject().put("policy", "samsung-exynos-probe-v2")
                 .put("manufacturer", Build.MANUFACTURER).put("hardware", Build.HARDWARE)
                 .put("frameworkHelperAvailable", helper?.isSuccess == true)
                 .put("frameworkError", helper?.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)
                 .put("shootingModeRequestAdvertised", c.availableCaptureRequestKeys?.any { it.name == KEY } == true)
                 .put("shootingModeResultAdvertised", c.availableCaptureResultKeys?.any { it.name == KEY } == true)
-                .put("eligible", available(c)).put("physicallyVerified", false)
+                .put("advertisedKeyRequired", false)
+                .put("eligible", eligible(Build.VERSION.SDK_INT, Build.MANUFACTURER, Build.HARDWARE, helper?.isSuccess == true))
+                .put("physicallyVerified", false)
         }
     }
 
@@ -61,7 +66,15 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
     }
 
     fun request(builder: CaptureRequest.Builder) {
-        builder.set(shootingMode, 5)
+        try {
+            builder.set(shootingMode, 5)
+            events.record("samsung_vendor_request_set", JSONObject().put("key", KEY).put("value", 5)
+                .put("driverAcceptanceVerified", false))
+        } catch (error: Exception) {
+            events.record("samsung_vendor_request_failed", JSONObject().put("key", KEY).put("value", 5)
+                .put("errorChain", CameraDiagnostics.errorChain(error)), true)
+            throw IllegalStateException("Samsung vendor shooting-mode request could not be set", error)
+        }
     }
 
     fun readback(result: TotalCaptureResult): Map<String, Any> = mapOf(
