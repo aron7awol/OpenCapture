@@ -10,8 +10,8 @@ android {
         applicationId = "com.uniformitycomp.opencapture"
         minSdk = 28
         targetSdk = 36
-        versionCode = 26
-        versionName = "0.4.18"
+        versionCode = 27
+        versionName = "0.4.19"
     }
     buildFeatures { buildConfig = true }
     compileOptions {

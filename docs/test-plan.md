@@ -1,5 +1,26 @@
 # Verification and Device Test Plan
 
+## Experimental Samsung / RAW + JPEG Sessions (Unreleased)
+
+Software checks cover mode validation, no-lookahead behavior, capability gates,
+originals-only enforcement, separate exposure histories, settings restoration,
+and Windows UI/API integration. They do not establish driver compatibility.
+
+On Samsung Exynos, first record `/oc/` eligibility and app versions. Compare
+the normal keep-preview mode against each advertised experimental mode at
+fixed ISO, camera, focus and a static dim scene. Begin with a previously
+verified exposure (S20 evidence: 1.7 s), then 2 s. Check actual RAW exposure,
+image delivery, requested/reported shooting mode where available, companion
+JPEG drainage, and restored live preview. Download diagnostics after each
+test. After an error, wait for recovery before another test; do not start a
+full correction until the mode delivers repeated usable RAW frames. A TV is
+not necessary for this compatibility check. Use unsaturated fixed-scene signal
+comparisons separately to test whether sensor integration actually lengthens.
+
+Confirm cancellation, backgrounding, unsupported stream combinations and
+vendor-restore errors preserve the original failure and leave normal capture
+recoverable. Repeat a normal-mode test afterward to check state isolation.
+
 ## Exposure-Aware Deadlines (Android 0.4.18/build 26)
 
 JVM tests exercise 30-second RAW plus 0.2-second versus full-length preview,

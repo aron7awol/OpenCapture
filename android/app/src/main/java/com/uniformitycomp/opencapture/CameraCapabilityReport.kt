@@ -27,6 +27,7 @@ internal object CameraCapabilityReport {
         val ev = c.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val step = c.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
         return JSONObject().put("cameraID", id)
+            .put("samsungCompatibility", SamsungCaptureCompatibility.diagnostics(c))
             .put("hardwareLevel", c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) ?: JSONObject.NULL)
             .put("colorFilterArrangement", c.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) ?: JSONObject.NULL)
             .put("bayer", bayer).put("raw", raw).put("manualSensor", manual).put("manualPostProcessing", post)

@@ -116,6 +116,18 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
 
     fun previewDimensions(): Size? = previewSize
 
+    fun experimentalSchedulingModes(): List<String> {
+        val c = selectedCharacteristics()
+        val jpeg = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.JPEG)
+        val result = mutableListOf<String>()
+        if (!jpeg.isNullOrEmpty()) result.add("raw-jpeg-still")
+        if (SamsungCaptureCompatibility.available(c)) {
+            result.add("samsung-vendor-preview")
+            if (!jpeg.isNullOrEmpty()) result.add("samsung-vendor-still")
+        }
+        return result
+    }
+
     /** Ordered original DNG capture with optional exposure overlap; the caller retains completed files. */
     fun captureDngOriginals(settings: DngSettings, count: Int, directory: java.io.File?, cancel: AtomicBoolean,
                             maxAttempts: Int = count, needsMore: (() -> Boolean)? = null,
@@ -123,6 +135,8 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                             keepPreviewRunning: Boolean = false,
                             shortPreviewExposure: Boolean = false,
                             queueAhead: Boolean = false,
+                            vendorCamera: Boolean = false,
+                            separateStill: Boolean = false,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
         val connectionLost = onConnectionLost
@@ -131,7 +145,17 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         check(reader.width == size.width && reader.height == size.height) { "RAW stream changed" }
         val surface = requireNotNull(previewSurface) { "Start the aiming preview first" }
         val configured = requireNotNull(previewSession) { "Preview session is not ready" }
+        val experimental = vendorCamera || separateStill
+        require(!vendorCamera || SamsungCaptureCompatibility.available(selectedCharacteristics())) {
+            "Samsung vendor controls are unavailable on this camera/firmware"
+        }
+        require(!experimental || (!overlap && !queueAhead && !shortPreviewExposure))
+        val vendor = if (vendorCamera) SamsungCaptureCompatibility(events) else null
+        var jpegReader: ImageReader? = null
+        var vendorAttempted = false
+        var captureError: Exception? = null
         registerCapture(cancel) { cancel.set(true) }
+        if (experimental) invalidateManualState("experimental_capture_setup")
         val ticket = manualState.begin(ManualRequestKey.from(settings.exposureNs, settings.iso,
             settings.focusFraction, settings.whiteBalance), ManualCaptureScope(camera, configured, reader, surface), count > 0)
         previewReady = false
@@ -140,8 +164,40 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             .put("exposureNs", settings.exposureNs).put("iso", settings.iso).put("frames", count))
         var succeeded = false
         try {
+            if (vendor != null) {
+                vendorAttempted = true
+                vendor.configure(camera, true)
+            }
+            if (separateStill && count > 0) {
+                val sizes = selectedCharacteristics().get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    ?.getOutputSizes(ImageFormat.JPEG).orEmpty()
+                val jpegSize = sizes.firstOrNull { it == size }
+                    ?: sizes.filter { it.width.toLong()*it.height <= 13_000_000L }.maxByOrNull { it.width.toLong()*it.height }
+                    ?: sizes.minByOrNull { it.width.toLong()*it.height }
+                    ?: error("JPEG output is unavailable")
+                jpegReader = ImageReader.newInstance(jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2).also { jpeg ->
+                    jpeg.setOnImageAvailableListener({ source ->
+                        runCatching { source.acquireNextImage() }.getOrNull()?.use { image ->
+                            events.record("companion_jpeg_arrived", org.json.JSONObject()
+                                .put("timestampNs", image.timestamp).put("width", image.width).put("height", image.height)
+                                .put("bytes", image.planes.firstOrNull()?.buffer?.remaining()).put("retained", false))
+                        }
+                    }, resultHandler)
+                }
+            }
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
                 existingSession = configured, previousLocked = dngPreviewControls,
+                configureRequest = vendor?.let { compatibility -> { builder -> compatibility.request(builder) } },
+                compatibilityReadback = vendor?.let { compatibility -> { result -> compatibility.readback(result) } },
+                stillJpegReader = jpegReader,
+                beforeStillSession = {
+                    synchronized(this) {
+                        check(previewSession === configured && cameraDevice === camera && !cancel.get())
+                        previewSession = null
+                        sessionGeneration++
+                        events.record("preview_detached_for_still", runtimeEvidence())
+                    }
+                },
                 previousVerified = ticket.reused, setupFallbackReason = ticket.reason,
                 previousExposureState = ticket.exposureSource,
                 diagnosticEvent = { event, details -> events.record(event, org.json.JSONObject(details),
@@ -152,15 +208,16 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                     overlap = overlap, tryReserveNext = tryReserveNext, keepPreviewRunning = keepPreviewRunning,
                     shortPreviewExposure = shortPreviewExposure, queueAhead = queueAhead)
             synchronized(this) {
-                check(cameraDevice === camera && previewSession === configured && rawReader === reader &&
+                check(cameraDevice === camera && (previewSession === configured || (separateStill && previewSession == null)) && rawReader === reader &&
                     previewSurface === surface && !cancel.get() && manualState.current(ticket)) { "Camera state invalidated during capture" }
-                manualState.complete(ticket, sequence.verified, sequence.verificationUnavailable) { !cancel.get() }
+                if (!experimental) manualState.complete(ticket, sequence.verified, sequence.verificationUnavailable) { !cancel.get() }
                 dngPreviewControls = sequence.locked
                 shortPreview = shortPreviewExposure
             }
             succeeded = true
             return sequence
         } catch (error: Exception) {
+            captureError = error
             events.record("capture_exception", runtimeEvidence().put("detail", error.toString().take(512))
                 .put("errorChain", CameraDiagnostics.errorChain(error)), true)
             invalidateManualState(if (cancel.get()) "capture_cancelled" else
@@ -171,12 +228,23 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             if (rawReader === reader) rawReader = null
             throw error
         } finally {
+            runCatching { jpegReader?.setOnImageAvailableListener(null, null) }
+            jpegReader?.close()
+            val restoreError = if (vendorAttempted && cameraDevice === camera)
+                runCatching { vendor!!.configure(camera, false) }.exceptionOrNull() else null
+            if (experimental) invalidateManualState("experimental_capture_ended")
             synchronized(this) {
                 if (activeCaptureCancel === cancel) { activeCaptureCancel = null; activeCaptureCleanup = null }
             }
+            if (restoreError != null) {
+                close("samsung_vendor_restore_failed")
+                connectionLost?.invoke()
+                if (captureError != null) captureError!!.addSuppressed(restoreError)
+                else throw IllegalStateException("Samsung vendor state restoration failed; reconnect the camera", restoreError)
+            }
             cameraHandler.post {
                 if (cameraDevice === camera) {
-                    if (succeeded && previewSession === configured && previewSurface === surface) {
+                    if (succeeded && !experimental && previewSession === configured && previewSurface === surface) {
                         runCatching { repeatPreview(configured, surface) }.onFailure {
                             events.record("preview_restore_exception", org.json.JSONObject().put("detail", it.toString().take(512)), true)
                             invalidateManualState("preview_error")

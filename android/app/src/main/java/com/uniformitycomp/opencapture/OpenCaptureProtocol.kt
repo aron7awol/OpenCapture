@@ -9,6 +9,12 @@ import java.util.UUID
 
 object OpenCaptureProtocol {
     const val EXPERIMENTAL_EXPOSURE_SECONDS = 30.0
+    val experimentalScheduling = setOf("samsung-vendor-preview", "raw-jpeg-still", "samsung-vendor-still")
+
+    internal fun vendorCamera(value: JSONObject) = value.optString("captureScheduling", "") in
+        setOf("samsung-vendor-preview", "samsung-vendor-still")
+    internal fun separateStill(value: JSONObject) = value.optString("captureScheduling", "") in
+        setOf("raw-jpeg-still", "samsung-vendor-still")
 
     internal fun acceptsExposure(exposureNs: Long?, minimumNs: Long, reportedMaximumNs: Long): Boolean =
         exposureNs == null || exposureNs in minimumNs..maxOf(reportedMaximumNs,
@@ -24,7 +30,7 @@ object OpenCaptureProtocol {
             (value.getInt("frameCount") > 1 || streaming)
 
     internal fun keepPreviewRunning(value: JSONObject): Boolean =
-        value.optString("captureScheduling", "") in setOf("sequential-preview", "sequential-short-preview", "queued-preview")
+        value.optString("captureScheduling", "") in setOf("sequential-preview", "sequential-short-preview", "queued-preview", "samsung-vendor-preview")
 
     /** Preview stays on at the full exposure; several stills are requested ahead. */
     internal fun queueAhead(value: JSONObject): Boolean =
@@ -53,7 +59,11 @@ object OpenCaptureProtocol {
         val frames = integer(value, "frameCount", 1, 32)
         val operation = if (value.isNull("operation")) "capture" else value.getString("operation")
         require(operation in setOf("capture", "applyControls")) { "Unknown operation" }
-        require(!value.has("captureScheduling") || value.get("captureScheduling") in setOf("sequential", "sequential-preview", "sequential-short-preview", "queued-preview")) { "Unknown capture scheduling" }
+        require(!value.has("captureScheduling") || value.get("captureScheduling") in
+            (setOf("sequential", "sequential-preview", "sequential-short-preview", "queued-preview") + experimentalScheduling)) { "Unknown capture scheduling" }
+        require(value.optString("captureScheduling", "") !in experimentalScheduling || !value.has("averaging")) {
+            "Experimental Samsung/still-session tests require originals, not phone averaging"
+        }
         require(operation != "applyControls" || frames == 1)
         averaging(value)
         if (value.has("streaming")) {

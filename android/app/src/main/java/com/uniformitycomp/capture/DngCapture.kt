@@ -72,7 +72,11 @@ internal class DngCapture(
     private val previousVerified: DngVerifiedState? = null,
     private val setupFallbackReason: String = "no_verified_still",
     private val previousExposureState: DngVerifiedState? = null,
-    private val diagnosticEvent: ((String, Map<String, Any>) -> Unit)? = null
+    private val diagnosticEvent: ((String, Map<String, Any>) -> Unit)? = null,
+    private val configureRequest: ((CaptureRequest.Builder) -> Unit)? = null,
+    private val compatibilityReadback: ((TotalCaptureResult) -> Map<String, Any>)? = null,
+    private val stillJpegReader: ImageReader? = null,
+    private val beforeStillSession: (() -> Unit)? = null
 ) {
     private val failure = AtomicReference<Throwable?>()
     private data class RawArrival(val image: Image, val elapsedNs: Long,
@@ -88,6 +92,10 @@ internal class DngCapture(
     private val latestPreviewDuringStills = AtomicReference<TotalCaptureResult?>()
     private val timeline = CaptureTimeline()
     private val shadingEvidence = LensShadingDiagnostics()
+
+    private fun newRequest(template: Int) = camera.createCaptureRequest(template).also {
+        configureRequest?.invoke(it)
+    }
 
     private fun record(event: String, fields: Map<String, Any>) {
         runCatching { diagnosticEvent?.invoke(event, fields) }
@@ -171,6 +179,10 @@ internal class DngCapture(
             (r.tag as? CaptureCallbackGate.Tag)?.index?.let { tag -> timings[tag]?.apply {
                 put("resultArrivedElapsedNs", SystemClock.elapsedRealtimeNanos())
                 put("resultFrameNumber", result.frameNumber)
+                compatibilityReadback?.invoke(result)?.let {
+                    put("compatibilityReadback", it)
+                    record("compatibility_raw_readback", it + mapOf("frameNumber" to result.frameNumber))
+                }
                 checkpoint(tag, "result", mapOf("frameNumber" to result.frameNumber,
                     "sensorTimestampNs" to (result.get(CaptureResult.SENSOR_TIMESTAMP) ?: "missing")))
             } }
@@ -327,13 +339,13 @@ internal class DngCapture(
                     s.close(); failure.set(IllegalStateException("RAW + preview session is unsupported"))
                 }
             }, handler)
-            val active = existingSession ?: await(sessions)
+            var active = existingSession ?: await(sessions)
             session = active
-            val sessionReady = SystemClock.elapsedRealtimeNanos()
+            var sessionReady = SystemClock.elapsedRealtimeNanos()
             setup[if (existingSession == null) "sessionConfiguredElapsedNs" else "sessionReusedElapsedNs"] = sessionReady
             var observed: TotalCaptureResult? = null
             var locked = if (reusable != null) reusable else {
-                val auto = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                val auto = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                 auto.addTarget(preview)
                 auto.setTag(callbackGate.tag())
                 auto.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
@@ -417,7 +429,7 @@ internal class DngCapture(
             if (fast == null) {
                 val previewLocked = locked.copy(exposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure))
                 setup["requestedSetupPreviewExposureNs"] = previewLocked.exposureNs
-                val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                val manual = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                 manual.addTarget(preview)
                 val lockTag = callbackGate.tag()
                 manual.setTag(lockTag)
@@ -474,7 +486,7 @@ internal class DngCapture(
                     // Keep the repeating queue short. One preview-only full-exposure
                     // request supplies genuine controls readback for applyControls
                     // and the existing preview-to-RAW verification. No photo is taken.
-                    val full = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    val full = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                     full.addTarget(preview)
                     val fullTag = callbackGate.tag()
                     full.setTag(fullTag)
@@ -517,7 +529,7 @@ internal class DngCapture(
                 if (keepPreviewRunning) {
                     // Keep the driver fed without waiting through another identical
                     // preview pipeline. This callback owns the new operation's tags.
-                    val manual = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    val manual = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                     manual.addTarget(preview)
                     manual.setTag(callbackGate.tag())
                     applyLocked(manual, locked.copy(exposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)),
@@ -568,11 +580,36 @@ internal class DngCapture(
                 requireNotNull(directory)
                 check(directory.isDirectory || directory.mkdirs()) { "Cannot create capture archive" }
                 if (fast == null && !keepPreviewRunning) active.stopRepeating()
+                if (stillJpegReader != null) {
+                    require(!keepPreviewRunning && !overlap && !queueAhead && !shortPreviewExposure)
+                    beforeStillSession?.invoke()
+                    // Detach the old session before aborting so its callbacks cannot
+                    // be mistaken for a failure in the replacement still session.
+                    session = null
+                    active.stopRepeating()
+                    active.abortCaptures()
+                    active.close()
+                    record("still_session_requested", mapOf("outputs" to listOf("RAW_SENSOR", "JPEG"),
+                        "previewSurface" to false, "jpegWidth" to stillJpegReader.width,
+                        "jpegHeight" to stillJpegReader.height))
+                    camera.createCaptureSession(listOf(reader.surface, stillJpegReader.surface), object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(s: CameraCaptureSession) {
+                            if (cancel.get() || ended.get()) s.close() else if (!sessions.offer(s)) s.close()
+                        }
+                        override fun onConfigureFailed(s: CameraCaptureSession) {
+                            s.close(); failure.set(IllegalStateException("Experimental RAW + JPEG still session is unsupported"))
+                        }
+                    }, handler)
+                    active = await(sessions)
+                    session = active
+                    sessionReady = SystemClock.elapsedRealtimeNanos()
+                    record("still_session_configured", mapOf("elapsedNs" to sessionReady))
+                }
                 val previewExposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)
                 if (shortPreviewExposure) {
                     // Setup's single full-exposure readback does not change the
                     // capped repeating preview; RAW validation keeps the full tuple.
-                    val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    val previewRequest = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                     previewRequest.addTarget(preview)
                     previewRequest.setTag(callbackGate.tag())
                     applyLocked(previewRequest, locked.copy(exposureNs=previewExposureNs), characteristics, reportLensShading)
@@ -606,8 +643,9 @@ internal class DngCapture(
                 }
                 fun submit(index: Int, overlapping: Boolean): ConcurrentHashMap<String, Any> {
                     check()
-                    val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+                    val request = newRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                     request.addTarget(reader.surface)
+                    stillJpegReader?.let { request.addTarget(it.surface) }
                     applyLocked(request, locked, characteristics, reportLensShading)
                     request.setTag(callbackGate.tag(index))
                     if (characteristics.availableCaptureRequestKeys?.contains(CaptureRequest.CONTROL_ENABLE_ZSL) == true)
@@ -618,7 +656,9 @@ internal class DngCapture(
                     timing["preparationStartedElapsedNs"] = preparationStarted
                     timing["sessionReadyElapsedNs"] = sessionReady
                     controlsLocked?.let { timing["controlsLockedElapsedNs"] = it }
-                    timing["sessionReused"] = existingSession != null
+                    timing["sessionReused"] = existingSession != null && stillJpegReader == null
+                    timing["separateRawJpegStillSession"] = stillJpegReader != null
+                    timing["vendorRequestConfiguration"] = configureRequest != null
                     timing["controlsReused"] = reusable != null
                     if (reportLensShading) timing["timingPolicy"] = RawTiming.POLICY
                     timing["requestIndex"] = index+1
@@ -833,7 +873,7 @@ internal class DngCapture(
                 "previewResults" to previewResultsDuringStills.get(),
                 "submittedStills" to submittedStills, "completedStills" to completedStills))
             if (submittedStills > completedStills) runCatching { session?.abortCaptures() }
-            if (existingSession == null || !succeeded) session?.close()
+            if (existingSession == null || !succeeded || stillJpegReader != null) session?.close()
             sessions.poll()?.close()
             runCatching { reader.setOnImageAvailableListener(null, null) }
             // Includes any acquisition sample already executing on the handler.

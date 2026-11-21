@@ -1,5 +1,24 @@
 # Foreground Camera Server v1
 
+### Experimental Samsung / Still-Session Scheduling
+
+Unreleased Android may advertise `samsung-vendor-preview`, `raw-jpeg-still`,
+and `samsung-vendor-still` in the selected camera's `captureSchedulingModes`.
+The first enables Samsung framework parameters and shooting mode 5 while
+retaining sequential RAW and repeating preview. The second switches from
+verified preview setup to a separate RAW + JPEG still-only session. The third
+combines both. Companion JPEGs are drained, not retained or used as measurements.
+
+Vendor modes require Samsung Exynos/s5e, Android 10+, a resolvable on-device
+framework helper, and an advertised shooting-mode request key. Separate still
+sessions require JPEG output sizes; stream combination success remains a
+runtime check. `/oc/` reports `samsungCompatibility` eligibility details.
+These modes reject on-device averaging and disable lookahead. They force fresh
+setup, record helper calls/vendor readback/session transitions, then restore
+normal preview and invalidate cached manual state. Restore failure is an error,
+not a successful test. Neither capability advertising nor a returned framework
+call proves extended exposure support. No default mode changes.
+
 ### iOS Session Diagnostics (November 20 Development)
 
 iOS job states now optionally include `cameraDiagnostics` (schemaVersion 1,

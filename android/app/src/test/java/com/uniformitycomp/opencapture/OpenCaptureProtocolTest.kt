@@ -6,6 +6,22 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun samsungExperimentsDoNotOverlapOrSilentlyAverage() {
+        for (mode in OpenCaptureProtocol.experimentalScheduling) {
+            val r = request().put("captureScheduling", mode)
+            OpenCaptureProtocol.request(r)
+            assertFalse(OpenCaptureProtocol.overlap(r, false, true))
+            assertFalse(OpenCaptureProtocol.queueAhead(r))
+            assertFalse(OpenCaptureProtocol.shortPreviewExposure(r))
+            assertEquals(mode == "samsung-vendor-preview", OpenCaptureProtocol.keepPreviewRunning(r))
+            assertEquals(mode != "raw-jpeg-still", OpenCaptureProtocol.vendorCamera(r))
+            assertEquals(mode != "samsung-vendor-preview", OpenCaptureProtocol.separateStill(r))
+            OpenCaptureProtocol.request(r.put("operation", "applyControls").put("frameCount", 1))
+            r.put("operation", "capture").put("averaging", JSONObject().put("mode", BayerAverage.MODE)
+                .put("emptyFramePolicy", "illuminated").put("keepOriginals", false))
+            rejected { OpenCaptureProtocol.request(r) }
+        }
+    }
     @Test fun previewCompatibilityIsExplicitAndAlwaysSequential() {
         assertFalse(OpenCaptureProtocol.keepPreviewRunning(request()))
         assertTrue(OpenCaptureProtocol.overlap(request(), false, false))

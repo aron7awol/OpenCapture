@@ -8,6 +8,10 @@ Do not confuse `_oc-camera._tcp` (phone server) with `_opencapture._tcp`
 (legacy desktop controller).
 
 Development Android can advertise `captureSchedulingModes:["sequential","sequential-preview"]`.
+Experimental builds may additionally advertise `samsung-vendor-preview`,
+`raw-jpeg-still`, and `samsung-vendor-still`. Send these only when advertised
+by the selected camera; they require original Bayer captures, not on-device
+averaging. See `camera-server.md` for lifecycle and capability restrictions.
 The optional `captureScheduling:"sequential"` request then disables exposure
 lookahead; omission keeps the normal policy. Capability-gate the field, including
 applyControls requests; iOS does not advertise it. See `camera-server.md` for
