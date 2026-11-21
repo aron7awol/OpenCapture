@@ -120,16 +120,33 @@ internal class DngCapture(
         failure.get()?.let { throw IllegalStateException("Camera capture failed", it) }
     }
 
-    private fun <T> await(queue: ArrayBlockingQueue<T>, seconds: Long = 45): T {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)
-        while (System.nanoTime() < deadline) {
-            check()
-            queue.poll(100, TimeUnit.MILLISECONDS)?.let { return it }
+    private fun <T> await(queue: ArrayBlockingQueue<T>,
+                         deadline: CaptureDeadline = CaptureDeadline(CaptureWaitPolicy.MIN_SECONDS),
+                         phase: String = "session_configuration",
+                         message: String = "Camera timed out; partial originals retained"): T {
+        try {
+            return deadline.await(::check, { queue.poll(it, TimeUnit.NANOSECONDS) },
+                discard = { if (it is RawArrival) it.image.close() })
+        } catch (_: java.util.concurrent.TimeoutException) {
+            record("capture_wait_timeout", mapOf("waitingFor" to when (queue) {
+                images -> "raw_image"; results -> "capture_result"; else -> "session_configuration"
+            }, "phase" to phase, "timeoutPolicy" to CaptureWaitPolicy.POLICY,
+                "timeoutSeconds" to deadline.seconds, "elapsedSeconds" to deadline.elapsedNs(System.nanoTime()) / 1e9,
+                "imageQueueDepth" to images.size, "resultQueueDepth" to results.size))
+            throw IllegalStateException(message)
         }
-        record("capture_wait_timeout", mapOf("waitingFor" to when (queue) {
-            images -> "raw_image"; results -> "capture_result"; else -> "session_configuration"
-        }, "timeoutSeconds" to seconds, "imageQueueDepth" to images.size, "resultQueueDepth" to results.size))
-        throw IllegalStateException("Camera timed out; partial originals retained")
+    }
+
+    private fun deadline(phase: String, exposureNs: Long, previewNs: Long = 0,
+                         pendingStills: Int = 1, settleMs: Long = 0): CaptureDeadline {
+        val depth = CaptureWaitPolicy.pipelineDepth(characteristics.get(CameraCharacteristics.REQUEST_PIPELINE_MAX_DEPTH)?.toInt())
+        val seconds = CaptureWaitPolicy.seconds(exposureNs, previewNs, depth, pendingStills, settleMs)
+        val result = CaptureDeadline(seconds)
+        record("capture_wait_budget", mapOf("phase" to phase, "timeoutPolicy" to CaptureWaitPolicy.POLICY,
+            "timeoutSeconds" to seconds, "requestedExposureNs" to exposureNs,
+            "queuedPreviewExposureNs" to previewNs, "pipelineDepthBudget" to depth,
+            "pendingStills" to pendingStills, "settleMs" to settleMs))
+        return result
     }
 
     private val callback = object : CameraCaptureSession.CaptureCallback() {
@@ -352,6 +369,9 @@ internal class DngCapture(
                 }
                 setup["autoRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 setup["autoSubmittedRequest"] = requestReading(auto.build())
+                val autoExposure = settings.exposureNs?.let { ShortPreviewExposure.exposure(it, shortPreviewExposure) } ?: 1_000_000_000L
+                val autoDeadline = deadline("auto_setup", autoExposure,
+                    maxOf(autoExposure, previousLocked?.exposureNs ?: 0), pendingStills = 2, settleMs = settings.settleMs)
                 active.setRepeatingRequest(auto.build(), callback, handler)
                 if (settings.focusFraction == null && autoFocusMode == CaptureRequest.CONTROL_AF_MODE_AUTO) {
                     auto.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
@@ -360,7 +380,7 @@ internal class DngCapture(
                 val settleStart = System.nanoTime()
                 var autoResults = 0
                 do {
-                    observed = await(results)
+                    observed = await(results, autoDeadline, "auto_setup", "Auto controls did not settle; choose manual settings")
                     setup["autoLatestResult"] = setupReading(observed)
                     setup["autoResultsSeen"] = autoResults + 1
                     if (autoResults++ == 0) {
@@ -376,7 +396,6 @@ internal class DngCapture(
                         (settings.whiteBalance != null || awb == CaptureResult.CONTROL_AWB_STATE_CONVERGED || awb == CaptureResult.CONTROL_AWB_STATE_LOCKED)
                     val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - settleStart)
                     if (ready && elapsed >= settings.settleMs.coerceAtLeast(250)) break
-                    check(elapsed < 30_000) { "Auto controls did not settle; choose manual settings" }
                 } while (true)
                 setup["autoSettledElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 setup["autoResultsSeen"] = autoResults
@@ -407,13 +426,16 @@ internal class DngCapture(
                 results.clear()
                 setup["manualRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 setup["manualSubmittedRequest"] = requestReading(manual.build())
+                val manualDeadline = deadline("manual_setup", previewLocked.exposureNs,
+                    maxOf(previewLocked.exposureNs, observed?.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0,
+                        previousLocked?.exposureNs ?: 0), settleMs = settings.settleMs)
                 active.setRepeatingRequest(manual.build(), callback, handler)
                 // Reject queued auto results; wait for controls actually reported by the locked request.
                 val lockStart = System.nanoTime()
                 var manualResults = 0
                 var manualReadbackReported = false
                 do {
-                    observed = await(results)
+                    observed = await(results, manualDeadline, "manual_setup", "Manual controls did not settle")
                     if (!manualReadbackReported && observed.request.tag === lockTag) {
                         diagnosticEvent?.invoke("manual_first_result", setupReading(observed))
                         manualReadbackReported = true
@@ -436,7 +458,6 @@ internal class DngCapture(
                         }
                         if (System.nanoTime() - lockStart >= TimeUnit.MILLISECONDS.toNanos(settings.settleMs.coerceAtLeast(250))) break
                     }
-                    check(System.nanoTime() - lockStart < TimeUnit.SECONDS.toNanos(45)) { "Manual controls did not settle" }
                 } while (true)
                 setup["manualSettledElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                 setup["manualResultsSeen"] = manualResults
@@ -462,11 +483,11 @@ internal class DngCapture(
                     setup["fullExposureReadbackSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     setup["fullExposureReadbackRequest"] = requestReading(full.build())
                     diagnosticEvent?.invoke("setup_full_exposure_submitted", requestReading(full.build()))
+                    val fullDeadline = deadline("full_exposure_readback", locked.exposureNs, previewLocked.exposureNs)
                     active.capture(full.build(), callback, handler)
-                    val fullStart = System.nanoTime()
                     var ignored = 0
                     do {
-                        val result = await(results)
+                        val result = await(results, fullDeadline, "full_exposure_readback", "Full-exposure setup readback timed out")
                         val tagged = callbackGate.matches(result.request.tag, fullTag)
                         setup["fullExposureReadbackLatestResult"] = setupReading(result)
                         setup["fullExposureReadbackTagMatches"] = tagged
@@ -488,7 +509,6 @@ internal class DngCapture(
                             break
                         }
                         setup["fullExposureReadbackIgnoredResults"] = ++ignored
-                        check(System.nanoTime() - fullStart < TimeUnit.SECONDS.toNanos(45)) { "Full-exposure setup readback timed out" }
                     } while (true)
                 }
             } else {
@@ -571,10 +591,11 @@ internal class DngCapture(
                 var previousCloseElapsed: Long? = null
                 var previousSampleHash: String? = null
                 val pendingResults = mutableMapOf<Long, TotalCaptureResult>()
-                fun matchedResult(timestamp: Long): TotalCaptureResult {
+                val stillDeadlines = mutableMapOf<Int, CaptureDeadline>()
+                fun matchedResult(timestamp: Long, requestDeadline: CaptureDeadline): TotalCaptureResult {
                     pendingResults.remove(timestamp)?.let { return it }
                     while (true) {
-                        val result = await(results)
+                        val result = await(results, requestDeadline, "raw_result")
                         val tag = result.request.tag as? CaptureCallbackGate.Tag
                         if (!callbackGate.accepts(tag) || tag?.index == null) continue // Outstanding setup preview.
                         val sensor = requireNotNull(result.get(CaptureResult.SENSOR_TIMESTAMP))
@@ -617,6 +638,13 @@ internal class DngCapture(
                     timing["requestedExposureNs"] = locked.exposureNs
                     timing["requestedISO"] = locked.iso
                     timing["requestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                    // A stopped repeating stream can still have integrations in flight on the first still.
+                    val requestDeadline = deadline("raw_${index+1}", locked.exposureNs,
+                        if (keepPreviewRunning || index == 0) previewExposureNs else 0,
+                        pendingStills = submittedStills - completedStills + 1)
+                    stillDeadlines[index] = requestDeadline
+                    timing["timeoutPolicy"] = CaptureWaitPolicy.POLICY
+                    timing["timeoutSeconds"] = requestDeadline.seconds
                     timings[index] = timing
                     checkpoint(index, "submitted", mapOf("exposureNs" to locked.exposureNs,
                         "iso" to locked.iso, "imageReaderMaxImages" to reader.maxImages,
@@ -643,7 +671,8 @@ internal class DngCapture(
                         (needsMore == null || tryReserveNext!!.invoke())) ahead.add(submit(next++, true))
                     val timing = ahead.removeFirst()
                     previousCloseElapsed?.let { timing["previousImageClosedElapsedNs"] = it }
-                    val arrival = await(images)
+                    val requestDeadline = requireNotNull(stillDeadlines.remove(index))
+                    val arrival = await(images, requestDeadline, "raw_image")
                     val image = arrival.image
                     val frame = try {
                         // The sensor has delivered this RAW. Start one subsequent exposure
@@ -652,7 +681,7 @@ internal class DngCapture(
                             (needsMore == null || tryReserveNext!!.invoke())) {
                             ahead.add(submit(next++, true))
                         }
-                        val result = matchedResult(image.timestamp)
+                        val result = matchedResult(image.timestamp, requestDeadline)
                         check(callbackGate.accepts(result.request.tag) &&
                             (result.request.tag as? CaptureCallbackGate.Tag)?.index == index) { "RAW image/result identity mismatch" }
                         observed = result // Always a current result, never cached setup evidence.

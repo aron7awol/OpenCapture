@@ -1,5 +1,22 @@
 # Verification and Device Test Plan
 
+## Exposure-Aware Deadlines (Android 0.4.18/build 26)
+
+JVM tests exercise 30-second RAW plus 0.2-second versus full-length preview,
+queue depth, previous long exposures draining into short setup, bounded absent
+or invalid pipeline metadata, and the 45..600-second budget limits. Fake-clock
+tests verify that ignored callbacks and image/result matching share a deadline,
+late/cancelled images are released, and errors/cancellation beat a long wait.
+Windows tests cover long full-preview bursts, stopped/short preview, 2*N attempts,
+automatic exposure's upper bound and unchanged non-Android deadlines.
+
+Physical verification remains required: with a fixed phone/camera and supported
+ISO, start from a verified exposure and extend within a bounded operator-approved
+test. Compare standard, full keep-preview and short-preview diagnostics. Confirm
+actual shutter readback and RAW timestamps, then cancel a long request and check
+prompt cancellation and recovery. Do not treat a longer wait as proof of valid
+30-second integration or erase a learned working limit without explicit approval.
+
 ## Short Preview During Setup (November 20, Unreleased)
 
 JVM regression cases use the failed Xiaomi's approximately seven-second requests:

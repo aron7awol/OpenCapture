@@ -461,3 +461,28 @@ illuminated-scene empty-frame assumption. Preserve an originals-only diagnostic
 mode so aggregation cannot hide a recurrence. For root-cause comparison, leave
 averaging off or enable `keepOriginals`; use the original-file baseline before
 interpreting a timing-dependent change in failure rate.
+## Exposure-Aware Android Deadlines (0.4.18/build 26)
+
+`exposure-aware-deadlines-v1` replaces fixed 45-second capture/setup waits with
+one monotonic deadline per setup stage or RAW request. A request's image and
+timestamp-matched result share that deadline; unrelated preview results cannot
+renew it. Session configuration remains 45 seconds. Errors/cancellation are
+checked at most 100 ms apart while waiting; an image removed from the queue at
+cancellation/expiry is closed rather than leaked.
+
+The budget is the ceiling of 15 seconds overhead plus requested integrations
+(one normally, up to four queued stills; two for initial control convergence),
+plus queued preview exposure times pipeline depth, plus requested settling.
+Budgets are bounded to 45..600 seconds. Depth uses the reported 1..8 range,
+falling back to eight for absent/invalid metadata. These are conservative wait
+allowances, not measured latency or proof that a long request is supported.
+Manual setup allows for the previous long exposure still draining, even when
+the new preview exposure is short. RAW requests allow preview drain on the first
+still or throughout keep-preview modes. Short preview uses its actual 0.2-second
+cap, not the full RAW exposure, for the repeating-preview portion.
+
+`capture_wait_budget` records phase, policy, timeoutSeconds, requestedExposureNs,
+queuedPreviewExposureNs, pipelineDepthBudget, pendingStills and settleMs.
+`capture_wait_timeout` adds the phase, elapsedSeconds, policy and queue depths.
+Per-frame timing retains timeoutPolicy/timeoutSeconds. No requested exposure,
+ISO, acceptance threshold, retry count or scheduling behavior is changed.

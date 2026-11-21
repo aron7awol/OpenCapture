@@ -6,6 +6,61 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ManualCaptureStateTest {
+    @Test fun captureWaitBudgetsAccountForExposurePreviewAndQueueDepth() {
+        assertEquals(45L, CaptureWaitPolicy.seconds(100_000_000, 100_000_000, 8))
+        assertEquals(47L, CaptureWaitPolicy.seconds(30_000_000_000, 200_000_000, 8))
+        assertEquals(285L, CaptureWaitPolicy.seconds(30_000_000_000, 30_000_000_000, 8))
+        assertEquals(375L, CaptureWaitPolicy.seconds(30_000_000_000, 30_000_000_000, 8, 4))
+        assertEquals(45L, CaptureWaitPolicy.seconds(30_000_000_000))
+        assertEquals(286L, CaptureWaitPolicy.seconds(30_000_000_000, 30_000_000_000, 8, settleMs = 750))
+        assertEquals(106L, CaptureWaitPolicy.seconds(200_000_000, 30_000_000_000, 3, settleMs = 750))
+        assertEquals(600L, CaptureWaitPolicy.seconds(Long.MAX_VALUE, Long.MAX_VALUE, 8, Int.MAX_VALUE, Long.MAX_VALUE))
+        for (depth in listOf(null, 0, -1, 255)) assertEquals(8, CaptureWaitPolicy.pipelineDepth(depth))
+    }
+
+    @Test fun ignoredCallbacksCannotRenewStageDeadline() {
+        var now = 0L
+        val deadline = CaptureDeadline(45, now)
+        repeat(44) {
+            now += 1_000_000_000L
+            assertEquals("unrelated preview", deadline.await({}, { "unrelated preview" }, { now }))
+        }
+        now = 45_000_000_000L
+        assertThrows(java.util.concurrent.TimeoutException::class.java) {
+            deadline.await<String>({}, { fail("Expired stage must not poll"); "late" }, { now })
+        }
+    }
+
+    @Test fun imageAndResultShareOneDeadlineAndLateImagesAreClosed() {
+        var now = 0L
+        var discarded = 0
+        val deadline = CaptureDeadline(47, now)
+        now = 40_000_000_000L
+        assertEquals("image", deadline.await({}, { "image" }, { now }))
+        assertEquals(7_000_000_000L, deadline.remainingNs(now))
+        now = 46_950_000_000L
+        assertThrows(java.util.concurrent.TimeoutException::class.java) {
+            deadline.await<String>({}, { wait -> assertEquals(50_000_000L, wait); now += wait; "late result" },
+                { now }, { discarded++ })
+        }
+        assertEquals(1, discarded)
+    }
+
+    @Test fun cameraErrorAndCancellationBeatLongWaitAndReleaseAcquiredImage() {
+        val deadline = CaptureDeadline(375, 0)
+        val original = IllegalStateException("camera_error")
+        val error = assertThrows(IllegalStateException::class.java) {
+            deadline.await<String>({ throw original }, { fail("Camera error must not wait"); "image" }, { 0 })
+        }
+        assertSame(original, error)
+        var cancelled = false
+        var discarded = false
+        assertThrows(InterruptedException::class.java) {
+            deadline.await<String>({ if (cancelled) throw InterruptedException("cancelled") },
+                { wait -> assertEquals(100_000_000L, wait); cancelled = true; "image" }, { 0 }, { discarded = true })
+        }
+        assertTrue(discarded)
+    }
     @Test fun queuedStillsNeverExceedTheOwnedRawBuffers() {
         assertEquals(1, QueuedStills.window(false, 4))
         assertEquals(4, QueuedStills.window(true, 4))

@@ -1,6 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.uniformitycomp.capture
 
+/** Budget for queued integrations, not a claim about actual sensor latency. */
+internal object CaptureWaitPolicy {
+    const val POLICY = "exposure-aware-deadlines-v1"
+    const val MIN_SECONDS = 45L
+    const val MAX_SECONDS = 600L
+    fun pipelineDepth(reported: Int?): Int = reported?.takeIf { it in 1..8 } ?: 8
+    fun seconds(exposureNs: Long, previewNs: Long = 0, pipelineDepth: Int? = null,
+                pendingStills: Int = 1, settleMs: Long = 0): Long {
+        val exposure = exposureNs.coerceIn(0, 120_000_000_000L) / 1e9
+        val preview = previewNs.coerceIn(0, 120_000_000_000L) / 1e9
+        return kotlin.math.ceil(15 + exposure * pendingStills.coerceIn(1, 4) +
+            preview * pipelineDepth(pipelineDepth) + settleMs.coerceIn(0, 30_000) / 1000.0)
+            .toLong().coerceIn(MIN_SECONDS, MAX_SECONDS)
+    }
+}
+
+/** One monotonic deadline shared by all callbacks in a stage/request. */
+internal class CaptureDeadline(val seconds: Long, private val startedNs: Long = System.nanoTime()) {
+    init { require(seconds in 1..CaptureWaitPolicy.MAX_SECONDS) }
+    fun elapsedNs(now: Long) = (now - startedNs).coerceAtLeast(0)
+    fun remainingNs(now: Long) = (seconds * 1_000_000_000L - elapsedNs(now)).coerceAtLeast(0)
+    fun <T> await(check: () -> Unit, poll: (Long) -> T?, now: () -> Long = System::nanoTime,
+                  discard: (T) -> Unit = {}): T {
+        while (true) {
+            check()
+            val remaining = remainingNs(now())
+            if (remaining == 0L) throw java.util.concurrent.TimeoutException()
+            val value = poll(minOf(remaining, 100_000_000L))
+            try {
+                check()
+                if (remainingNs(now()) == 0L) throw java.util.concurrent.TimeoutException()
+            } catch (error: Exception) {
+                if (value != null) runCatching { discard(value) }
+                throw error
+            }
+            if (value != null) return value
+        }
+    }
+}
+
 internal object ShortPreviewExposure {
     const val CAP_NS = 200_000_000L
     fun exposure(stillNs: Long, enabled: Boolean): Long = if (enabled) minOf(stillNs, CAP_NS) else stillNs
