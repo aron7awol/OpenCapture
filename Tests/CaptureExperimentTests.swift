@@ -11,13 +11,13 @@ final class CaptureExperimentTests: XCTestCase {
     }
     func testEveryModeRoundTripsAndStandardRemainsAbsent() throws {
         XCTAssertNil(try CaptureRequest.decode(JSONEncoder().encode(request())).captureExperiment)
-        for mode in CaptureExperiment.allCases {
+        for mode in CaptureExperiment.allCases where mode != .bayerOnly {
             var value = request(); value.captureExperiment = mode
             XCTAssertEqual(try CaptureRequest.decode(JSONEncoder().encode(value)),value)
         }
     }
     func testExperimentsRejectAutomaticPartialProcessedAndControlOnlyRequests() {
-        for mode in CaptureExperiment.allCases {
+        for mode in CaptureExperiment.allCases where mode != .bayerOnly {
             var base = request(); base.captureExperiment = mode
             for change: (inout CaptureRequest) -> Void in [
                 { $0.exposureSeconds = nil; $0.iso = nil }, { $0.focusPosition = nil },
@@ -30,6 +30,11 @@ final class CaptureExperimentTests: XCTestCase {
                 XCTAssertThrowsError(try value.validate())
             }
         }
+    }
+    func testFailedBayerOnlyExperimentIsExplicitlyDisabled() throws {
+        var value = request(); value.captureExperiment = .bayerOnly
+        XCTAssertThrowsError(try value.validate())
+        XCTAssertThrowsError(try CaptureRequest.decode(JSONEncoder().encode(value)))
     }
     func testUnknownExperimentIsNotSilentlyIgnored() throws {
         var object = try JSONSerialization.jsonObject(with:JSONEncoder().encode(request())) as! [String:Any]

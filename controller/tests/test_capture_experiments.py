@@ -69,8 +69,8 @@ class CaptureExperimentTests(unittest.TestCase):
             results=json.loads((Path(output)/'summary.json').read_text())
             self.assertEqual([r['mode'] for r in results],list(bench.MODES))
             self.assertTrue(all(r['metadataChecksPassed'] and not r['physicalMeasurementQualified'] for r in results))
-            self.assertEqual(len(list(Path(output).glob('*/*.dng'))),10)
-            self.assertEqual(sum(path.endswith('/ack') for _,path in events),5)
+            self.assertEqual(len(list(Path(output).glob('*/*.dng'))),8)
+            self.assertEqual(sum(path.endswith('/ack') for _,path in events),4)
             self.assertTrue(all(path.startswith('/oc/v1/') for _,path in events))
 
     def test_supported_modes_and_normal_request(self):
@@ -81,7 +81,7 @@ class CaptureExperimentTests(unittest.TestCase):
 
     def test_rejects_unknown_automatic_processed_and_cross_platform_modes(self):
         base=dict(request(),captureExperiment=bench.MODES[1])
-        for change in (dict(captureExperiment='unknown'),dict(captureExperiment=None),
+        for change in (dict(captureExperiment='ios-bayer-only'),dict(captureExperiment='unknown'),dict(captureExperiment=None),
                        dict(exposureSeconds=None,iso=None),dict(focusPosition=None),dict(whiteBalance=None),
                        dict(includePreview=True),dict(format='jpeg'),dict(operation='applyControls',frameCount=1),
                        dict(captureScheduling='queued-preview'),

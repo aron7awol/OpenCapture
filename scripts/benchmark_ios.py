@@ -19,7 +19,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'controller'))
 from server import validate_request, canonical_request
 
-MODES = ('standard', 'ios-raw-no-preview', 'ios-raw-bracket-pair', 'ios-raw-prepared', 'ios-bayer-only')
+MODES = ('standard', 'ios-raw-no-preview', 'ios-raw-bracket-pair', 'ios-raw-prepared')
 NETWORKS = [ipaddress.ip_network(s) for s in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','169.254.0.0/16','127.0.0.0/8')]
 
 
