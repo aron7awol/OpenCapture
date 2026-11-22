@@ -1,5 +1,9 @@
 # Foreground Camera Server v1
 
+Opt-in iOS capture experiments and the portable benchmark procedure are specified
+in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
+physical-device verification is pending.
+
 ### Samsung Vendor Focus Feedback
 
 Android 0.4.21/build 29 adds bounded integer-position focus feedback to both

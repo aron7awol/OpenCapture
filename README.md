@@ -76,3 +76,10 @@ or second subscription is needed.
 
 Copyright (C) 2026 aron7awol. **GPL-3.0-only**, without warranty.
 See [LICENSE](LICENSE) and [third-party notices](Resources/ThirdPartyNotices.txt).
+
+## iOS capture benchmarks (development)
+
+Opt-in RAW-only/no-preview, native RAW brackets, prepared RAW resources and
+a dedicated Bayer configuration are available to benchmark controllers. See
+[the modes, script and verification procedure](docs/ios-capture-benchmarks.md).
+No defaults or update feeds change; actual device speed remains unverified.

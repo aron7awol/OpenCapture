@@ -1,5 +1,9 @@
 # Verification and Device Test Plan
 
+Opt-in iOS capture experiments and the portable benchmark procedure are specified
+in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
+physical-device verification is pending.
+
 ## Experimental Samsung / RAW + JPEG Sessions (Unreleased)
 
 Software checks cover mode validation, no-lookahead behavior, capability gates,

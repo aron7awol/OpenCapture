@@ -1,5 +1,9 @@
 # Architecture and Handoff
 
+Opt-in iOS capture experiments and the portable benchmark procedure are specified
+in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
+physical-device verification is pending.
+
 Optional [Bayer averaging](frame-averaging.md) is a generic capture operation,
 not a calibration solver. Android `BayerAverage.kt` streams fractional moments
 from staged DNGs (v1). iOS `Core/BayerDNG.swift` parses bounded normalization
