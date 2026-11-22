@@ -6,6 +6,15 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun captureCapabilitiesDescribeActualShadingRequestWithoutChangingAdvertisement() {
+        val caps = JSONObject().put("lensShadingMapRequested",true).put("rawShadingPolicy","camera2-dng-gain-map-v1")
+        assertTrue(OpenCaptureProtocol.captureCapabilities(caps,request()).getBoolean("lensShadingMapRequested"))
+        assertTrue(OpenCaptureProtocol.captureCapabilities(caps,request().put("omitFrameDurationOverride",true)).getBoolean("lensShadingMapRequested"))
+        val result=OpenCaptureProtocol.captureCapabilities(caps,request().put("useDriverShadingDefaults",true))
+        assertFalse(result.getBoolean("lensShadingMapRequested"))
+        assertEquals("camera2-dng-gain-map-v1",result.getString("rawShadingPolicy"))
+        assertTrue(caps.getBoolean("lensShadingMapRequested"))
+    }
     @Test fun samsungRequestOptionsAreIndependentAndVendorOnly() {
         for (frame in listOf(false,true)) for (shading in listOf(false,true)) {
             for (mode in listOf("samsung-vendor-preview","samsung-vendor-still")) {

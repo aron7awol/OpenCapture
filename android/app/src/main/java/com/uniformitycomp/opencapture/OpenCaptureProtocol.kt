@@ -17,6 +17,12 @@ object OpenCaptureProtocol {
     internal fun separateStill(value: JSONObject) = value.optString("captureScheduling", "") in
         setOf("raw-jpeg-still", "samsung-vendor-still")
 
+    internal fun captureCapabilities(capabilities: JSONObject, request: JSONObject): JSONObject =
+        JSONObject(capabilities.toString()).apply {
+            // Result provenance describes this job, not the default request policy.
+            if (request.optBoolean("useDriverShadingDefaults", false)) put("lensShadingMapRequested", false)
+        }
+
     internal fun acceptsExposure(exposureNs: Long?, minimumNs: Long, reportedMaximumNs: Long): Boolean =
         exposureNs == null || exposureNs in minimumNs..maxOf(reportedMaximumNs,
             (EXPERIMENTAL_EXPOSURE_SECONDS * 1e9).toLong())

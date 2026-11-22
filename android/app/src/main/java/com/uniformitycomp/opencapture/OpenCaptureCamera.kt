@@ -97,7 +97,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             Thread.sleep(50)
         }
         camera.events.record("preview_wait_ended", camera.runtimeEvidence())
-        val cap = capabilities()
+        val cap = OpenCaptureProtocol.captureCapabilities(capabilities(), request)
         for (key in OpenCaptureProtocol.samsungCaptureOptions) require(!request.optBoolean(key, false) ||
             (0 until cap.getJSONArray("samsungCaptureOptions").length()).any {
                 cap.getJSONArray("samsungCaptureOptions").getString(it) == key
