@@ -197,6 +197,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                 prepareFocus = vendor?.let { compatibility -> { result, target -> compatibility.prepareFocus(result, target) } },
                 configureFocus = vendor?.let { compatibility -> { builder, target -> compatibility.applyFocus(builder, target) } },
                 retryFocus = vendor?.takeIf { focusProbe == null }?.let { compatibility -> { result, target -> compatibility.retryFocus(result, target) } },
+                vendorFocusReady = vendor?.takeIf { focusProbe == null }?.let { compatibility -> { result -> compatibility.focusReady(result) } },
                 diagnosticFocusReady = if (focusProbe == null) null else { result -> vendor!!.probeReady(result) },
                 stillJpegReader = jpegReader,
                 beforeStillSession = {

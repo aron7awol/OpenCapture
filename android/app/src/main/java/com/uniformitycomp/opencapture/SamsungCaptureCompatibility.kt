@@ -19,6 +19,13 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
         const val KEY = "samsung.android.control.shootingMode"
         const val FOCUS_KEY = "samsung.android.lens.focusLensPos"
         const val FOCUS_RANGE_KEY = "samsung.android.lens.info.focusLensInfo"
+        internal const val FOCUS_POLICY = "samsung-vendor-only-feedback-v2"
+        internal fun writeFocus(position: Int, standardFocus: String?, omitStandard: () -> Unit,
+                                writePosition: (Int) -> Unit) {
+            // Only the explicit diagnostic comparison may send competing commands.
+            if (standardFocus != "retain") omitStandard()
+            writePosition(position)
+        }
         private fun focusRange(c: CameraCharacteristics): IntArray? = runCatching {
             c.get(CameraCharacteristics.Key(FOCUS_RANGE_KEY, IntArray::class.java))
         }.getOrNull()?.takeIf { SamsungFocusSearch.validRange(it) }
@@ -46,7 +53,7 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
                 .put("frameworkError", helper?.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)
                 .put("shootingModeRequestAdvertised", c.availableCaptureRequestKeys?.any { it.name == KEY } == true)
                 .put("shootingModeResultAdvertised", c.availableCaptureResultKeys?.any { it.name == KEY } == true)
-                .put("focusPolicy", "samsung-position-feedback-v1")
+                .put("focusPolicy", FOCUS_POLICY)
                 .put("focusPositionRequestAdvertised", c.availableCaptureRequestKeys?.any { it.name == FOCUS_KEY } == true)
                 .put("focusPositionResultAdvertised", c.availableCaptureResultKeys?.any { it.name == FOCUS_KEY } == true)
                 .put("focusPositionRange", focusRange(c)?.let { org.json.JSONArray(it.toList()) } ?: JSONObject.NULL)
@@ -85,25 +92,25 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
         }
         focusSearch?.selectSeed(target, result?.get(CaptureResult.LENS_FOCUS_DISTANCE),
             result?.let { focusPosition(it) }, cachedFocus, focusTolerance)
+        val search = requireNotNull(focusSearch) { "Samsung vendor focus range unavailable; choose a non-vendor capture mode" }
+        if (search.position == null) search.seed(search.minimum)
         events.record("samsung_focus_selected", JSONObject().put("targetDiopters", target)
             .put("position", focusSearch?.position ?: JSONObject.NULL)
-            .put("rangeAvailable", focusSearch != null).put("policy", "samsung-position-feedback-v1"))
+            .put("rangeAvailable", true).put("policy", FOCUS_POLICY))
     }
 
     fun applyFocus(builder: CaptureRequest.Builder, target: Float) {
         check(focusTarget == target) { "Samsung focus target changed during capture" }
-        if (probePosition != null) {
-            if (probe!!.getString("standardFocus") == "omit") builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, null)
-            builder.set(focusKey, probePosition)
-            return
-        }
-        focusSearch?.position?.let { position ->
-            try { builder.set(focusKey, position) }
-            catch (error: Exception) {
-                events.record("samsung_focus_request_failed", JSONObject().put("position", position)
-                    .put("errorChain", CameraDiagnostics.errorChain(error)), true)
-                throw IllegalStateException("Samsung vendor focus request is unavailable", error)
-            }
+        val position = requireNotNull(probePosition ?: focusSearch?.position) { "Samsung vendor focus position unavailable" }
+        try {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            writeFocus(position, probe?.getString("standardFocus"),
+                { builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, null) },
+                { builder.set(focusKey, it) })
+        } catch (error: Exception) {
+            events.record("samsung_focus_request_failed", JSONObject().put("position", position)
+                .put("errorChain", CameraDiagnostics.errorChain(error)), true)
+            throw IllegalStateException("Samsung vendor focus request is unavailable", error)
         }
     }
 
@@ -111,9 +118,16 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
         focusPosition(result) == probePosition &&
         result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_STATIONARY
 
+    fun focusReady(result: TotalCaptureResult): Boolean = focusSearch?.position?.let { position ->
+        runCatching { result.request.get(focusKey) }.getOrNull() == position &&
+            focusPosition(result) == position &&
+            result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_STATIONARY
+    } == true
+
     /** Called only for a fresh stationary focus-only mismatch, never for exposure/WB failures. */
     fun retryFocus(result: TotalCaptureResult, target: Float): Boolean {
         val search = focusSearch ?: return false
+        check(focusReady(result)) { "Samsung vendor focus position was not honored" }
         val actual = result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: return false
         val position = search.next(actual, target)
             ?: throw IllegalStateException("Samsung vendor focus could not reach requested focus; share camera diagnostics")
@@ -151,6 +165,8 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
     }
 
     fun readback(result: TotalCaptureResult): Map<String, Any> = mapOf(
+        "focusPolicy" to FOCUS_POLICY,
+        "requestedStandardFocusDiopters" to (result.request.get(CaptureRequest.LENS_FOCUS_DISTANCE) ?: "omitted"),
         "requestedShootingMode" to 5,
         "requestedFocusPosition" to (runCatching { result.request.get(focusKey) }.getOrNull() ?: "standard"),
         "reportedFocusPosition" to (focusPosition(result) ?: "unavailable"),

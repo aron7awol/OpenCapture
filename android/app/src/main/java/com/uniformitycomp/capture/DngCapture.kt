@@ -78,6 +78,7 @@ internal class DngCapture(
     private val prepareFocus: ((TotalCaptureResult?, Float) -> Unit)? = null,
     private val configureFocus: ((CaptureRequest.Builder, Float) -> Unit)? = null,
     private val retryFocus: ((TotalCaptureResult, Float) -> Boolean)? = null,
+    private val vendorFocusReady: ((TotalCaptureResult) -> Boolean)? = null,
     private val diagnosticFocusReady: ((TotalCaptureResult) -> Boolean)? = null,
     private val stillJpegReader: ImageReader? = null,
     private val beforeStillSession: (() -> Unit)? = null
@@ -475,7 +476,8 @@ internal class DngCapture(
                     setup["manualLatestResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     val isManual = observed.request.tag === lockTag &&
                         checks.all { it["status"] == "matched" || (diagnosticFocusReady != null && it["field"] == "focusDiopters") } &&
-                        retainedDifference == null && (diagnosticFocusReady?.invoke(observed) != false)
+                        retainedDifference == null && (diagnosticFocusReady?.invoke(observed) != false) &&
+                        (vendorFocusReady?.invoke(observed) != false)
                     if (isManual) {
                         stationaryFocusMismatches = 0
                         if (manualResults++ == 0) {
@@ -540,6 +542,7 @@ internal class DngCapture(
                             val checks = controlChecks(result, locked, minFocus)
                             setup["fullExposureReadbackChecks"] = checks
                             check(checks.all { it["status"] == "matched" }) { "Full-exposure setup controls were not honored" }
+                            check(vendorFocusReady?.invoke(result) != false) { "Samsung vendor focus position was not honored" }
                             // Only exposure changes between these two preview requests.
                             // Keep both original readbacks; compare all other state strictly.
                             val difference = stateReading(requireNotNull(observed))
@@ -760,6 +763,7 @@ internal class DngCapture(
                         checkpoint(index, "imageMatched", mapOf("imageTimestampNs" to image.timestamp), arrival.elapsedNs)
                         shading(result, "raw_${index+1}")
                         if (reportLensShading) {
+                            check(vendorFocusReady?.invoke(result) != false) { "Samsung vendor focus position was not honored in RAW capture" }
                             val checks = controlChecks(result, locked, minFocus)
                             val actualState = stateReading(result)
                             if (diagnosticFocusReady != null) {

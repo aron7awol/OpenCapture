@@ -7,10 +7,20 @@ Samsung vendor scheduling modes. It uses the phone's vendor focus range and
 fresh reported diopters, not an assumed conversion. A stationary focus-only
 mismatch may trigger up to ten probes within the existing setup deadline.
 All normal exposure, white-balance, geometry and RAW focus checks still apply.
-Missing range metadata preserves standard focus behavior. Diagnostics expose
+Android 0.4.23/build 31 changes manual requests in both vendor modes to vendor-only
+focus: standard LENS_FOCUS_DISTANCE is removed before the vendor position is set.
+The initial automatic setup may still use standard focus alone to establish a
+target; the locked preview and RAW requests use vendor position feedback.
+Position echo and stationary lens state are required in addition to the existing
+diopter checks. Without valid range metadata, vendor capture fails explicitly;
+select a non-vendor mode instead. Only the explicit diagnostic focusProbe with
+standardFocus=retain may send both commands. Diagnostics expose
 range availability, requested/reported positions and each attempted probe.
 Successful positions can seed subsequent jobs but are always reverified.
 Physical compatibility must be tested on each device; this is experimental.
+An S20 vendor-preview diagnostic showed repeatable image changes with vendor-only
+commands but no vendor sweep response with both commands. This does not yet
+qualify normal calibration or the separate RAW/JPEG still-session mode.
 
 ### Experimental Samsung / Still-Session Scheduling
 

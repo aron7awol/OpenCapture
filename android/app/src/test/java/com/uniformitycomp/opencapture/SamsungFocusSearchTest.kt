@@ -54,4 +54,18 @@ class SamsungFocusSearchTest {
         }
         assertNull(search.next(actual, .333333f))
     }
+
+    @Test fun vendorOnlyS20RangeConvergesAndCanReuseVerifiedPosition() {
+        val search = SamsungFocusSearch(1, 1023)
+        search.seed(search.minimum)
+        val target = 1.4431313f
+        fun reported(position: Int) = (position - 1) * 10f / 1022f
+        while (kotlin.math.abs(reported(requireNotNull(search.position)) - target) > .2f) {
+            assertNotNull(search.next(reported(requireNotNull(search.position)), target))
+        }
+        assertTrue(search.probes <= SamsungFocusSearch.MAX_PROBES)
+        val next = SamsungFocusSearch(1, 1023)
+        next.selectSeed(target, null, null, target to requireNotNull(search.position), .2f)
+        assertEquals(search.position, next.position)
+    }
 }
