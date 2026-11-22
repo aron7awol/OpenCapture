@@ -139,6 +139,8 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                             vendorCamera: Boolean = false,
                             separateStill: Boolean = false,
                             focusProbe: org.json.JSONObject? = null,
+                            omitFrameDurationOverride: Boolean = false,
+                            useDriverShadingDefaults: Boolean = false,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
         val connectionLost = onConnectionLost
@@ -148,6 +150,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         val surface = requireNotNull(previewSurface) { "Start the aiming preview first" }
         val configured = requireNotNull(previewSession) { "Preview session is not ready" }
         val experimental = vendorCamera || separateStill
+        require(vendorCamera || (!omitFrameDurationOverride && !useDriverShadingDefaults))
         require(!vendorCamera || SamsungCaptureCompatibility.available()) {
             "Samsung vendor controls are unavailable on this camera/firmware"
         }
@@ -165,7 +168,9 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         previewReady = false
         events.record("capture_started", runtimeEvidence().put("overlap", overlap)
             .put("repeatingPreviewDuringStill", keepPreviewRunning).put("queueAhead", queueAhead)
-            .put("exposureNs", settings.exposureNs).put("iso", settings.iso).put("frames", count))
+                .put("exposureNs", settings.exposureNs).put("iso", settings.iso).put("frames", count)
+                .put("omitFrameDurationOverride", omitFrameDurationOverride)
+                .put("useDriverShadingDefaults", useDriverShadingDefaults))
         var succeeded = false
         try {
             if (vendor != null) {
@@ -191,6 +196,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                 }
             }
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
+                omitFrameDurationOverride = omitFrameDurationOverride, useDriverShadingDefaults = useDriverShadingDefaults,
                 existingSession = configured, previousLocked = dngPreviewControls,
                 configureRequest = vendor?.let { compatibility -> { builder -> compatibility.request(builder) } },
                 compatibilityReadback = vendor?.let { compatibility -> { result -> compatibility.readback(result) } },

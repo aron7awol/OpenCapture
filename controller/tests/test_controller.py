@@ -43,6 +43,18 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_samsung_request_options(self):
+        for name in ('omitFrameDurationOverride','useDriverShadingDefaults'):
+            for mode in ('samsung-vendor-preview','samsung-vendor-still'):
+                for operation in ('capture','applyControls'):
+                    server.validate_request(dict(request(),captureScheduling=mode,operation=operation,**{name:True}))
+            for value in (1,'true',None):
+                with self.assertRaises(server.Invalid):
+                    server.validate_request(dict(request(),captureScheduling='samsung-vendor-still',**{name:value}))
+            with self.assertRaises(server.Invalid):server.validate_request(dict(request(),**{name:True}))
+        server.validate_request(dict(request(),captureScheduling='samsung-vendor-still',
+                                     omitFrameDurationOverride=True,useDriverShadingDefaults=True))
+
     def test_focus_probe_requires_bounded_originals_and_explicit_controls(self):
         value=dict(request(),frameCount=2,settleMilliseconds=1000,captureScheduling='samsung-vendor-preview',
             exposureSeconds=.05,iso=400,focusPosition=.5,whiteBalance=dict(red=1,green=1,blue=1),

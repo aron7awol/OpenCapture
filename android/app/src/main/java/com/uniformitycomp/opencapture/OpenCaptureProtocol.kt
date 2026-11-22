@@ -10,6 +10,7 @@ import java.util.UUID
 object OpenCaptureProtocol {
     const val EXPERIMENTAL_EXPOSURE_SECONDS = 30.0
     val experimentalScheduling = setOf("samsung-vendor-preview", "raw-jpeg-still", "samsung-vendor-still")
+    val samsungCaptureOptions = setOf("omitFrameDurationOverride", "useDriverShadingDefaults")
 
     internal fun vendorCamera(value: JSONObject) = value.optString("captureScheduling", "") in
         setOf("samsung-vendor-preview", "samsung-vendor-still")
@@ -23,7 +24,7 @@ object OpenCaptureProtocol {
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")
-    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling", "focusProbe")
+    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling", "focusProbe") + samsungCaptureOptions
 
     internal fun focusProbe(value: JSONObject): JSONObject? {
         if (!value.has("focusProbe")) return null
@@ -82,6 +83,10 @@ object OpenCaptureProtocol {
             "Experimental Samsung/still-session tests require originals, not phone averaging"
         }
         require(operation != "applyControls" || frames == 1)
+        for (key in samsungCaptureOptions) if (value.has(key)) {
+            require(value.get(key) is Boolean) { "$key must be boolean" }
+            require(!value.getBoolean(key) || vendorCamera(value)) { "$key requires Samsung vendor capture mode" }
+        }
         averaging(value)
         focusProbe(value)
         if (value.has("streaming")) {

@@ -6,6 +6,21 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun samsungRequestOptionsAreIndependentAndVendorOnly() {
+        for (frame in listOf(false,true)) for (shading in listOf(false,true)) {
+            for (mode in listOf("samsung-vendor-preview","samsung-vendor-still")) {
+                val r = request().put("captureScheduling",mode).put("omitFrameDurationOverride",frame)
+                    .put("useDriverShadingDefaults",shading)
+                OpenCaptureProtocol.request(r)
+                OpenCaptureProtocol.request(r.put("operation","applyControls").put("frameCount",1))
+            }
+        }
+        for (option in OpenCaptureProtocol.samsungCaptureOptions) {
+            rejected { OpenCaptureProtocol.request(request().put(option,true)) }
+            rejected { OpenCaptureProtocol.request(request().put("captureScheduling","raw-jpeg-still").put(option,true)) }
+            rejected { OpenCaptureProtocol.request(request().put("captureScheduling","samsung-vendor-still").put(option,1)) }
+        }
+    }
     @Test fun focusProbeIsExplicitBoundedOriginalCaptureOnly() {
         fun probe() = request().put("frameCount", 2).put("captureScheduling", "samsung-vendor-preview")
             .put("whiteBalance", JSONObject().put("red", 2).put("green", 1).put("blue", 1.5))

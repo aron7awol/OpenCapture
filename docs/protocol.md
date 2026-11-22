@@ -4,6 +4,22 @@ Opt-in iOS capture experiments and the portable benchmark procedure are specifie
 in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
 physical-device verification is pending.
 
+## Optional Samsung Request Overrides
+
+Android 0.4.24/build 32 advertises `samsungCaptureOptions` with
+`omitFrameDurationOverride` and `useDriverShadingDefaults` on eligible cameras.
+Both optional request booleans default false and are independent. True requires
+`samsung-vendor-preview` or `samsung-vendor-still`, Bayer originals and matching
+advertised support. They apply to both `applyControls` and `capture`.
+The first leaves template/driver frame duration untouched while still requesting
+exposure time. The second leaves SHADING_MODE and STATISTICS_LENS_SHADING_MAP_MODE
+at template/driver defaults, not OFF. Original DNGs and any embedded gain maps
+are retained unchanged. Requested policies are included in phone diagnostics,
+setup evidence and RAW timing records; actual metadata remains authoritative.
+No exposure, ISO, focus or geometry verification is relaxed. iOS does not
+advertise these Android-only experiments. Software checks cannot prove physical
+Samsung support or that the driver leaves RAW shading unmodified.
+
 ## Optional Samsung Focus Image Probe
 
 Development Android cameras may advertise

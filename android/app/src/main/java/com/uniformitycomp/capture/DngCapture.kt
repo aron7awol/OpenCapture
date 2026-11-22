@@ -67,6 +67,8 @@ internal class DngCapture(
     private val handler: Handler,
     private val cancel: AtomicBoolean,
     private val reportLensShading: Boolean = false,
+    private val omitFrameDurationOverride: Boolean = false,
+    private val useDriverShadingDefaults: Boolean = false,
     private val existingSession: CameraCaptureSession? = null,
     private val previousLocked: DngLockedSettings? = null,
     private val previousVerified: DngVerifiedState? = null,
@@ -103,7 +105,7 @@ internal class DngCapture(
     }
 
     private fun applyManual(builder: CaptureRequest.Builder, value: DngLockedSettings) {
-        applyLocked(builder, value, characteristics, reportLensShading)
+        applyLocked(builder, value, characteristics, reportLensShading, omitFrameDurationOverride, useDriverShadingDefaults)
         configureFocus?.invoke(builder, value.focusDiopters)
     }
 
@@ -284,6 +286,8 @@ internal class DngCapture(
             "reason" to if (fast != null) "verified_identical_manual" else
                 if (keepPreviewRunning) "continuous_preview_fresh_manual_readback" else setupFallbackReason,
             "keepPreviewRunning" to keepPreviewRunning,
+            "omitFrameDurationOverride" to omitFrameDurationOverride,
+            "useDriverShadingDefaults" to useDriverShadingDefaults,
             "shortPreviewExposure" to shortPreviewExposure,
             "previewSetupPolicy" to if (shortPreviewExposure) "short-repeating-single-full-readback-v1" else "full-repeating-v1",
             "sessionRecreated" to (existingSession == null),
@@ -366,11 +370,11 @@ internal class DngCapture(
                     else -> CaptureRequest.CONTROL_AF_MODE_OFF
                 }
                 auto.set(CaptureRequest.CONTROL_AF_MODE, autoFocusMode)
-                applySupportedProcessing(auto, characteristics, reportLensShading)
+                applySupportedProcessing(auto, characteristics, reportLensShading, useDriverShadingDefaults)
                 // A fully specified job never meters a new exposure on the next display pattern.
                 settings.exposureNs?.let {
                     auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                    applyExposure(auto, ShortPreviewExposure.exposure(it, shortPreviewExposure), characteristics)
+                    applyExposure(auto, ShortPreviewExposure.exposure(it, shortPreviewExposure), characteristics, omitFrameDurationOverride)
                 }
                 settings.iso?.let { auto.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
                 settings.focusFraction?.let {
@@ -712,6 +716,8 @@ internal class DngCapture(
                     timing["previewResultsAtSubmission"] = previewResultsDuringStills.get()
                     timing["requestedExposureNs"] = locked.exposureNs
                     timing["requestedISO"] = locked.iso
+                    timing["omitFrameDurationOverride"] = omitFrameDurationOverride
+                    timing["useDriverShadingDefaults"] = useDriverShadingDefaults
                     timing["requestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     // A stopped repeating stream can still have integrations in flight on the first still.
                     val requestDeadline = deadline("raw_${index+1}", locked.exposureNs,
@@ -1030,10 +1036,11 @@ internal class DngCapture(
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR)
 
         fun applyLocked(builder: CaptureRequest.Builder, value: DngLockedSettings, c: CameraCharacteristics,
-                        reportLensShading: Boolean = false) {
+                        reportLensShading: Boolean = false, omitFrameDurationOverride: Boolean = false,
+                        useDriverShadingDefaults: Boolean = false) {
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            applyExposure(builder, value.exposureNs, c)
+            applyExposure(builder, value.exposureNs, c, omitFrameDurationOverride)
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, value.iso)
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, value.focusDiopters)
@@ -1041,15 +1048,16 @@ internal class DngCapture(
             builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
             builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, value.gains)
             builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, value.transform)
-            applySupportedProcessing(builder, c, reportLensShading)
+            applySupportedProcessing(builder, c, reportLensShading, useDriverShadingDefaults)
             value.crop?.let { builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(it)) }
             value.opticalStabilization?.let { builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, it) }
             value.videoStabilization?.let { builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it) }
         }
 
-        private fun applyExposure(builder: CaptureRequest.Builder, exposureNs: Long, c: CameraCharacteristics) {
+        private fun applyExposure(builder: CaptureRequest.Builder, exposureNs: Long, c: CameraCharacteristics,
+                                  omitFrameDurationOverride: Boolean = false) {
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
-            if (c.availableCaptureRequestKeys.contains(CaptureRequest.SENSOR_FRAME_DURATION)) {
+            if (!omitFrameDurationOverride && c.availableCaptureRequestKeys.contains(CaptureRequest.SENSOR_FRAME_DURATION)) {
                 // Do not leave a short template frame duration competing with a long manual shutter.
                 builder.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(exposureNs, 33_333_333L))
             }
@@ -1064,7 +1072,8 @@ internal class DngCapture(
             return listOf(CaptureRequest.SHADING_MODE_HIGH_QUALITY, CaptureRequest.SHADING_MODE_FAST).firstOrNull { it in modes }
         }
 
-        private fun applySupportedProcessing(builder: CaptureRequest.Builder, c: CameraCharacteristics, reportLensShading: Boolean) {
+        private fun applySupportedProcessing(builder: CaptureRequest.Builder, c: CameraCharacteristics, reportLensShading: Boolean,
+                                             useDriverShadingDefaults: Boolean = false) {
             fun mode(key: CaptureRequest.Key<Int>, available: CameraCharacteristics.Key<IntArray>, wanted: Int) {
                 if (c.availableCaptureRequestKeys.contains(key) && c.get(available)?.contains(wanted) == true) builder.set(key, wanted)
             }
@@ -1072,7 +1081,8 @@ internal class DngCapture(
             mode(CaptureRequest.HOT_PIXEL_MODE, CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES, CaptureRequest.HOT_PIXEL_MODE_OFF)
             mode(CaptureRequest.EDGE_MODE, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES, CaptureRequest.EDGE_MODE_OFF)
             val shading = if (reportLensShading) lensShadingMode(c) else null
-            mode(CaptureRequest.SHADING_MODE, CameraCharacteristics.SHADING_AVAILABLE_MODES, shading ?: CaptureRequest.SHADING_MODE_OFF)
+            if (!useDriverShadingDefaults)
+                mode(CaptureRequest.SHADING_MODE, CameraCharacteristics.SHADING_AVAILABLE_MODES, shading ?: CaptureRequest.SHADING_MODE_OFF)
             mode(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES, CaptureRequest.DISTORTION_CORRECTION_MODE_OFF)
             mode(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
             mode(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
@@ -1080,8 +1090,9 @@ internal class DngCapture(
             // reports the remaining RAW correction, including on devices that
             // already apply some shading. DngCreator embeds it; never bake it
             // into original samples here. Legacy callers retain the old policy.
-            mode(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES,
-                if (shading != null) CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON else CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_OFF)
+            if (!useDriverShadingDefaults)
+                mode(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES,
+                    if (shading != null) CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON else CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_OFF)
         }
     }
 }

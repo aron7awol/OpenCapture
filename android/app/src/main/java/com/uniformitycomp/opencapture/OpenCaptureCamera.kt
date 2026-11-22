@@ -29,6 +29,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("captureSchedulingModes", JSONArray(listOf("sequential", "sequential-preview", "sequential-short-preview", "queued-preview") +
                 camera.experimentalSchedulingModes()))
             .put("captureStreamingModes", JSONArray(if (usable && selected != null) listOf("originals-v1") else emptyList<String>()))
+            .put("samsungCaptureOptions", JSONArray(if (usable && SamsungCaptureCompatibility.available())
+                OpenCaptureProtocol.samsungCaptureOptions.toList() else emptyList<String>()))
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
             .put("frameAveragingModes", JSONArray(if (usable && selected != null && selected.width.toLong()*selected.height <= 13_000_000)
@@ -96,6 +98,10 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         }
         camera.events.record("preview_wait_ended", camera.runtimeEvidence())
         val cap = capabilities()
+        for (key in OpenCaptureProtocol.samsungCaptureOptions) require(!request.optBoolean(key, false) ||
+            (0 until cap.getJSONArray("samsungCaptureOptions").length()).any {
+                cap.getJSONArray("samsungCaptureOptions").getString(it) == key
+            }) { "Samsung capture option is unavailable: $key" }
         val focusProbe = OpenCaptureProtocol.focusProbe(request)
         require(focusProbe == null || cap.getJSONArray("focusProbeModes").length() > 0) { "Focus diagnostic unavailable" }
         require(!request.has("captureScheduling") || (0 until cap.getJSONArray("captureSchedulingModes").length())
@@ -214,6 +220,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 vendorCamera = OpenCaptureProtocol.vendorCamera(request),
                 separateStill = OpenCaptureProtocol.separateStill(request),
                 focusProbe = focusProbe,
+                omitFrameDurationOverride = request.optBoolean("omitFrameDurationOverride", false),
+                useDriverShadingDefaults = request.optBoolean("useDriverShadingDefaults", false),
                 shortPreviewExposure = OpenCaptureProtocol.shortPreviewExposure(request),
                 queueAhead = OpenCaptureProtocol.queueAhead(request),
                 tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->
