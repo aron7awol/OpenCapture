@@ -3,10 +3,11 @@
 A remote-controlled camera for iPhone and Android. Aim the phone, then control
 the lens and capture settings from your computer.
 
-iOS 0.4.7 (58) and Android development builds offer **Dim screen during capture**
-in About (off by default, remembered on this phone). It requests minimum display brightness
-during camera preparation, capture and processing, then restores the previous
-brightness on completion, failure, cancellation, Stop, or leaving the app.
+Development builds have a **Dim screen** toggle on the camera toolbar (off by
+default, remembered on this phone). It keeps the display at minimum brightness,
+including between captures and while the camera server is stopped. Tap it again
+to restore brightness. Leaving the app restores normal brightness; returning
+reapplies the saved toggle. It replaces the older capture-only About setting.
 It changes neither camera exposure nor system auto-brightness settings.
 The display stays on; minimum brightness is not a completely black screen.
 

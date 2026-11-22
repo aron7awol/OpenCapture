@@ -592,11 +592,12 @@ accuracy. Keep the original DNGs for the initial parity test.
 
 ## Acceptance before calibration integration
 
-For **Dim screen during capture**, verify on each physical platform that the
-off-by-default About preference persists, reduces screen brightness during
-manual controls/original bursts/averaging, and restores the previous brightness
-after success, failure, cancellation, Stop, backgrounding and disabling the
-option mid-capture. On Android the previous per-window override (including
+For **Dim screen**, verify on each physical platform that the off-by-default
+camera-toolbar toggle persists across process restarts and rotations. It must
+remain dim during and between jobs, after success/failure/cancellation, and
+while the server is stopped. Turning it off or leaving the app restores the
+previous brightness; foregrounding reapplies the saved choice. Old capture-only
+preferences seed the new toggle until the user changes it. On Android the previous per-window override (including
 system-default `-1`) must be restored; do not request system-settings permission.
 Check that camera metadata and retained originals follow the same capture path.
 Simulator/build success alone does not establish physical brightness behavior.

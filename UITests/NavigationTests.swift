@@ -47,12 +47,36 @@ final class NavigationTests: XCTestCase {
         let bounds = app.windows.firstMatch.frame
         XCTAssertTrue(bounds.contains(preview.frame))
         XCTAssertGreaterThan(preview.frame.width, 0); XCTAssertGreaterThan(preview.frame.height, 0)
-        for id in ["aboutButton", "serverToggle"] {
+        for id in ["aboutButton", "serverToggle", "dimButton"] {
             let button = app.buttons[id]
             XCTAssertTrue(button.isHittable); XCTAssertTrue(bounds.contains(button.frame))
             if landscape { XCTAssertGreaterThanOrEqual(button.frame.minX, preview.frame.maxX - 1) }
             else { XCTAssertGreaterThanOrEqual(button.frame.minY, preview.frame.maxY - 1) }
         }
+    }
+    func testDimToggleSurvivesPauseBackgroundAndRelaunch() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let dim = app.buttons["dimButton"]
+        XCTAssertTrue(dim.waitForExistence(timeout: 10))
+        if dim.value as? String == "On" { dim.tap() }
+        XCTAssertEqual(dim.value as? String, "Off")
+        dim.tap()
+        XCTAssertEqual(dim.value as? String, "On")
+        app.buttons["serverToggle"].tap()
+        XCTAssertEqual(dim.value as? String, "On")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(dim.waitForExistence(timeout: 10))
+        XCTAssertEqual(dim.value as? String, "On")
+        app.terminate(); app.launch()
+        XCTAssertTrue(dim.waitForExistence(timeout: 10))
+        XCTAssertEqual(dim.value as? String, "On")
+        dim.tap()
+        app.terminate(); app.launch()
+        XCTAssertTrue(dim.waitForExistence(timeout: 10))
+        XCTAssertEqual(dim.value as? String, "Off")
     }
     private func attach(_ name: String, _ app: XCUIApplication) {
         // Element screenshots can crop a rotated simulator in portrait coordinates.

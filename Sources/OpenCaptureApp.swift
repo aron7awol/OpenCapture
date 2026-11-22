@@ -45,6 +45,15 @@ struct CameraScreen: View {
                     .accessibilityIdentifier("cameraStatus")
             }.frame(maxWidth: .infinity, alignment: .leading)
             if landscape { Spacer(minLength: 0) }
+            Button { model.dimScreen.toggle() } label: {
+                Image(systemName: model.dimScreen ? "sun.min.fill" : "sun.max")
+                    .foregroundStyle(model.dimScreen ? Color.mint : Color.white)
+                    .frame(width: 44, height: 44)
+            }.accessibilityLabel(model.dimScreen ? "Restore screen brightness" : "Dim screen")
+                .accessibilityValue(model.dimScreen ? "On" : "Off")
+                .accessibilityIdentifier("dimButton")
+                .help(model.dimScreen ? "Restore screen brightness" : "Dim screen")
+                .frame(maxWidth: landscape ? .infinity : nil)
             Button { Task { await model.toggle() } } label: {
                 Image(systemName: model.enabled ? "pause.fill" : "play.fill").frame(width: 44, height: 44)
             }.accessibilityLabel(model.enabled ? "Stop camera server" : "Resume camera server")
@@ -66,12 +75,6 @@ struct AboutView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Toggle("Dim screen during capture", isOn: $model.dimScreenDuringCapture)
-                        .accessibilityIdentifier("dimDuringCapture")
-                } footer: {
-                    Text("Use minimum screen brightness while preparing, capturing and processing photos. Restore brightness when finished or when leaving the app. Camera exposure is unchanged.")
-                }
                 LabeledContent("Version", value: "\(version) (build \(build))")
                 Button { Task { await model.checkUpdate() } } label: { Label("Check for updates", systemImage: "arrow.clockwise") }
                     .disabled(model.checkingUpdate)

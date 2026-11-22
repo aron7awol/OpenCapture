@@ -45,12 +45,18 @@ def average_manifest():
 class ContractTests(unittest.TestCase):
     def test_sequential_scheduling_is_explicit(self):
         schema=json.loads((ROOT/'protocol/request.schema.json').read_text())
-        self.assertEqual(schema['properties']['captureScheduling'],{'enum':['sequential','sequential-preview','sequential-short-preview','queued-preview']})
+        self.assertEqual(schema['properties']['captureScheduling'],{'enum':['sequential','sequential-preview','sequential-short-preview','queued-preview','samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still']})
         self.assertNotIn('captureScheduling',schema['required'])
         server.validate_request(dict(request(),captureScheduling='sequential'))
         server.validate_request(dict(request(),captureScheduling='sequential-preview'))
         server.validate_request(dict(request(),captureScheduling='sequential-short-preview'))
         server.validate_request(dict(request(),captureScheduling='queued-preview'))
+        for mode in ('samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still'):
+            for operation in ('capture','applyControls'):
+                server.validate_request(dict(request(),captureScheduling=mode,operation=operation))
+            with self.assertRaises(server.Invalid):
+                server.validate_request(dict(request(),captureScheduling=mode,
+                    averaging=dict(mode='bayer-mean-v3',emptyFramePolicy='relative',keepOriginals=False)))
         for value in (None,True,'parallel',{},1):
             with self.assertRaises(server.Invalid):server.validate_request(dict(request(),captureScheduling=value))
 

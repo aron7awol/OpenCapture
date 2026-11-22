@@ -97,8 +97,11 @@ def validate_request(request):
         raise Invalid("Invalid settling interval")
     if 'includePreview' in request and type(request['includePreview']) is not bool:
         raise Invalid('includePreview must be boolean')
-    if 'captureScheduling' in request and request['captureScheduling'] not in ('sequential', 'sequential-preview', 'sequential-short-preview', 'queued-preview'):
+    experimental = ('samsung-vendor-preview', 'raw-jpeg-still', 'samsung-vendor-still')
+    if 'captureScheduling' in request and request['captureScheduling'] not in ('sequential', 'sequential-preview', 'sequential-short-preview', 'queued-preview') + experimental:
         raise Invalid('Unknown capture scheduling')
+    if request.get('captureScheduling') in experimental and 'averaging' in request:
+        raise Invalid('Experimental capture scheduling requires originals, not phone averaging')
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
     if (exposure is None) != (iso is None):
         raise Invalid("Manual exposure requires shutter time and ISO")

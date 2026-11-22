@@ -25,18 +25,18 @@ private struct CameraServerInfo: Encodable {
     @Published var update: AppUpdate?
     @Published var updateStatus = ""
     @Published var checkingUpdate = false
-    @Published var dimScreenDuringCapture = UserDefaults.standard.bool(forKey: "dimScreenDuringCapture") {
+    @Published var dimScreen = (UserDefaults.standard.object(forKey: "dimScreen") as? Bool)
+        ?? UserDefaults.standard.bool(forKey: "dimScreenDuringCapture") {
         didSet {
-            UserDefaults.standard.set(dimScreenDuringCapture, forKey: "dimScreenDuringCapture")
+            UserDefaults.standard.set(dimScreen, forKey: "dimScreen")
             updateScreenBrightness()
         }
     }
-    private var captureActive = false
     private var sceneActive = false
     private var savedScreenBrightness: CGFloat?
 
     private func updateScreenBrightness() {
-        if dimScreenDuringCapture && captureActive && sceneActive && enabled {
+        if dimScreen && sceneActive {
             if savedScreenBrightness == nil { savedScreenBrightness = UIScreen.main.brightness }
             UIScreen.main.brightness = 0
         } else if let previous = savedScreenBrightness {
@@ -104,7 +104,7 @@ private struct CameraServerInfo: Encodable {
         UIApplication.shared.isIdleTimerDisabled = false
     }
     func background() {
-        foregrounded = false; beginShutdown()
+        sceneActive = false; foregrounded = false; beginShutdown()
     }
     func toggle() async {
         enabled.toggle()
@@ -112,7 +112,7 @@ private struct CameraServerInfo: Encodable {
         else { beginShutdown() }
     }
     private func beginShutdown() {
-        sceneActive = false; updateScreenBrightness()
+        updateScreenBrightness()
         camera.diagnostics.record("lifecycle_shutdown",["reason":foregrounded ? "operator_disabled" : "app_backgrounded"])
         UIApplication.shared.isIdleTimerDisabled = false
         UIDevice.current.isBatteryMonitoringEnabled = false
@@ -251,8 +251,6 @@ private struct CameraServerInfo: Encodable {
     }
 
     private func capture(_ request: CaptureRequest, stream: OriginalStream? = nil) async throws -> CameraServerResult {
-        captureActive = true; updateScreenBrightness()
-        defer { captureActive = false; updateScreenBrightness() }
         camera.diagnostics.begin(request)
         do {
             let result=try await performCapture(request,stream:stream)
