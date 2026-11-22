@@ -12,9 +12,15 @@ import org.json.JSONObject
 
 /** Experimental interoperability probe, not a guarantee of longer sensor integration. */
 @android.annotation.TargetApi(29)
-internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics) {
+internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics,
+    characteristics: CameraCharacteristics, private val cachedFocus: Pair<Float, Int>? = null) {
     companion object {
         const val KEY = "samsung.android.control.shootingMode"
+        const val FOCUS_KEY = "samsung.android.lens.focusLensPos"
+        const val FOCUS_RANGE_KEY = "samsung.android.lens.info.focusLensInfo"
+        private fun focusRange(c: CameraCharacteristics): IntArray? = runCatching {
+            c.get(CameraCharacteristics.Key(FOCUS_RANGE_KEY, IntArray::class.java))
+        }.getOrNull()?.takeIf { SamsungFocusSearch.validRange(it) }
         private const val HELPER = "com.samsung.android.sdk.camera.impl.internal.CustomInterfaceHelper"
         private const val JAR = "/system/framework/scamera_sdk_util.jar"
         private fun method() = Class.forName(HELPER, true,
@@ -39,6 +45,10 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
                 .put("frameworkError", helper?.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)
                 .put("shootingModeRequestAdvertised", c.availableCaptureRequestKeys?.any { it.name == KEY } == true)
                 .put("shootingModeResultAdvertised", c.availableCaptureResultKeys?.any { it.name == KEY } == true)
+                .put("focusPolicy", "samsung-position-feedback-v1")
+                .put("focusPositionRequestAdvertised", c.availableCaptureRequestKeys?.any { it.name == FOCUS_KEY } == true)
+                .put("focusPositionResultAdvertised", c.availableCaptureResultKeys?.any { it.name == FOCUS_KEY } == true)
+                .put("focusPositionRange", focusRange(c)?.let { org.json.JSONArray(it.toList()) } ?: JSONObject.NULL)
                 .put("advertisedKeyRequired", false)
                 .put("eligible", eligible(Build.VERSION.SDK_INT, Build.MANUFACTURER, Build.HARDWARE, helper?.isSuccess == true))
                 .put("physicallyVerified", false)
@@ -48,6 +58,50 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
     init { require(Build.VERSION.SDK_INT >= 29) { "Samsung vendor probes require Android 10 or newer" } }
     private val setter = method()
     private val shootingMode = CaptureRequest.Key(KEY, Int::class.javaObjectType)
+    private val focusKey = CaptureRequest.Key(FOCUS_KEY, Int::class.javaObjectType)
+    private val focusSearch = focusRange(characteristics)?.let { SamsungFocusSearch(it[0], it[1]) }
+    private val focusTolerance = maxOf(.0001f,
+        (characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f) * .02f)
+    private var focusTarget: Float? = null
+    val focusSeed: Pair<Float, Int>? get() = focusTarget?.let { target -> focusSearch?.position?.let { target to it } }
+
+    private fun focusPosition(result: TotalCaptureResult): Int? = runCatching {
+        result.get(CaptureResult.Key(FOCUS_KEY, Int::class.javaObjectType))
+    }.getOrNull() ?: runCatching {
+        result.get(CaptureResult.Key(FOCUS_KEY, IntArray::class.java))?.singleOrNull()
+    }.getOrNull()
+
+    fun prepareFocus(result: TotalCaptureResult?, target: Float) {
+        focusTarget = target
+        focusSearch?.selectSeed(target, result?.get(CaptureResult.LENS_FOCUS_DISTANCE),
+            result?.let { focusPosition(it) }, cachedFocus, focusTolerance)
+        events.record("samsung_focus_selected", JSONObject().put("targetDiopters", target)
+            .put("position", focusSearch?.position ?: JSONObject.NULL)
+            .put("rangeAvailable", focusSearch != null).put("policy", "samsung-position-feedback-v1"))
+    }
+
+    fun applyFocus(builder: CaptureRequest.Builder, target: Float) {
+        check(focusTarget == target) { "Samsung focus target changed during capture" }
+        focusSearch?.position?.let { position ->
+            try { builder.set(focusKey, position) }
+            catch (error: Exception) {
+                events.record("samsung_focus_request_failed", JSONObject().put("position", position)
+                    .put("errorChain", CameraDiagnostics.errorChain(error)), true)
+                throw IllegalStateException("Samsung vendor focus request is unavailable", error)
+            }
+        }
+    }
+
+    /** Called only for a fresh stationary focus-only mismatch, never for exposure/WB failures. */
+    fun retryFocus(result: TotalCaptureResult, target: Float): Boolean {
+        val search = focusSearch ?: return false
+        val actual = result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: return false
+        val position = search.next(actual, target)
+            ?: throw IllegalStateException("Samsung vendor focus could not reach requested focus; share camera diagnostics")
+        events.record("samsung_focus_probe", JSONObject().put("targetDiopters", target)
+            .put("reportedDiopters", actual).put("nextPosition", position).put("probe", search.probes))
+        return true
+    }
 
     fun configure(camera: CameraDevice, enabled: Boolean) {
         val parameters = if (enabled) "first-entrance=false;samsungcamera=true"
@@ -79,6 +133,9 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
 
     fun readback(result: TotalCaptureResult): Map<String, Any> = mapOf(
         "requestedShootingMode" to 5,
+        "requestedFocusPosition" to (runCatching { result.request.get(focusKey) }.getOrNull() ?: "standard"),
+        "reportedFocusPosition" to (focusPosition(result) ?: "unavailable"),
+        "reportedFocusDiopters" to (result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: "unavailable"),
         "reportedShootingMode" to (runCatching {
             result.get(CaptureResult.Key(KEY, Int::class.javaObjectType))
         }.getOrNull() ?: "unavailable"))

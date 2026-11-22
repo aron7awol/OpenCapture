@@ -54,9 +54,8 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     private val ui = Handler(Looper.getMainLooper())
     private val updates = Executors.newSingleThreadExecutor()
     private val updating = AtomicBoolean(false)
-    private val captureActive = AtomicBoolean(false)
     private var brightnessVisible = false
-    private var dimScreenDuringCapture = false
+    private var dimScreen = false
     private var savedScreenBrightness: Float? = null
     private var updater: OpenCaptureUpdates? = null
     private var updateCancel = AtomicBoolean(false)
@@ -118,18 +117,19 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         window.statusBarColor = android.graphics.Color.BLACK
         window.navigationBarColor = android.graphics.Color.BLACK
         val prefs = getSharedPreferences("opencapture", MODE_PRIVATE)
-        dimScreenDuringCapture = prefs.getBoolean("dimScreenDuringCapture", false)
+        dimScreen = prefs.getBoolean("dimScreen", prefs.getBoolean("dimScreenDuringCapture", false))
         deviceID = prefs.getString("deviceID", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceID", it).apply() }
         camera = CameraController(this, (application as OpenCaptureApplication).events)
         val staging = File(filesDir, "server-transfers")
         capture = OpenCaptureCamera(camera, deviceID, staging)
         session = CameraServerSession(staging,
-            { request, cancel, progress -> withDimmedCapture { capture.capture(request, cancel, progress) } },
+            { request, cancel, progress -> capture.capture(request, cancel, progress) },
             { text -> runOnUiThread { if (server != null) message(text) } },
             streamCapture={ request, cancel, progress, stream ->
-                withDimmedCapture { capture.captureStreaming(request, cancel, progress, stream) }
+                capture.captureStreaming(request, cancel, progress, stream)
             }, diagnostic = { event, detail -> camera.events.record(event, detail) })
-        screen = OpenCaptureScreens(this, ::toggle, ::showAbout)
+        screen = OpenCaptureScreens(this, ::toggle, ::showAbout, ::toggleDimming)
+        screen.dimmed(dimScreen)
         texture.surfaceTextureListener = this
     }
     private fun closeCamera(resetAttempts: Boolean = false, reason: String = "activity_camera_close") {
@@ -182,7 +182,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     }
     private fun updateScreenBrightness() {
         val attributes = window.attributes
-        if (dimScreenDuringCapture && captureActive.get() && brightnessVisible && enabled) {
+        if (dimScreen && brightnessVisible) {
             if (savedScreenBrightness == null) savedScreenBrightness = attributes.screenBrightness
             attributes.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_OFF
         } else {
@@ -191,14 +191,11 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         }
         window.attributes = attributes
     }
-    private fun <T> withDimmedCapture(action: () -> T): T {
-        captureActive.set(true)
-        runOnUiThread { updateScreenBrightness() }
-        try { return action() }
-        finally {
-            captureActive.set(false)
-            runOnUiThread { updateScreenBrightness() }
-        }
+    private fun toggleDimming() {
+        dimScreen = !dimScreen
+        getSharedPreferences("opencapture", MODE_PRIVATE).edit().putBoolean("dimScreen", dimScreen).apply()
+        screen.dimmed(dimScreen)
+        updateScreenBrightness()
     }
     private fun logLifecycle(event: String) {
         val awakeFlag = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
@@ -373,18 +370,6 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
             setPadding(padding, padding, padding, padding)
             addView(android.widget.TextView(this@OpenCaptureActivity).apply {
                 text = "Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})\nGPL-3.0-only"
-            })
-            addView(android.widget.Switch(this@OpenCaptureActivity).apply {
-                text = "Dim screen during capture"
-                isChecked = dimScreenDuringCapture
-                setOnCheckedChangeListener { _, checked ->
-                    dimScreenDuringCapture = checked
-                    getSharedPreferences("opencapture", MODE_PRIVATE).edit().putBoolean("dimScreenDuringCapture", checked).apply()
-                    updateScreenBrightness()
-                }
-            })
-            addView(android.widget.TextView(this@OpenCaptureActivity).apply {
-                text = "Use minimum screen brightness while preparing, capturing and processing photos. Restore brightness when finished or when leaving the app. Camera exposure is unchanged."
             })
         }
         AlertDialog.Builder(this).setTitle("OpenCapture")

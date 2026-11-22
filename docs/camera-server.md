@@ -1,5 +1,17 @@
 # Foreground Camera Server v1
 
+### Samsung Vendor Focus Feedback
+
+Android 0.4.21/build 29 adds bounded integer-position focus feedback to both
+Samsung vendor scheduling modes. It uses the phone's vendor focus range and
+fresh reported diopters, not an assumed conversion. A stationary focus-only
+mismatch may trigger up to ten probes within the existing setup deadline.
+All normal exposure, white-balance, geometry and RAW focus checks still apply.
+Missing range metadata preserves standard focus behavior. Diagnostics expose
+range availability, requested/reported positions and each attempted probe.
+Successful positions can seed subsequent jobs but are always reverified.
+Physical compatibility must be tested on each device; this is experimental.
+
 ### Experimental Samsung / Still-Session Scheduling
 
 Unreleased Android may advertise `samsung-vendor-preview`, `raw-jpeg-still`,

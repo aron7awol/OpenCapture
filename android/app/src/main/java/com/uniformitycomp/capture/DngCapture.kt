@@ -75,6 +75,9 @@ internal class DngCapture(
     private val diagnosticEvent: ((String, Map<String, Any>) -> Unit)? = null,
     private val configureRequest: ((CaptureRequest.Builder) -> Unit)? = null,
     private val compatibilityReadback: ((TotalCaptureResult) -> Map<String, Any>)? = null,
+    private val prepareFocus: ((TotalCaptureResult?, Float) -> Unit)? = null,
+    private val configureFocus: ((CaptureRequest.Builder, Float) -> Unit)? = null,
+    private val retryFocus: ((TotalCaptureResult, Float) -> Boolean)? = null,
     private val stillJpegReader: ImageReader? = null,
     private val beforeStillSession: (() -> Unit)? = null
 ) {
@@ -95,6 +98,11 @@ internal class DngCapture(
 
     private fun newRequest(template: Int) = camera.createCaptureRequest(template).also {
         configureRequest?.invoke(it)
+    }
+
+    private fun applyManual(builder: CaptureRequest.Builder, value: DngLockedSettings) {
+        applyLocked(builder, value, characteristics, reportLensShading)
+        configureFocus?.invoke(builder, value.focusDiopters)
     }
 
     private fun record(event: String, fields: Map<String, Any>) {
@@ -423,6 +431,7 @@ internal class DngCapture(
                     gains, requireNotNull(observed.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)) { "Missing color transform" })
             }
             setup["lockedControls"] = lockedReading(locked)
+            prepareFocus?.invoke(observed, locked.focusDiopters)
             diagnosticEvent?.invoke("manual_lock_selected", mapOf("controls" to lockedReading(locked),
                 "advertisedISORange" to (setup["advertisedISORange"] ?: "missing"),
                 "advertisedExposureRangeNs" to (setup["advertisedExposureRangeNs"] ?: "missing")))
@@ -431,9 +440,9 @@ internal class DngCapture(
                 setup["requestedSetupPreviewExposureNs"] = previewLocked.exposureNs
                 val manual = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                 manual.addTarget(preview)
-                val lockTag = callbackGate.tag()
+                var lockTag = callbackGate.tag()
                 manual.setTag(lockTag)
-                applyLocked(manual, previewLocked, characteristics, reportLensShading)
+                applyManual(manual, previewLocked)
                 if (reusable == null && !keepPreviewRunning) active.stopRepeating()
                 results.clear()
                 setup["manualRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
@@ -443,8 +452,9 @@ internal class DngCapture(
                         previousLocked?.exposureNs ?: 0), settleMs = settings.settleMs)
                 active.setRepeatingRequest(manual.build(), callback, handler)
                 // Reject queued auto results; wait for controls actually reported by the locked request.
-                val lockStart = System.nanoTime()
+                var lockStart = System.nanoTime()
                 var manualResults = 0
+                var stationaryFocusMismatches = 0
                 var manualReadbackReported = false
                 do {
                     observed = await(results, manualDeadline, "manual_setup", "Manual controls did not settle")
@@ -464,11 +474,31 @@ internal class DngCapture(
                     setup["manualLatestResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     val isManual = observed.request.tag === lockTag && checks.all { it["status"] == "matched" } && retainedDifference == null
                     if (isManual) {
+                        stationaryFocusMismatches = 0
                         if (manualResults++ == 0) {
                             setup["manualFirstResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                             setup["manualFirstResult"] = setupReading(observed)
                         }
                         if (System.nanoTime() - lockStart >= TimeUnit.MILLISECONDS.toNanos(settings.settleMs.coerceAtLeast(250))) break
+                    } else if (retryFocus != null && observed.request.tag === lockTag && retainedDifference == null &&
+                        observed.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_STATIONARY &&
+                        checks.all { it["status"] == if (it["field"] == "focusDiopters") "mismatch" else "matched" } &&
+                        System.nanoTime() - lockStart >= TimeUnit.MILLISECONDS.toNanos(settings.settleMs.coerceAtLeast(250))) {
+                        if (++stationaryFocusMismatches >= 2 && retryFocus.invoke(observed, locked.focusDiopters)) {
+                            lockTag = callbackGate.tag()
+                            manual.setTag(lockTag)
+                            applyManual(manual, previewLocked)
+                            results.clear()
+                            manualResults = 0
+                            stationaryFocusMismatches = 0
+                            lockStart = System.nanoTime()
+                            setup["manualSubmittedRequest"] = requestReading(manual.build())
+                            setup["manualRequestSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
+                            diagnosticEvent?.invoke("manual_focus_retry_submitted", requestReading(manual.build()))
+                            active.setRepeatingRequest(manual.build(), callback, handler)
+                        }
+                    } else {
+                        stationaryFocusMismatches = 0
                     }
                 } while (true)
                 setup["manualSettledElapsedNs"] = SystemClock.elapsedRealtimeNanos()
@@ -490,7 +520,7 @@ internal class DngCapture(
                     full.addTarget(preview)
                     val fullTag = callbackGate.tag()
                     full.setTag(fullTag)
-                    applyLocked(full, locked, characteristics, reportLensShading)
+                    applyManual(full, locked)
                     results.clear()
                     setup["fullExposureReadbackSubmittedElapsedNs"] = SystemClock.elapsedRealtimeNanos()
                     setup["fullExposureReadbackRequest"] = requestReading(full.build())
@@ -532,8 +562,7 @@ internal class DngCapture(
                     val manual = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                     manual.addTarget(preview)
                     manual.setTag(callbackGate.tag())
-                    applyLocked(manual, locked.copy(exposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)),
-                        characteristics, reportLensShading)
+                    applyManual(manual, locked.copy(exposureNs = ShortPreviewExposure.exposure(locked.exposureNs, shortPreviewExposure)))
                     active.setRepeatingRequest(manual.build(), callback, handler)
                 } else active.stopRepeating()
                 val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.settleMs.coerceAtLeast(250))
@@ -612,7 +641,7 @@ internal class DngCapture(
                     val previewRequest = newRequest(CameraDevice.TEMPLATE_PREVIEW)
                     previewRequest.addTarget(preview)
                     previewRequest.setTag(callbackGate.tag())
-                    applyLocked(previewRequest, locked.copy(exposureNs=previewExposureNs), characteristics, reportLensShading)
+                    applyManual(previewRequest, locked.copy(exposureNs=previewExposureNs))
                     active.setRepeatingRequest(previewRequest.build(), callback, handler)
                 }
                 callbackGate.beginStills()
@@ -646,7 +675,7 @@ internal class DngCapture(
                     val request = newRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                     request.addTarget(reader.surface)
                     stillJpegReader?.let { request.addTarget(it.surface) }
-                    applyLocked(request, locked, characteristics, reportLensShading)
+                    applyManual(request, locked)
                     request.setTag(callbackGate.tag(index))
                     if (characteristics.availableCaptureRequestKeys?.contains(CaptureRequest.CONTROL_ENABLE_ZSL) == true)
                         request.set(CaptureRequest.CONTROL_ENABLE_ZSL, false)
@@ -898,6 +927,7 @@ internal class DngCapture(
     /** Small metadata-only snapshots; never substitute these maps for a still's actual map. */
     private fun setupReading(result: TotalCaptureResult): Map<String, Any> {
         val reading = linkedMapOf<String, Any>("frameNumber" to result.frameNumber)
+        compatibilityReadback?.invoke(result)?.let { reading["compatibility"] = it }
         reading.putAll(stateReading(result).diagnosticFields())
         result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { reading["sensorTimestampNs"] = it }
         result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { reading["exposureNs"] = it }

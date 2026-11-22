@@ -45,6 +45,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
     @Volatile private var dngPreviewControls: DngLockedSettings? = null
     @Volatile private var shortPreview = false
     private val manualState = ManualCaptureCache<DngVerifiedState>()
+    private var vendorFocusSeed: Pair<Float, Int>? = null
     @Volatile private var previewRequestGeneration = 0L
     @Volatile private var cameraGeneration = 0L
     @Volatile private var sessionGeneration = 0L
@@ -150,7 +151,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             "Samsung vendor controls are unavailable on this camera/firmware"
         }
         require(!experimental || (!overlap && !queueAhead && !shortPreviewExposure))
-        val vendor = if (vendorCamera) SamsungCaptureCompatibility(events) else null
+        val vendor = if (vendorCamera) SamsungCaptureCompatibility(events, selectedCharacteristics(), vendorFocusSeed) else null
         var jpegReader: ImageReader? = null
         var vendorAttempted = false
         var captureError: Exception? = null
@@ -190,6 +191,9 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                 existingSession = configured, previousLocked = dngPreviewControls,
                 configureRequest = vendor?.let { compatibility -> { builder -> compatibility.request(builder) } },
                 compatibilityReadback = vendor?.let { compatibility -> { result -> compatibility.readback(result) } },
+                prepareFocus = vendor?.let { compatibility -> { result, target -> compatibility.prepareFocus(result, target) } },
+                configureFocus = vendor?.let { compatibility -> { builder, target -> compatibility.applyFocus(builder, target) } },
+                retryFocus = vendor?.let { compatibility -> { result, target -> compatibility.retryFocus(result, target) } },
                 stillJpegReader = jpegReader,
                 beforeStillSession = {
                     synchronized(this) {
@@ -213,6 +217,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                     previewSurface === surface && !cancel.get() && manualState.current(ticket)) { "Camera state invalidated during capture" }
                 if (!experimental) manualState.complete(ticket, sequence.verified, sequence.verificationUnavailable) { !cancel.get() }
                 dngPreviewControls = sequence.locked
+                if (vendor != null) vendorFocusSeed = vendor.focusSeed
                 shortPreview = shortPreviewExposure
             }
             succeeded = true
@@ -520,6 +525,9 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
     }
 
     @Synchronized private fun invalidateManualState(reason: String) {
+        // A seed is only a starting request; fresh result verification remains mandatory.
+        if (reason != "experimental_capture_setup" && reason != "experimental_capture_ended" &&
+            reason != "session_recreated") vendorFocusSeed = null
         manualState.invalidate(reason)
         dngPreviewControls = null
         shortPreview = false

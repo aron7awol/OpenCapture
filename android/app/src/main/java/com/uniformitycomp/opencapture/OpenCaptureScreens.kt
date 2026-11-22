@@ -13,7 +13,7 @@ import android.view.View
 import android.widget.*
 
 /** The preview never lives in a scroll view; both orientations use the same surface. */
-class OpenCaptureScreens(activity: Activity, toggle: () -> Unit, about: () -> Unit) {
+class OpenCaptureScreens(activity: Activity, toggle: () -> Unit, about: () -> Unit, dim: () -> Unit) {
     val texture = TextureView(activity)
     private val border = object : View(activity) {
         val frame = RectF()
@@ -52,6 +52,11 @@ class OpenCaptureScreens(activity: Activity, toggle: () -> Unit, about: () -> Un
         setColorFilter(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
         setOnClickListener { about() }; tooltipText = contentDescription
     }
+    val dimButton = ImageButton(activity).apply {
+        setImageResource(R.drawable.dim_screen)
+        setBackgroundColor(Color.TRANSPARENT)
+        setOnClickListener { dim() }
+    }
     init {
         fun dp(value: Int) = (value * activity.resources.displayMetrics.density).toInt()
         val root = LinearLayout(activity).apply {
@@ -70,6 +75,7 @@ class OpenCaptureScreens(activity: Activity, toggle: () -> Unit, about: () -> Un
             orientation = LinearLayout.VERTICAL; addView(cameraInfo); addView(status)
         }
         bar.addView(labels, LinearLayout.LayoutParams(0, dp(56), 1f))
+        bar.addView(dimButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         bar.addView(toggleButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         bar.addView(aboutButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         val preview = FrameLayout(activity).apply {
@@ -99,5 +105,11 @@ class OpenCaptureScreens(activity: Activity, toggle: () -> Unit, about: () -> Un
         toggleButton.setImageResource(if (enabled) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play)
         toggleButton.contentDescription = if (enabled) "Stop camera server" else "Resume camera server"
         toggleButton.tooltipText = toggleButton.contentDescription
+    }
+    fun dimmed(value: Boolean) {
+        dimButton.isSelected = value
+        dimButton.setColorFilter(if (value) Color.rgb(161, 228, 207) else Color.WHITE)
+        dimButton.contentDescription = if (value) "Restore screen brightness" else "Dim screen"
+        dimButton.tooltipText = dimButton.contentDescription
     }
 }
