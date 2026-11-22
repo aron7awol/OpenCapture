@@ -138,6 +138,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                             queueAhead: Boolean = false,
                             vendorCamera: Boolean = false,
                             separateStill: Boolean = false,
+                            focusProbe: org.json.JSONObject? = null,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
         val connectionLost = onConnectionLost
@@ -151,7 +152,9 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             "Samsung vendor controls are unavailable on this camera/firmware"
         }
         require(!experimental || (!overlap && !queueAhead && !shortPreviewExposure))
-        val vendor = if (vendorCamera) SamsungCaptureCompatibility(events, selectedCharacteristics(), vendorFocusSeed) else null
+        require(focusProbe == null || (vendorCamera && count == 2 && maxAttempts == 2 && !overlap && !queueAhead))
+        val vendor = if (vendorCamera) SamsungCaptureCompatibility(events, selectedCharacteristics(),
+            if (focusProbe == null) vendorFocusSeed else null, focusProbe) else null
         var jpegReader: ImageReader? = null
         var vendorAttempted = false
         var captureError: Exception? = null
@@ -193,7 +196,8 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                 compatibilityReadback = vendor?.let { compatibility -> { result -> compatibility.readback(result) } },
                 prepareFocus = vendor?.let { compatibility -> { result, target -> compatibility.prepareFocus(result, target) } },
                 configureFocus = vendor?.let { compatibility -> { builder, target -> compatibility.applyFocus(builder, target) } },
-                retryFocus = vendor?.let { compatibility -> { result, target -> compatibility.retryFocus(result, target) } },
+                retryFocus = vendor?.takeIf { focusProbe == null }?.let { compatibility -> { result, target -> compatibility.retryFocus(result, target) } },
+                diagnosticFocusReady = if (focusProbe == null) null else { result -> vendor!!.probeReady(result) },
                 stillJpegReader = jpegReader,
                 beforeStillSession = {
                     synchronized(this) {
@@ -217,7 +221,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                     previewSurface === surface && !cancel.get() && manualState.current(ticket)) { "Camera state invalidated during capture" }
                 if (!experimental) manualState.complete(ticket, sequence.verified, sequence.verificationUnavailable) { !cancel.get() }
                 dngPreviewControls = sequence.locked
-                if (vendor != null) vendorFocusSeed = vendor.focusSeed
+                if (vendor != null) vendorFocusSeed = if (focusProbe == null) vendor.focusSeed else null
                 shortPreview = shortPreviewExposure
             }
             succeeded = true

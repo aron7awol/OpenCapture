@@ -43,6 +43,19 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_focus_probe_requires_bounded_originals_and_explicit_controls(self):
+        value=dict(request(),frameCount=2,settleMilliseconds=1000,captureScheduling='samsung-vendor-preview',
+            exposureSeconds=.05,iso=400,focusPosition=.5,whiteBalance=dict(red=1,green=1,blue=1),
+            focusProbe=dict(position=.5,standardFocus='omit'))
+        server.validate_request(value)
+        for field,changed in [('frameCount',3),('settleMilliseconds',0),('exposureSeconds',3),
+            ('operation','applyControls'),('captureScheduling','sequential'),('focusPosition',None),
+            ('focusProbe',dict(position=2,standardFocus='omit')),
+            ('focusProbe',dict(position=.5,standardFocus='unknown')),
+            ('streaming',dict(mode='originals-v1'))]:
+            with self.subTest(field=field),self.assertRaises(server.Invalid):
+                server.validate_request(dict(value,**{field:changed}))
+
     def test_sequential_scheduling_is_explicit(self):
         schema=json.loads((ROOT/'protocol/request.schema.json').read_text())
         self.assertEqual(schema['properties']['captureScheduling'],{'enum':['sequential','sequential-preview','sequential-short-preview','queued-preview','samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still']})

@@ -1,5 +1,26 @@
 # OpenCapture Protocol 1
 
+## Optional Samsung Focus Image Probe
+
+Development Android cameras may advertise
+`focusProbeModes: ["samsung-position-images-v1"]`. A capture request may then
+include `focusProbe: {"position": 0.5, "standardFocus": "omit"}`. Position is
+a finite normalized fraction of the advertised Samsung vendor integer range;
+`standardFocus` is `retain` (also send standard focus) or `omit` (vendor only).
+This is diagnostic-only, not a verified manual-focus result.
+
+Require Samsung vendor capture scheduling, Bayer RAW, speed quality, exactly
+two original frames, explicit exposure/ISO/focus/WB, exposure at most two
+seconds and settling at least 750 ms. No applyControls, averaging or streaming.
+Capability-gate this extension; iOS does not advertise it. Standard focus
+distance matching alone is waived; vendor echo, stationary lens state and all
+other controls/state must still verify. Per-frame `captureDiagnostics.focusProbe`
+records `measurementEligible:false`, control checks and vendor readback. Do not
+use these captures for calibration or verified-state reuse. File hashes and
+original sidecar receipts retain their existing format.
+
+## Transport And Capture
+
 OpenCapture 0.4.0 uses the [foreground camera-server transport](camera-server.md).
 Capture requests, results and original-file receipt schemas below are reused
 unchanged. The outbound connection/endpoints in this document are the legacy

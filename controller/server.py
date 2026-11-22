@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -113,6 +113,15 @@ def validate_request(request):
     if wb is not None and (not isinstance(wb, dict) or set(wb) != {"red", "green", "blue"} or
                            not all(number(value, 1, 64) for value in wb.values())):
         raise Invalid("Invalid white balance gains")
+    if 'focusProbe' in request:
+        probe=request['focusProbe']
+        if (not isinstance(probe,dict) or set(probe)!={'position','standardFocus'} or
+                not number(probe.get('position'),0,1) or probe.get('standardFocus') not in ('retain','omit') or
+                request.get('operation') not in (None,'capture') or request['frameCount']!=2 or
+                request['format']!='bayerRaw' or request.get('captureScheduling') not in ('samsung-vendor-preview','samsung-vendor-still') or
+                any(k in request for k in ('averaging','streaming')) or not number(exposure,1e-9,2) or
+                not number(request.get('focusPosition'),0,1) or wb is None or request['settleMilliseconds']<750):
+            raise Invalid('Invalid diagnostic-only Samsung focus probe')
     context = request["context"]
     if not isinstance(context, dict) or len(context) > 16 or any(
         not isinstance(key, str) or not isinstance(value, str) or len(key.encode()) > 64 or len(value.encode()) > 256
@@ -469,6 +478,8 @@ class State:
                 raise Invalid('Camera does not support original streaming',409)
             if 'captureScheduling' in request and request['captureScheduling'] not in (self.capabilities or {}).get('captureSchedulingModes', []):
                 raise Invalid('Camera does not support requested capture scheduling',409)
+            if 'focusProbe' in request and 'samsung-position-images-v1' not in (self.capabilities or {}).get('focusProbeModes',[]):
+                raise Invalid('Update OpenCapture: focus image diagnostics unavailable',409)
             if request["id"] in self.jobs:
                 job = self.jobs[request["id"]]
                 if canonical_request(job["request"]) == canonical_request(request):

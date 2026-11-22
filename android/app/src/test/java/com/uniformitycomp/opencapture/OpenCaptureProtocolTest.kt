@@ -6,6 +6,20 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun focusProbeIsExplicitBoundedOriginalCaptureOnly() {
+        fun probe() = request().put("frameCount", 2).put("captureScheduling", "samsung-vendor-preview")
+            .put("whiteBalance", JSONObject().put("red", 2).put("green", 1).put("blue", 1.5))
+            .put("focusProbe", JSONObject().put("position", .5).put("standardFocus", "omit"))
+        OpenCaptureProtocol.request(probe())
+        OpenCaptureProtocol.request(probe().put("captureScheduling", "samsung-vendor-still"))
+        for (mode in listOf("sequential", "raw-jpeg-still")) rejected { OpenCaptureProtocol.request(probe().put("captureScheduling", mode)) }
+        rejected { OpenCaptureProtocol.request(probe().put("operation", "applyControls").put("frameCount", 1)) }
+        rejected { OpenCaptureProtocol.request(probe().put("exposureSeconds", 3)) }
+        rejected { OpenCaptureProtocol.request(probe().put("frameCount", 3)) }
+        rejected { OpenCaptureProtocol.request(probe().put("settleMilliseconds", 0)) }
+        rejected { OpenCaptureProtocol.request(probe().put("streaming", JSONObject().put("mode", "originals-v1"))) }
+        for (p in listOf(-.1,1.1)) rejected { OpenCaptureProtocol.request(probe().put("focusProbe", JSONObject().put("position",p).put("standardFocus","omit"))) }
+    }
     @Test fun samsungExperimentsDoNotOverlapOrSilentlyAverage() {
         for (mode in OpenCaptureProtocol.experimentalScheduling) {
             val r = request().put("captureScheduling", mode)

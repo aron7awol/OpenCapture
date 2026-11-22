@@ -49,6 +49,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("platform", "android").put("actualControlsSource", "camera2CaptureResult")
             .put("focusModel", "androidNormalizedDiopters")
             .put("maximumFocusDiopters", c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f)
+            .put("focusProbeModes", JSONArray(if (usable && SamsungCaptureCompatibility.available() &&
+                !SamsungCaptureCompatibility.diagnostics(c).isNull("focusPositionRange"))
+                listOf("samsung-position-images-v1") else emptyList<String>()))
             .put("whiteBalanceModel", "rggbGreenMean")
     }
 
@@ -93,6 +96,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         }
         camera.events.record("preview_wait_ended", camera.runtimeEvidence())
         val cap = capabilities()
+        val focusProbe = OpenCaptureProtocol.focusProbe(request)
+        require(focusProbe == null || cap.getJSONArray("focusProbeModes").length() > 0) { "Focus diagnostic unavailable" }
         require(!request.has("captureScheduling") || (0 until cap.getJSONArray("captureSchedulingModes").length())
             .any { cap.getJSONArray("captureSchedulingModes").getString(it) == request.getString("captureScheduling") }) {
             "Requested capture scheduling is unavailable on this camera"
@@ -208,6 +213,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 keepPreviewRunning = OpenCaptureProtocol.keepPreviewRunning(request),
                 vendorCamera = OpenCaptureProtocol.vendorCamera(request),
                 separateStill = OpenCaptureProtocol.separateStill(request),
+                focusProbe = focusProbe,
                 shortPreviewExposure = OpenCaptureProtocol.shortPreviewExposure(request),
                 queueAhead = OpenCaptureProtocol.queueAhead(request),
                 tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->

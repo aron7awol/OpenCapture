@@ -23,7 +23,24 @@ object OpenCaptureProtocol {
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")
-    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling")
+    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling", "focusProbe")
+
+    internal fun focusProbe(value: JSONObject): JSONObject? {
+        if (!value.has("focusProbe")) return null
+        val probe = value.getJSONObject("focusProbe")
+        require(probe.keys().asSequence().toSet() == setOf("position", "standardFocus"))
+        number(probe, "position", 0.0, 1.0)
+        require(probe.getString("standardFocus") in setOf("retain", "omit"))
+        require(vendorCamera(value) && value.optString("operation", "capture") == "capture" &&
+            value.getInt("frameCount") == 2 && !value.has("averaging") && !value.has("streaming")) {
+            "Focus probes require two original Samsung vendor frames, without streaming or averaging"
+        }
+        number(value, "exposureSeconds", 1e-9, 2.0)
+        number(value, "iso", 1.0, 204800.0)
+        number(value, "focusPosition", 0.0, 1.0)
+        require(!value.isNull("whiteBalance") && value.getInt("settleMilliseconds") >= 750)
+        return probe
+    }
 
     internal fun overlap(value: JSONObject, averaging: Boolean, streaming: Boolean): Boolean =
         !value.has("captureScheduling") && !averaging &&
@@ -66,6 +83,7 @@ object OpenCaptureProtocol {
         }
         require(operation != "applyControls" || frames == 1)
         averaging(value)
+        focusProbe(value)
         if (value.has("streaming")) {
             val stream=value.getJSONObject("streaming")
             require(stream.keys().asSequence().toSet()==setOf("mode") && stream.getString("mode")=="originals-v1" &&

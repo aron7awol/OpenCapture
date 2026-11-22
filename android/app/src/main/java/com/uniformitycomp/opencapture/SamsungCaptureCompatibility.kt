@@ -13,7 +13,8 @@ import org.json.JSONObject
 /** Experimental interoperability probe, not a guarantee of longer sensor integration. */
 @android.annotation.TargetApi(29)
 internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics,
-    characteristics: CameraCharacteristics, private val cachedFocus: Pair<Float, Int>? = null) {
+    characteristics: CameraCharacteristics, private val cachedFocus: Pair<Float, Int>? = null,
+    private val probe: JSONObject? = null) {
     companion object {
         const val KEY = "samsung.android.control.shootingMode"
         const val FOCUS_KEY = "samsung.android.lens.focusLensPos"
@@ -60,6 +61,10 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
     private val shootingMode = CaptureRequest.Key(KEY, Int::class.javaObjectType)
     private val focusKey = CaptureRequest.Key(FOCUS_KEY, Int::class.javaObjectType)
     private val focusSearch = focusRange(characteristics)?.let { SamsungFocusSearch(it[0], it[1]) }
+    private val probePosition = probe?.let { p ->
+        val range = requireNotNull(focusRange(characteristics)) { "Samsung focus range unavailable" }
+        range[0] + kotlin.math.round((range[1]-range[0])*p.getDouble("position")).toInt()
+    }
     private val focusTolerance = maxOf(.0001f,
         (characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f) * .02f)
     private var focusTarget: Float? = null
@@ -73,6 +78,11 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
 
     fun prepareFocus(result: TotalCaptureResult?, target: Float) {
         focusTarget = target
+        if (probePosition != null) {
+            events.record("samsung_focus_diagnostic", JSONObject().put("position", probePosition)
+                .put("standardFocus", probe!!.getString("standardFocus")).put("measurementEligible", false))
+            return
+        }
         focusSearch?.selectSeed(target, result?.get(CaptureResult.LENS_FOCUS_DISTANCE),
             result?.let { focusPosition(it) }, cachedFocus, focusTolerance)
         events.record("samsung_focus_selected", JSONObject().put("targetDiopters", target)
@@ -82,6 +92,11 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
 
     fun applyFocus(builder: CaptureRequest.Builder, target: Float) {
         check(focusTarget == target) { "Samsung focus target changed during capture" }
+        if (probePosition != null) {
+            if (probe!!.getString("standardFocus") == "omit") builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, null)
+            builder.set(focusKey, probePosition)
+            return
+        }
         focusSearch?.position?.let { position ->
             try { builder.set(focusKey, position) }
             catch (error: Exception) {
@@ -91,6 +106,10 @@ internal class SamsungCaptureCompatibility(private val events: CameraDiagnostics
             }
         }
     }
+
+    fun probeReady(result: TotalCaptureResult): Boolean = probePosition != null &&
+        focusPosition(result) == probePosition &&
+        result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_STATIONARY
 
     /** Called only for a fresh stationary focus-only mismatch, never for exposure/WB failures. */
     fun retryFocus(result: TotalCaptureResult, target: Float): Boolean {

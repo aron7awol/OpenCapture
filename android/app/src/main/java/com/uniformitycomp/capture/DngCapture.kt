@@ -78,6 +78,7 @@ internal class DngCapture(
     private val prepareFocus: ((TotalCaptureResult?, Float) -> Unit)? = null,
     private val configureFocus: ((CaptureRequest.Builder, Float) -> Unit)? = null,
     private val retryFocus: ((TotalCaptureResult, Float) -> Boolean)? = null,
+    private val diagnosticFocusReady: ((TotalCaptureResult) -> Boolean)? = null,
     private val stillJpegReader: ImageReader? = null,
     private val beforeStillSession: (() -> Unit)? = null
 ) {
@@ -472,7 +473,9 @@ internal class DngCapture(
                         "retainedStateDifference" to (retainedDifference ?: "matched_or_not_required"),
                         "retainedReference" to (retainedReference?.diagnosticFields() ?: "not_required"))
                     setup["manualLatestResultElapsedNs"] = SystemClock.elapsedRealtimeNanos()
-                    val isManual = observed.request.tag === lockTag && checks.all { it["status"] == "matched" } && retainedDifference == null
+                    val isManual = observed.request.tag === lockTag &&
+                        checks.all { it["status"] == "matched" || (diagnosticFocusReady != null && it["field"] == "focusDiopters") } &&
+                        retainedDifference == null && (diagnosticFocusReady?.invoke(observed) != false)
                     if (isManual) {
                         stationaryFocusMismatches = 0
                         if (manualResults++ == 0) {
@@ -759,12 +762,20 @@ internal class DngCapture(
                         if (reportLensShading) {
                             val checks = controlChecks(result, locked, minFocus)
                             val actualState = stateReading(result)
+                            if (diagnosticFocusReady != null) {
+                                check(diagnosticFocusReady.invoke(result)) { "Diagnostic focus position not stationary or not reported" }
+                                timing["focusProbe"] = mapOf("measurementEligible" to false,
+                                    "checks" to checks, "readback" to (compatibilityReadback?.invoke(result) ?: emptyMap<String, Any>()))
+                            }
                             val requestedTransform = result.request.get(CaptureRequest.COLOR_CORRECTION_TRANSFORM)?.let { matrix ->
                                 (0..8).map { matrix.getElement(it % 3, it / 3).toDouble() }
                             }
-                            val mismatch = if (checks.any { it["status"] != "matched" }) "still_controls_not_honored"
+                            val comparedState = if (diagnosticFocusReady == null) actualState else
+                                actualState.copy(focus = stillReference?.focus)
+                            val mismatch = if (checks.any { it["status"] != "matched" &&
+                                !(diagnosticFocusReady != null && it["field"] == "focusDiopters") }) "still_controls_not_honored"
                                 else if (stillReference == null) "no_setup_readback" else stillReference.differenceForStill(
-                                    actualState, minFocus, requestedTransform, referenceIsPreview)
+                                    comparedState, minFocus, requestedTransform, referenceIsPreview)
                             timing["manualStateReferenceSource"] = if (referenceIsPreview) "manual_preview" else "completed_still"
                             if (mismatch != null) {
                                 diagnosticEvent?.invoke("manual_state_mismatch", mapOf("detail" to mismatch,
@@ -880,8 +891,9 @@ internal class DngCapture(
             }
             check()
             val sequence = DngSequence(locked, requireNotNull(observed) { "No fresh capture result" }, frames).also {
-                it.verified = verified.takeIf { verificationUnavailable == null }
-                it.verificationUnavailable = verificationUnavailable ?: "no_verified_still"
+                it.verified = verified.takeIf { verificationUnavailable == null && diagnosticFocusReady == null }
+                it.verificationUnavailable = if (diagnosticFocusReady != null) "diagnostic_focus_probe" else
+                    verificationUnavailable ?: "no_verified_still"
             }
             succeeded = true
             return sequence
