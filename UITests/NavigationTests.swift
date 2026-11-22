@@ -57,6 +57,10 @@ final class NavigationTests: XCTestCase {
     func testDimToggleSurvivesPauseBackgroundAndRelaunch() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
+        addUIInterruptionMonitor(withDescription: "Permissions") { alert in
+            for name in ["Allow", "OK"] where alert.buttons[name].exists { alert.buttons[name].tap(); return true }
+            return false
+        }
         app.launch()
         let dim = app.buttons["dimButton"]
         XCTAssertTrue(dim.waitForExistence(timeout: 10))
