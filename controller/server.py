@@ -485,6 +485,8 @@ class State:
                 raise Invalid('Camera does not support original streaming',409)
             if 'captureScheduling' in request and request['captureScheduling'] not in (self.capabilities or {}).get('captureSchedulingModes', []):
                 raise Invalid('Camera does not support requested capture scheduling',409)
+            if 'captureExperiment' in request and request['captureExperiment'] not in (self.capabilities or {}).get('captureExperiments', []):
+                raise Invalid('Camera does not advertise this iOS capture experiment',409)
             if 'focusProbe' in request and 'samsung-position-images-v1' not in (self.capabilities or {}).get('focusProbeModes',[]):
                 raise Invalid('Update OpenCapture: focus image diagnostics unavailable',409)
             if request["id"] in self.jobs:

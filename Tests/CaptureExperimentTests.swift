@@ -23,6 +23,7 @@ final class CaptureExperimentTests: XCTestCase {
                 { $0.exposureSeconds = nil; $0.iso = nil }, { $0.focusPosition = nil },
                 { $0.whiteBalance = nil }, { $0.includePreview = true }, { $0.includePreview = nil },
                 { $0.format = .jpeg }, { $0.format = .appleProRAW; $0.quality = .quality },
+                { $0.averaging = AveragingOptions(mode:"bayer-mean-v2",emptyFramePolicy:"relative",keepOriginals:true) },
                 { $0.operation = .applyControls; $0.frameCount = 1 }
             ] {
                 var value = base; change(&value)

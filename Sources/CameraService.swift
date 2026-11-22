@@ -198,6 +198,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         aimingEnabled = enabled
         aimingLayer?.connection?.isEnabled = enabled
     }
+    @MainActor private func aimingState() -> String {
+        guard let connection = aimingLayer?.connection else { return "not_attached" }
+        return String(connection.isEnabled)
+    }
 
     /// Every experiment restores its output configuration before cameraReady.
     /// No default, persisted preference, or public update feed changes here.
@@ -232,11 +236,19 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
             experimentEvidence["configurationElapsedNs"] = String(RawCaptureDiagnostics.now - started)
             experimentEvidence["videoOutputAttached"] = String(session.outputs.contains(video))
-            experimentEvidence["aimingPreviewEnabled"] = String(mode != .noPreview)
             experimentEvidence["proRAWEnabled"] = String(output.isAppleProRAWEnabled)
             experimentEvidence["outputMaxWidth"] = String(output.maxPhotoDimensions.width)
             experimentEvidence["outputMaxHeight"] = String(output.maxPhotoDimensions.height)
             experimentEvidence["maxQualityPriority"] = String(output.maxPhotoQualityPrioritization.rawValue)
+        }
+        // Reconfiguration can replace connections; disable/check the current one.
+        if mode == .noPreview { await enableAiming(false) }
+        let aiming = await aimingState()
+        try await onQueue { [self] in
+            experimentEvidence["aimingPreviewEnabled"] = aiming
+            guard mode != .noPreview || (!session.outputs.contains(video) && aiming != "true") else {
+                throw CaptureError.unavailable("Preview remained active in no-preview experiment")
+            }
             diagnostics.record("experiment_configured", experimentEvidence, requestID:request.id)
         }
     }
@@ -287,10 +299,13 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 guard delegates.isEmpty, bracketDelegate == nil else { throw CaptureError.unavailable("Experiment writers have not drained") }
                 preparationToken = nil; resourcesPrepared = nil
                 if experiment == .preparedRAW { output.setPreparedPhotoSettingsArray([], completionHandler:nil) }
-                session.beginConfiguration()
-                output.isAppleProRAWEnabled = saved.proRAW
-                output.maxPhotoDimensions = saved.dimensions
-                output.maxPhotoQualityPrioritization = saved.quality
+                let reconfigure = experiment == .noPreview || experiment == .bayerOnly
+                if reconfigure { session.beginConfiguration() }
+                if experiment == .bayerOnly {
+                    output.isAppleProRAWEnabled = saved.proRAW
+                    output.maxPhotoDimensions = saved.dimensions
+                    output.maxPhotoQualityPrioritization = saved.quality
+                }
                 if saved.video && !session.outputs.contains(video) {
                     guard session.canAddOutput(video) else {
                         session.commitConfiguration()
@@ -302,7 +317,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                         if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
                     }
                 }
-                session.commitConfiguration()
+                if reconfigure { session.commitConfiguration() }
                 preparedKey = nil; preparedActualKey = nil
                 diagnostics.record("experiment_restored",["mode":experiment?.rawValue ?? "unknown",
                     "restorationElapsedNs":String(RawCaptureDiagnostics.now-started),
