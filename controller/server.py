@@ -114,7 +114,7 @@ def validate_request(request):
                            not all(number(value, 1, 64) for value in wb.values())):
         raise Invalid("Invalid white balance gains")
     if 'captureExperiment' in request:
-        if (request['captureExperiment'] not in ('ios-raw-no-preview','ios-raw-bracket-pair','ios-raw-prepared','ios-bayer-only') or
+        if (request['captureExperiment'] not in ('ios-raw-no-preview','ios-raw-bracket-pair','ios-raw-prepared') or
                 request['format'] != 'bayerRaw' or request['quality'] != 'speed' or
                 request.get('operation') == 'applyControls' or request.get('includePreview') is not False or
                 any(key in request for key in ('averaging','captureScheduling','focusProbe')) or

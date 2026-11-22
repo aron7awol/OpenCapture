@@ -3,6 +3,28 @@
 iOS and Android have different native capture APIs and therefore different
 diagnostic scopes. Do not relabel one platform's checks as the other's.
 
+## iOS Submission Clock Evidence (0.4.9 Development)
+
+Original sidecars now add `captureTiming.iosTimingVersion:1`,
+`photoClock:avcapture-session-master-clock` and
+`submissionSessionTimeSeconds`. The latter is sampled from the session's
+master clock before submission; `AVCapturePhoto.timestamp` uses that clock.
+Existing elapsed callback/submission fields retain DispatchTime units. Never
+subtract a photo timestamp from those fields or a desktop clock. Brackets
+retain their shared submission and null per-photo exposure callbacks.
+
+These fields support rejecting a photo timestamp older than its request, but
+passing timestamps alone do not prove the entire integration followed a display
+change. A bounded optical transition test is still required. Standard capture
+settings, original bytes, per-frame shading and exposure overlap are unchanged.
+The `ios-bayer-only` experiment is disabled following repeated physical frames;
+normal Bayer RAW remains supported.
+
+Apple specifies the photo's clock in
+[timestamp](https://developer.apple.com/documentation/avfoundation/avcapturephoto/timestamp),
+and the exposure-end notification in
+[didCapturePhotoFor](https://developer.apple.com/documentation/avfoundation/avcapturephotocapturedelegate/photooutput(_:didcapturephotofor:)).
+
 ## Android Preview/Still Matrix Comparison (November 20, Unreleased)
 
 A captured S20 Ultra failure had a RAW color matrix exactly matching its

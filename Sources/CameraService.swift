@@ -186,7 +186,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 output.availableRawPhotoPixelFormatTypes.contains(where:{RawCaptureDiagnostics.formats[$0] != nil}) ? [BayerAverage.mode] : [],
             captureStreamingModes:["originals-v1"], optionalPhotoPreview:true,
             captureExperiments: raw ? CaptureExperiment.allCases.filter {
-                $0 != .bracketPair || output.maxBracketedCapturePhotoCount >= 2
+                $0 != .bayerOnly && ($0 != .bracketPair || output.maxBracketedCapturePhotoCount >= 2)
             } : [])
     }
 
@@ -513,6 +513,14 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
+    // AVCapturePhoto.timestamp belongs to this clock, not DispatchTime.
+    private func submissionSessionTime() throws -> Double {
+        guard let clock = session.masterClock else { throw CaptureError.unavailable("Capture session clock unavailable") }
+        let seconds = CMClockGetTime(clock).seconds
+        guard seconds.isFinite, seconds > 0 else { throw CaptureError.unavailable("Invalid capture session clock") }
+        return seconds
+    }
+
     func photo(request: CaptureRequest, index: Int, directory: URL,
                exposureFinished: @escaping @Sendable () -> Void = {}) async throws -> FrameRecord {
         try Task.checkCancellation()
@@ -538,6 +546,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     let capture = StillDelegate(directory: directory, index: index, format: request.format,
                         averaging:request.averaging != nil, requestID: id, exposureFinished: exposureFinished,
                         context:photoContext, preparation:preparationTiming, experiment:experimentEvidence,
+                        submissionSessionTimeSeconds:try submissionSessionTime(),
                         reading: { Self.read(d) }) { [weak self] result in
                         guard let self else { continuation.resume(with: result); return }
                         self.queue.async {
@@ -599,6 +608,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     evidence["singlePhotoReason"] = indices.count == 1 ? "tail_or_only_one_stream_permit" : "none"
                     let capture = BracketDelegate(directory:directory,indices:indices,requestID:id,
                         context:photoContext,preparation:preparationTiming,experiment:evidence,
+                        submissionSessionTimeSeconds:try submissionSessionTime(),
                         reading:{ Self.read(d) }) { [weak self] result in
                             guard let self else { continuation.resume(with:result); return }
                             self.queue.async {
@@ -660,6 +670,7 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private let averaging: Bool
     private let requestID: Int64
     private let exposureFinished: @Sendable () -> Void
+    private let submissionSessionTimeSeconds: Double
     private let submittedElapsedNs: UInt64
     private var exposureStartedElapsedNs: UInt64?
     private var exposureEndedElapsedNs: UInt64?
@@ -679,6 +690,7 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, requestID: Int64,
          exposureFinished: @escaping @Sendable () -> Void, context: CIContext,
          preparation: [String:UInt64], experiment: [String:String] = [:], bracketSequence: Int? = nil,
+         submissionSessionTimeSeconds: Double,
          submittedElapsedNs: UInt64 = RawCaptureDiagnostics.now,
          reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<FrameRecord, Error>) -> Void) {
@@ -686,6 +698,7 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
         self.requestID = requestID; self.exposureFinished = exposureFinished
         self.context=context; self.preparation=preparation
         self.experiment=experiment; self.bracketSequence=bracketSequence
+        self.submissionSessionTimeSeconds=submissionSessionTimeSeconds
         self.submittedElapsedNs=submittedElapsedNs
         self.reading = reading; self.completion = completion
     }
@@ -762,6 +775,8 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             lock.lock()
             metadataObject["captureTiming"] = ["policy": bracketSequence != nil ? "native-raw-bracket-v1" : (averaging ? "sequential-v1" : "two-photo-after-exposure-v1"),
                 "requestID": requestID, "submittedElapsedNs": submittedElapsedNs,
+                "iosTimingVersion":1,"photoClock":"avcapture-session-master-clock",
+                "submissionSessionTimeSeconds":submissionSessionTimeSeconds,
                 "bracketSequence":bracketSequence.map { $0 as Any } ?? NSNull(),
                 "deviceReadingSource":bracketSequence == nil ? "shutter_callback_or_processing_fallback" : "processing_callback",
                 "exposureStartedElapsedNs": exposureStartedElapsedNs.map { $0 as Any } ?? NSNull(),
@@ -845,7 +860,7 @@ private final class BracketDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private var completion: ((Result<[FrameRecord],Error>) -> Void)?
 
     init(directory: URL, indices: [Int], requestID: Int64, context: CIContext,
-         preparation: [String:UInt64], experiment: [String:String], reading: @escaping () -> DeviceReading,
+         preparation: [String:UInt64], experiment: [String:String], submissionSessionTimeSeconds: Double, reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<[FrameRecord],Error>) -> Void) {
         count = indices.count; self.requestID = requestID
         identity = BracketCaptureIdentity(requestID:requestID,count:indices.count)
@@ -855,7 +870,7 @@ private final class BracketDelegate: NSObject, AVCapturePhotoCaptureDelegate {
         children = indices.enumerated().map { position,index in
             StillDelegate(directory:directory,index:index,format:.bayerRAW,averaging:false,requestID:requestID,
                 exposureFinished:{},context:context,preparation:preparation,experiment:experiment,
-                bracketSequence:position+1,submittedElapsedNs:submitted,reading:reading) { [weak self] result in
+                bracketSequence:position+1,submissionSessionTimeSeconds:submissionSessionTimeSeconds,submittedElapsedNs:submitted,reading:reading) { [weak self] result in
                     guard let self else { return }
                     self.lock.lock(); self.results[position] = result; self.lock.unlock()
                     self.finishIfReady()

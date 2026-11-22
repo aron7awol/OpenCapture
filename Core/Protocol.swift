@@ -57,6 +57,9 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public init(id: String = UUID().uuidString.lowercased()) { self.id = id }
 
     public func validate() throws {
+        guard captureExperiment != .bayerOnly else {
+            throw CaptureError.unavailable("Bayer-only experiment disabled: repeated RAW frames observed")
+        }
         if captureExperiment != nil {
             guard format == .bayerRAW, quality == .speed, averaging == nil,
                   operation != .applyControls, exposureSeconds != nil, iso != nil,

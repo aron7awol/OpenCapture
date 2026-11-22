@@ -1,6 +1,6 @@
 # Opt-in iOS RAW capture experiments
 
-Development support for four independent comparisons against the unchanged
+Development support for three enabled independent comparisons against the unchanged
 standard capture path. Capability advertisement is not physical verification.
 No experiment is selected by default or persisted as a phone preference.
 
@@ -15,11 +15,12 @@ string in the optional request field `captureExperiment`:
 | `ios-raw-no-preview` | Remove the video-data output and disable the aiming preview-layer connection for the job; restore both afterward |
 | `ios-raw-bracket-pair` | Native manual RAW brackets of up to two independently saved photos with identical exposure/ISO |
 | `ios-raw-prepared` | Prepare RAW photo resources explicitly before submission using `setPreparedPhotoSettingsArray` |
-| `ios-bayer-only` | Disable ProRAW support, restrict output maximum dimensions to the existing Bayer dimensions, and set output maximum priority to speed |
+| `ios-bayer-only` | Disabled and rejected: physical build 73 testing returned repeated timestamps and duplicate decoded RAWs |
 
 Every experiment requires Bayer RAW, speed priority, explicit exposure **and**
 ISO, focus and WB, `includePreview:false`, and no phone averaging. Controls-only,
 automatic/partial, JPEG/ProRAW and mixed Android scheduling requests are rejected.
+Bayer-only is omitted from capabilities and rejected even when explicitly requested.
 An unsupported bracket camera omits that mode; maximum bracket count is checked
 again at submission. Normal camera exposure/ISO range validation still applies.
 No substitute format, reduced Bayer resolution, arbitrary sleeps or private API.
@@ -79,7 +80,7 @@ python scripts/benchmark_ios.py --phone <private-ip>:8767 --camera <exact-camera
 ```
 
 Start with `--frames 2 --repeats 1` to screen modes. Use `--modes standard
-ios-raw-no-preview` to narrow a comparison. A full default run is 90 photos,
+ios-raw-no-preview` to narrow a comparison. A full default run is 72 photos,
 rotates mode order between repetitions, stops at the first failure and cancels
 only its owned job. It never overwrites an output directory. It saves exact
 originals, sidecars, request/manifest, final job state/diagnostics and summary.
