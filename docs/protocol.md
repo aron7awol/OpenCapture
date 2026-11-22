@@ -1,5 +1,9 @@
 # OpenCapture Protocol 1
 
+Opt-in iOS capture experiments and the portable benchmark procedure are specified
+in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
+physical-device verification is pending.
+
 ## Optional Samsung Focus Image Probe
 
 Development Android cameras may advertise

@@ -30,6 +30,31 @@ import XCTest
     private func verdict(_ index: Int,_ accepted: Bool) -> StreamVerdict {
         StreamVerdict(index:index,sha256:String(repeating:"a",count:64),accepted:accepted,reason:accepted ? "usable":"empty_signal")
     }
+    func testNativeBracketReservationsRespectReplacementLimitAndOddTail() async throws {
+        for rejectAll in [false,true] {
+            let directory = try root()
+            var request = CaptureRequest(); request.frameCount = 3
+            request.streaming = StreamingOptions(mode:"originals-v1")
+            let stream = OriginalStream(request:request,directory:directory)
+            stream.begin(camera:camera(),started:"start",processing:"fixture")
+            var batches: [[Int]] = []
+            try await BracketCapturePipeline<FrameRecord>().run(limit:stream.limit,reserve:{ wait in
+                if wait { return try await stream.next() }; return try stream.tryNext()
+            },finished:{ stream.frozen },capture:{ indices in
+                batches.append(indices)
+                return try indices.map { try self.frame(directory,$0) }
+            },consume:{ index,frame in
+                try stream.publish(frame)
+                try stream.verdict(self.verdict(index,!rejectAll && index > 2))
+            })
+            let result = try await stream.finish()
+            let manifest = try JSONDecoder().decode(CaptureManifest.self,from:result.data)
+            XCTAssertEqual(batches,rejectAll ? [[1,2],[3,4],[5,6]] : [[1,2],[3,4],[5]])
+            XCTAssertEqual(manifest.streaming?.status,rejectAll ? "insufficient" : "complete")
+            XCTAssertEqual(manifest.streaming?.acceptedIndices,rejectAll ? [] : [3,4,5])
+            XCTAssertLessThanOrEqual(manifest.frames.count,6)
+        }
+    }
     private func wait(_ condition: () throws -> Bool) async throws {
         for _ in 0..<200 {
             if try condition() { return }

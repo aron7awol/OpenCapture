@@ -71,6 +71,7 @@ public final class CameraDiagnostics: @unchecked Sendable {
                       "frameCount":String(request.frameCount),"settleMilliseconds":String(request.settleMilliseconds),
                       "streaming":request.streaming?.mode ?? "off","averaging":request.averaging?.mode ?? "off"]
         fields["exposureSeconds"]=request.exposureSeconds.map { String($0) } ?? "automatic"
+        fields["captureExperiment"] = request.captureExperiment?.rawValue ?? "standard"
         fields["iso"]=request.iso.map { String($0) } ?? "automatic"
         fields["focusPosition"]=request.focusPosition.map { String($0) } ?? "automatic"
         if let wb=request.whiteBalance { fields["whiteBalance"]="\(wb.red),\(wb.green),\(wb.blue)" }

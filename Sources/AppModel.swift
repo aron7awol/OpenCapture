@@ -253,10 +253,15 @@ private struct CameraServerInfo: Encodable {
     private func capture(_ request: CaptureRequest, stream: OriginalStream? = nil) async throws -> CameraServerResult {
         camera.diagnostics.begin(request)
         do {
+            try await camera.beginExperiment(request)
             let result=try await performCapture(request,stream:stream)
+            try await camera.endExperiment(request)
             camera.diagnostics.finish(request.id)
             return result
         } catch {
+            // Capture pipelines drain admitted writers before propagating failure.
+            // Preserve the original error; restore failures remain in the journal.
+            try? await camera.endExperiment(request)
             camera.diagnostics.finish(request.id,error:error)
             throw error
         }
@@ -293,6 +298,7 @@ private struct CameraServerInfo: Encodable {
         defer { camera.pausePreview(false) }
         let prepareStarted=ProcessInfo.processInfo.systemUptime
         try await camera.prepare(request)
+        try await camera.prepareExperimentResources(request)
         let captureStarted=ProcessInfo.processInfo.systemUptime
         var frames: [FrameRecord] = []
         var files: [String: URL] = [:]
@@ -342,7 +348,18 @@ private struct CameraServerInfo: Encodable {
                 transfers?.progress(request.id,status)
             }
         }
-        if selection == nil {
+        if request.captureExperiment == .bracketPair {
+            try await BracketCapturePipeline<FrameRecord>().run(limit:attemptLimit, reserve:{ wait in
+                guard let stream else { return true }
+                if wait { return try await stream.next() }
+                return try stream.tryNext()
+            }, finished:{ stream?.frozen == true }, capture:{ [camera] indices in
+                try await camera.bracket(request:request,indices:indices,directory:directory)
+            }, consume:{ [self] index,frame in
+                status = "Frame \(index) of \(request.frameCount)"
+                try publish(annotate(frame))
+            })
+        } else if selection == nil {
             let pipeline = ExposurePipeline<FrameRecord>()
             try await pipeline.run(limit: attemptLimit, overlap: true, reserve: { wait in
                 guard let stream else { return true }

@@ -32,6 +32,15 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var preparationTiming: [String:UInt64] = [:]
     private var device: AVCaptureDevice?
     private var delegates: [Int64: StillDelegate] = [:]
+    private var bracketDelegate: BracketDelegate?
+    private var experiment: CaptureExperiment?
+    private var experimentEvidence: [String:String] = [:]
+    private var experimentRestore: (proRAW: Bool, dimensions: CMVideoDimensions,
+        quality: AVCapturePhotoOutput.QualityPrioritization, video: Bool)?
+    private var preparationToken: UUID?
+    private var resourcesPrepared: Bool?
+    @MainActor private weak var aimingLayer: AVCaptureVideoPreviewLayer?
+    @MainActor private var aimingEnabled = true
     private var previewTime = 0.0
     private let previewLock = NSLock()
     private var previewData: Data?
@@ -66,7 +75,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     // Called only on the camera queue. Diagnostic reads do not mutate camera controls.
     private func traceState(_ kind: String, requestID: String? = nil, extra: [String:String] = [:]) {
         var fields=["running":String(session.isRunning),"interrupted":String(session.isInterrupted),
-            "unfinishedPhotos":String(delegates.count),"readiness":String(output.captureReadiness.rawValue)]
+            "unfinishedPhotos":String(delegates.count + (bracketDelegate?.count ?? 0)),"readiness":String(output.captureReadiness.rawValue)]
         if let d=device {
             let actual=Self.read(d)
             fields.merge(["exposureSeconds":String(actual.exposure),"iso":String(actual.iso),
@@ -99,7 +108,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let granted = await AVCaptureDevice.requestAccess(for: .video)
         guard granted else { throw CaptureError.unavailable("Camera permission is disabled. Enable it in Settings.") }
         return try await onQueue { [self] in
-            guard delegates.isEmpty else { throw CaptureError.unavailable("A photo is still in flight") }
+            guard delegates.isEmpty, bracketDelegate == nil, experimentRestore == nil else { throw CaptureError.unavailable("A capture is still in flight") }
             preparedKey=nil; preparedActualKey=nil; preparationTiming=[:]
             diagnostics.record("session_stop_requested",["reason":"reconfigure"])
             session.stopRunning()
@@ -175,7 +184,173 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             proRAWMaxPhotoHeight: proRAW ? proRAWDimensions.map { Int($0.height) } : nil,
             platform:"ios", frameAveragingModes: raw && Int64(standardDimensions.width)*Int64(standardDimensions.height) <= 13_000_000 &&
                 output.availableRawPhotoPixelFormatTypes.contains(where:{RawCaptureDiagnostics.formats[$0] != nil}) ? [BayerAverage.mode] : [],
-            captureStreamingModes:["originals-v1"], optionalPhotoPreview:true)
+            captureStreamingModes:["originals-v1"], optionalPhotoPreview:true,
+            captureExperiments: raw ? CaptureExperiment.allCases.filter {
+                $0 != .bracketPair || output.maxBracketedCapturePhotoCount >= 2
+            } : [])
+    }
+
+    @MainActor func registerAimingLayer(_ layer: AVCaptureVideoPreviewLayer) {
+        aimingLayer = layer
+        layer.connection?.isEnabled = aimingEnabled
+    }
+    @MainActor private func enableAiming(_ enabled: Bool) {
+        aimingEnabled = enabled
+        aimingLayer?.connection?.isEnabled = enabled
+    }
+
+    /// Every experiment restores its output configuration before cameraReady.
+    /// No default, persisted preference, or public update feed changes here.
+    func beginExperiment(_ request: CaptureRequest) async throws {
+        try request.validate()
+        guard let mode = request.captureExperiment else { return }
+        let started = RawCaptureDiagnostics.now
+        try await onQueue { [self] in
+            guard delegates.isEmpty, bracketDelegate == nil, experimentRestore == nil,
+                  let device, session.isRunning,
+                  capabilities(device).captureExperiments?.contains(mode) == true else {
+                throw CaptureError.unavailable("Capture experiment unavailable or camera busy")
+            }
+            experimentRestore = (output.isAppleProRAWEnabled, output.maxPhotoDimensions,
+                                 output.maxPhotoQualityPrioritization, session.outputs.contains(video))
+            experiment = mode
+            experimentEvidence = ["mode":mode.rawValue,"policy":"ios-capture-experiment-v1"]
+            preparedKey = nil; preparedActualKey = nil
+        }
+        if mode == .noPreview { await enableAiming(false) }
+        try await onQueue { [self] in
+            guard session.isRunning else { throw CaptureError.unavailable("Camera stopped before experiment configuration") }
+            if mode == .noPreview || mode == .bayerOnly {
+                session.beginConfiguration()
+                if mode == .noPreview { session.removeOutput(video) }
+                if mode == .bayerOnly {
+                    output.isAppleProRAWEnabled = false
+                    output.maxPhotoDimensions = standardDimensions
+                    output.maxPhotoQualityPrioritization = .speed
+                }
+                session.commitConfiguration()
+            }
+            experimentEvidence["configurationElapsedNs"] = String(RawCaptureDiagnostics.now - started)
+            experimentEvidence["videoOutputAttached"] = String(session.outputs.contains(video))
+            experimentEvidence["aimingPreviewEnabled"] = String(mode != .noPreview)
+            experimentEvidence["proRAWEnabled"] = String(output.isAppleProRAWEnabled)
+            experimentEvidence["outputMaxWidth"] = String(output.maxPhotoDimensions.width)
+            experimentEvidence["outputMaxHeight"] = String(output.maxPhotoDimensions.height)
+            experimentEvidence["maxQualityPriority"] = String(output.maxPhotoQualityPrioritization.rawValue)
+            diagnostics.record("experiment_configured", experimentEvidence, requestID:request.id)
+        }
+    }
+
+    func prepareExperimentResources(_ request: CaptureRequest) async throws {
+        guard request.captureExperiment == .preparedRAW else { return }
+        let started = RawCaptureDiagnostics.now
+        let token = UUID()
+        try await onQueue { [self] in
+            guard session.isRunning, experiment == .preparedRAW else { throw CaptureError.unavailable("Camera stopped before resource preparation") }
+            let settings = try photoSettings(request)
+            preparationToken = token; resourcesPrepared = nil
+            output.setPreparedPhotoSettingsArray([settings]) { [weak self] prepared, error in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.preparationToken == token else { return }
+                    self.resourcesPrepared = prepared && error == nil
+                    if let error { self.diagnostics.record("resource_preparation_error",CameraDiagnostics.errorFields(error),requestID:request.id,fault:true) }
+                }
+            }
+        }
+        while true {
+            try Task.checkCancellation()
+            let ready = try await onQueue { [self] () -> Bool? in
+                guard session.isRunning, preparationToken == token else { throw CaptureError.unavailable("Resource preparation interrupted") }
+                return resourcesPrepared
+            }
+            if let ready {
+                guard ready else { throw CaptureError.unavailable("RAW resources could not be prepared") }
+                break
+            }
+            guard RawCaptureDiagnostics.now - started < 60_000_000_000 else { throw CaptureError.unavailable("RAW resource preparation timed out") }
+            try await Task.sleep(nanoseconds:20_000_000)
+        }
+        try await onQueue { [self] in
+            experimentEvidence["resourcePreparationElapsedNs"] = String(RawCaptureDiagnostics.now - started)
+            experimentEvidence["resourcesPrepared"] = "true"
+            diagnostics.record("experiment_resources_prepared",experimentEvidence,requestID:request.id)
+        }
+    }
+
+    func endExperiment(_ request: CaptureRequest) async throws {
+        guard request.captureExperiment != nil else { return }
+        let started = RawCaptureDiagnostics.now
+        do {
+            try await onQueue { [self] in
+                guard let saved = experimentRestore else { return }
+                guard delegates.isEmpty, bracketDelegate == nil else { throw CaptureError.unavailable("Experiment writers have not drained") }
+                preparationToken = nil; resourcesPrepared = nil
+                if experiment == .preparedRAW { output.setPreparedPhotoSettingsArray([], completionHandler:nil) }
+                session.beginConfiguration()
+                output.isAppleProRAWEnabled = saved.proRAW
+                output.maxPhotoDimensions = saved.dimensions
+                output.maxPhotoQualityPrioritization = saved.quality
+                if saved.video && !session.outputs.contains(video) {
+                    guard session.canAddOutput(video) else {
+                        session.commitConfiguration()
+                        throw CaptureError.unavailable("Could not restore preview output; reconnect camera")
+                    }
+                    session.addOutput(video)
+                    if let connection = video.connection(with:.video) {
+                        if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }
+                        if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
+                    }
+                }
+                session.commitConfiguration()
+                preparedKey = nil; preparedActualKey = nil
+                diagnostics.record("experiment_restored",["mode":experiment?.rawValue ?? "unknown",
+                    "restorationElapsedNs":String(RawCaptureDiagnostics.now-started),
+                    "running":String(session.isRunning)],requestID:request.id)
+                experimentRestore = nil; experiment = nil; experimentEvidence = [:]
+            }
+            await enableAiming(true)
+        } catch {
+            diagnostics.record("experiment_restore_failed",CameraDiagnostics.errorFields(error),requestID:request.id,fault:true)
+            try? await onQueue { [self] in
+                guard delegates.isEmpty, bracketDelegate == nil else { return }
+                session.stopRunning()
+                preparedKey = nil; preparedActualKey = nil; preparationToken = nil
+                experimentRestore = nil; experiment = nil; experimentEvidence = [:]
+            }
+            await enableAiming(true)
+            throw error
+        }
+    }
+
+    // Queue-confined. A new settings identity is required for every submission.
+    private func photoSettings(_ request: CaptureRequest, bracketCount: Int? = nil) throws -> AVCapturePhotoSettings {
+        let settings: AVCapturePhotoSettings
+        if request.format != .jpeg {
+            let query: (OSType) -> Bool = request.format == .appleProRAW
+                ? AVCapturePhotoOutput.isAppleProRAWPixelFormat : AVCapturePhotoOutput.isBayerRAWPixelFormat
+            guard let raw = output.availableRawPhotoPixelFormatTypes.first(where: {
+                query($0) && (request.averaging == nil || RawCaptureDiagnostics.formats[$0] != nil)
+            }) else { throw CaptureError.unavailable("Requested RAW format is unavailable") }
+            if let count = bracketCount {
+                guard (1...2).contains(count), count <= output.maxBracketedCapturePhotoCount,
+                      request.captureExperiment == .bracketPair, let seconds = request.exposureSeconds,
+                      let iso = request.iso else { throw CaptureError.invalid("Unsupported RAW bracket") }
+                let brackets = (0..<count).map { _ in AVCaptureManualExposureBracketedStillImageSettings.manualExposureSettings(
+                    exposureDuration:CMTime(seconds:seconds,preferredTimescale:1_000_000_000), iso:iso) }
+                let bracket = AVCapturePhotoBracketSettings(rawPixelFormatType:raw, processedFormat:nil, bracketedSettings:brackets)
+                bracket.isLensStabilizationEnabled = false
+                settings = bracket
+            } else { settings = AVCapturePhotoSettings(rawPixelFormatType:raw) }
+        } else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:AVVideoCodecType.jpeg]) }
+        settings.maxPhotoDimensions = request.format == .appleProRAW ? (proRAWDimensions ?? standardDimensions) : standardDimensions
+        settings.photoQualityPrioritization = request.quality == .speed ? .speed : .quality
+        if output.supportedFlashModes.contains(.off) { settings.flashMode = .off }
+        if request.includePreview != false, let previewType = settings.availablePreviewPhotoPixelFormatTypes.first {
+            settings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String:previewType,
+                kCVPixelBufferWidthKey as String:640,kCVPixelBufferHeightKey as String:480]
+        }
+        return settings
     }
 
     func reading() async throws -> DeviceReading {
@@ -330,7 +505,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         while true {
             let ready = try await onQueue { [self] in
                 guard device != nil, session.isRunning else { throw CaptureError.unavailable("Camera is stopped") }
-                return delegates.count < 2 && output.captureReadiness == .ready
+                return bracketDelegate == nil && delegates.count < 2 && output.captureReadiness == .ready
             }
             if ready { break }
             guard ProcessInfo.processInfo.systemUptime < readinessDeadline else {
@@ -342,29 +517,12 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         return try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 do {
-                    guard let d = device, session.isRunning, delegates.count < 2 else { throw CaptureError.unavailable("Camera is busy or stopped") }
-                    let settings: AVCapturePhotoSettings
-                    if request.format != .jpeg {
-                        let query: (OSType) -> Bool = request.format == .appleProRAW
-                            ? AVCapturePhotoOutput.isAppleProRAWPixelFormat : AVCapturePhotoOutput.isBayerRAWPixelFormat
-                        guard let raw = output.availableRawPhotoPixelFormatTypes.first(where: {
-                            query($0) && (request.averaging == nil || RawCaptureDiagnostics.formats[$0] != nil)
-                        }) else {
-                            throw CaptureError.unavailable("\(request.format.title) is unavailable")
-                        }
-                        settings = AVCapturePhotoSettings(rawPixelFormatType: raw)
-                    } else { settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg]) }
-                    settings.maxPhotoDimensions = request.format == .appleProRAW ? (proRAWDimensions ?? standardDimensions) : standardDimensions
-                    settings.photoQualityPrioritization = request.quality == .speed ? .speed : .quality
-                    if output.supportedFlashModes.contains(.off) { settings.flashMode = .off }
-                    if request.includePreview != false, let previewType = settings.availablePreviewPhotoPixelFormatTypes.first {
-                        settings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: previewType,
-                            kCVPixelBufferWidthKey as String: 640, kCVPixelBufferHeightKey as String: 480]
-                    }
+                    guard let d = device, session.isRunning, bracketDelegate == nil, delegates.count < 2 else { throw CaptureError.unavailable("Camera is busy or stopped") }
+                    let settings = try photoSettings(request)
                     let id = settings.uniqueID
                     let capture = StillDelegate(directory: directory, index: index, format: request.format,
                         averaging:request.averaging != nil, requestID: id, exposureFinished: exposureFinished,
-                        context:photoContext, preparation:preparationTiming,
+                        context:photoContext, preparation:preparationTiming, experiment:experimentEvidence,
                         reading: { Self.read(d) }) { [weak self] result in
                         guard let self else { continuation.resume(with: result); return }
                         self.queue.async {
@@ -399,6 +557,59 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         previewLock.lock(); previewPaused = value; previewLock.unlock()
     }
 
+    func bracket(request: CaptureRequest, indices: [Int], directory: URL) async throws -> [FrameRecord] {
+        try Task.checkCancellation()
+        let deadline = ProcessInfo.processInfo.systemUptime + max(60, (request.exposureSeconds ?? 30) * 4 + 15)
+        while true {
+            let ready = try await onQueue { [self] in
+                guard device != nil, session.isRunning, experiment == .bracketPair else { throw CaptureError.unavailable("Bracket camera is not running") }
+                return delegates.isEmpty && bracketDelegate == nil && output.captureReadiness == .ready
+            }
+            if ready { break }
+            try Task.checkCancellation()
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw CaptureError.unavailable("Camera did not become ready for RAW bracket") }
+            try await Task.sleep(nanoseconds:20_000_000)
+        }
+        try Task.checkCancellation()
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                do {
+                    guard let d = device, session.isRunning, delegates.isEmpty, bracketDelegate == nil else {
+                        throw CaptureError.unavailable("Camera busy or stopped before RAW bracket")
+                    }
+                    let settings = try photoSettings(request,bracketCount:indices.count)
+                    let id = settings.uniqueID
+                    var evidence = experimentEvidence
+                    evidence["bracketCount"] = String(indices.count)
+                    evidence["singlePhotoReason"] = indices.count == 1 ? "tail_or_only_one_stream_permit" : "none"
+                    let capture = BracketDelegate(directory:directory,indices:indices,requestID:id,
+                        context:photoContext,preparation:preparationTiming,experiment:evidence,
+                        reading:{ Self.read(d) }) { [weak self] result in
+                            guard let self else { continuation.resume(with:result); return }
+                            self.queue.async {
+                                self.bracketDelegate = nil
+                                if case .failure(let error) = result {
+                                    self.preparedKey = nil; self.preparedActualKey = nil
+                                    self.diagnostics.record("bracket_failed",CameraDiagnostics.errorFields(error),requestID:request.id,fault:true)
+                                }
+                                continuation.resume(with:result)
+                            }
+                        }
+                    bracketDelegate = capture
+                    diagnostics.record("bracket_submitted",["photoID":String(id),"firstIndex":String(indices[0]),
+                        "count":String(indices.count)],requestID:request.id)
+                    output.capturePhoto(with:settings,delegate:capture)
+                    queue.asyncAfter(deadline:.now() + max(60,d.exposureDuration.seconds * Double(indices.count) * 4 + 15)) { [weak self, weak capture] in
+                        guard let self, let capture, self.bracketDelegate === capture else { return }
+                        self.diagnostics.record("session_stop_requested",["reason":"bracket_timeout"],requestID:request.id,fault:true)
+                        self.session.stopRunning()
+                        capture.fail(CaptureError.unavailable("RAW bracket timed out; reconnect camera"))
+                    }
+                } catch { continuation.resume(throwing:error) }
+            }
+        }
+    }
+
     func latestPreview() -> Data? {
         previewLock.lock(); defer { previewLock.unlock() }; return previewData
     }
@@ -407,7 +618,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         queue.async {
             self.diagnostics.record("session_stop_requested",["reason":reason])
             self.preparedKey=nil; self.preparedActualKey=nil
+            self.preparationToken = nil
             self.session.stopRunning()
+            self.bracketDelegate?.fail(CancellationError())
             for pending in Array(self.delegates.values) { pending.fail(CancellationError()) }
         }
     }
@@ -432,11 +645,13 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     private let averaging: Bool
     private let requestID: Int64
     private let exposureFinished: @Sendable () -> Void
-    private let submittedElapsedNs = RawCaptureDiagnostics.now
+    private let submittedElapsedNs: UInt64
     private var exposureStartedElapsedNs: UInt64?
     private var exposureEndedElapsedNs: UInt64?
     private let context: CIContext
     private let preparation: [String:UInt64]
+    private let experiment: [String:String]
+    private let bracketSequence: Int?
     private let reading: () -> DeviceReading
     private var atShutter: DeviceReading?
     private let lock = NSLock()
@@ -448,11 +663,15 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
 
     init(directory: URL, index: Int, format: CaptureFormat, averaging: Bool, requestID: Int64,
          exposureFinished: @escaping @Sendable () -> Void, context: CIContext,
-         preparation: [String:UInt64], reading: @escaping () -> DeviceReading,
+         preparation: [String:UInt64], experiment: [String:String] = [:], bracketSequence: Int? = nil,
+         submittedElapsedNs: UInt64 = RawCaptureDiagnostics.now,
+         reading: @escaping () -> DeviceReading,
          completion: @escaping (Result<FrameRecord, Error>) -> Void) {
         self.directory = directory; self.index = index; self.format = format; self.averaging = averaging
         self.requestID = requestID; self.exposureFinished = exposureFinished
         self.context=context; self.preparation=preparation
+        self.experiment=experiment; self.bracketSequence=bracketSequence
+        self.submittedElapsedNs=submittedElapsedNs
         self.reading = reading; self.completion = completion
     }
 
@@ -507,6 +726,7 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             let file = try write(data, name: base + (expectedRAW ? ".dng" : ".jpg"), mediaType: expectedRAW ? "image/dng" : "image/jpeg")
             let originalWrittenElapsedNs = RawCaptureDiagnostics.now
             var metadataObject = jsonValue(photo.metadata) as? [String:Any] ?? [:]
+            if !experiment.isEmpty { metadataObject["captureExperiment"] = experiment }
             if let before, let buffer = photo.pixelBuffer {
                 do {
                     var diagnostics = try RawCaptureDiagnostics.finish(before:before,
@@ -525,8 +745,10 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
                     "sampleIntegrity":["assessment":"incomplete_diagnostics","findings":[diagnosticError]]]
             }
             lock.lock()
-            metadataObject["captureTiming"] = ["policy": averaging ? "sequential-v1" : "two-photo-after-exposure-v1",
+            metadataObject["captureTiming"] = ["policy": bracketSequence != nil ? "native-raw-bracket-v1" : (averaging ? "sequential-v1" : "two-photo-after-exposure-v1"),
                 "requestID": requestID, "submittedElapsedNs": submittedElapsedNs,
+                "bracketSequence":bracketSequence.map { $0 as Any } ?? NSNull(),
+                "deviceReadingSource":bracketSequence == nil ? "shutter_callback_or_processing_fallback" : "processing_callback",
                 "exposureStartedElapsedNs": exposureStartedElapsedNs.map { $0 as Any } ?? NSNull(),
                 "exposureEndedElapsedNs": exposureEndedElapsedNs.map { $0 as Any } ?? NSNull(),
                 "processingCallbackElapsedNs": start, "encodedElapsedNs": encoded,
@@ -590,5 +812,77 @@ private final class StillDelegate: NSObject, AVCapturePhotoCaptureDelegate {
         if let text = value as? String { return text }
         if value is NSNull { return value }
         return String(describing: value)
+    }
+}
+
+/// One AVFoundation request, one/two independent RAWs. Sequence count, request ID,
+/// and actual sensor timestamps associate callbacks; a group event is never
+/// fabricated into a per-photo exposure timestamp. Child writers drain on failure.
+private final class BracketDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    let count: Int
+    private let requestID: Int64
+    private var identity: BracketCaptureIdentity
+    private let lock = NSLock()
+    private var children: [StillDelegate] = []
+    private var results: [Int:Result<FrameRecord,Error>] = [:]
+    private var ended = false
+    private var failure: Error?
+    private var completion: ((Result<[FrameRecord],Error>) -> Void)?
+
+    init(directory: URL, indices: [Int], requestID: Int64, context: CIContext,
+         preparation: [String:UInt64], experiment: [String:String], reading: @escaping () -> DeviceReading,
+         completion: @escaping (Result<[FrameRecord],Error>) -> Void) {
+        count = indices.count; self.requestID = requestID
+        identity = BracketCaptureIdentity(requestID:requestID,count:indices.count)
+        self.completion = completion
+        super.init()
+        let submitted = RawCaptureDiagnostics.now
+        children = indices.enumerated().map { position,index in
+            StillDelegate(directory:directory,index:index,format:.bayerRAW,averaging:false,requestID:requestID,
+                exposureFinished:{},context:context,preparation:preparation,experiment:experiment,
+                bracketSequence:position+1,submittedElapsedNs:submitted,reading:reading) { [weak self] result in
+                    guard let self else { return }
+                    self.lock.lock(); self.results[position] = result; self.lock.unlock()
+                    self.finishIfReady()
+                }
+        }
+    }
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        lock.lock()
+        guard !ended, completion != nil else { lock.unlock(); return }
+        do {
+            if let error { throw error }
+            try identity.accept(requestID:photo.resolvedSettings.uniqueID,sequence:photo.sequenceCount,
+                photoCount:photo.photoCount,expectedCount:photo.resolvedSettings.expectedPhotoCount,
+                timestamp:photo.timestamp.seconds,raw:photo.isRawPhoto)
+            let child = children[photo.sequenceCount-1]
+            lock.unlock()
+            child.photoOutput(output,didFinishProcessingPhoto:photo,error:nil)
+        } catch { lock.unlock(); fail(error) }
+    }
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
+        lock.lock()
+        let complete = identity.complete && resolvedSettings.uniqueID == requestID && resolvedSettings.expectedPhotoCount == count
+        ended = true
+        lock.unlock()
+        if let error { fail(error); return }
+        guard complete else { fail(CaptureError.invalid("Incomplete RAW bracket result")); return }
+        for child in children { child.photoOutput(output,didFinishCaptureFor:resolvedSettings,error:nil) }
+        finishIfReady()
+    }
+    func fail(_ error: Error) {
+        lock.lock(); ended = true; if failure == nil { failure = error }; lock.unlock()
+        for child in children { child.fail(error) }
+        finishIfReady()
+    }
+    private func finishIfReady() {
+        lock.lock()
+        guard ended, results.count == count, let callback = completion else { lock.unlock(); return }
+        let result: Result<[FrameRecord],Error>
+        if let failure { result = .failure(failure) }
+        else { result = Result { try (0..<count).map { try results[$0]!.get() } } }
+        completion = nil
+        lock.unlock()
+        callback(result)
     }
 }

@@ -25,7 +25,7 @@ struct CameraScreen: View {
             let landscape = geometry.size.width > geometry.size.height && geometry.size.width >= 600
             let layout = landscape ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             layout {
-                CameraPreview(session: model.camera.session)
+                CameraPreview(camera: model.camera)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("cameraPreview")
                 toolbar(landscape: landscape)
@@ -99,9 +99,10 @@ struct AboutView: View {
 }
 
 struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
+    let camera: CameraService
     func makeUIView(context: Context) -> PreviewSurface {
-        let view = PreviewSurface(); view.layerView.session = session; view.layerView.videoGravity = .resizeAspect
+        let view = PreviewSurface(); view.layerView.session = camera.session; view.layerView.videoGravity = .resizeAspect
+        camera.registerAimingLayer(view.layerView)
         return view
     }
     func updateUIView(_ uiView: PreviewSurface, context: Context) { uiView.setNeedsLayout() }

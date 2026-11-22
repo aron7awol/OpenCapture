@@ -22,6 +22,14 @@ public enum CameraOperation: String, Codable, Sendable {
     case capture, applyControls
 }
 
+/// Independent, opt-in iOS benchmarks. Omission retains the production path.
+public enum CaptureExperiment: String, Codable, CaseIterable, Sendable {
+    case noPreview = "ios-raw-no-preview"
+    case bracketPair = "ios-raw-bracket-pair"
+    case preparedRAW = "ios-raw-prepared"
+    case bayerOnly = "ios-bayer-only"
+}
+
 public struct WhiteBalance: Codable, Equatable, Sendable {
     public var red: Float
     public var green: Float
@@ -44,10 +52,18 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public var averaging: AveragingOptions? = nil
     public var streaming: StreamingOptions? = nil
     public var includePreview: Bool? = nil
+    public var captureExperiment: CaptureExperiment? = nil
 
     public init(id: String = UUID().uuidString.lowercased()) { self.id = id }
 
     public func validate() throws {
+        if captureExperiment != nil {
+            guard format == .bayerRAW, quality == .speed, averaging == nil,
+                  operation != .applyControls, exposureSeconds != nil, iso != nil,
+                  focusPosition != nil, whiteBalance != nil, includePreview == false else {
+                throw CaptureError.invalid("Capture experiments require fully manual, speed Bayer originals, no photo preview, and no averaging")
+            }
+        }
         if let streaming {
             guard streaming.mode == "originals-v1", averaging == nil, operation != .applyControls else {
                 throw CaptureError.invalid("Streaming requires original captures")
@@ -99,11 +115,16 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> CaptureRequest {
         guard data.count <= 16384,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging", "streaming", "includePreview"]) else {
+              Set(object.keys).isSubset(of: ["protocolVersion", "id", "operation", "format", "quality", "frameCount", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "settleMilliseconds", "context", "averaging", "streaming", "includePreview", "captureExperiment"]) else {
             throw CaptureError.invalid("Malformed request or unknown field")
         }
         if let wb = object["whiteBalance"] as? [String: Any], Set(wb.keys) != ["red", "green", "blue"] {
             throw CaptureError.invalid("Unknown white balance field")
+        }
+        if let experiment = object["captureExperiment"] {
+            guard let name = experiment as? String, CaptureExperiment(rawValue:name) != nil else {
+                throw CaptureError.invalid("Unknown capture experiment")
+            }
         }
         if let average = object["averaging"] {
             guard let fields = average as? [String: Any], Set(fields.keys) == ["mode", "emptyFramePolicy", "keepOriginals"] else {
@@ -153,6 +174,7 @@ public struct CameraCapabilities: Codable, Sendable {
     public var frameAveragingModes: [String]? = nil
     public var captureStreamingModes: [String]? = nil
     public var optionalPhotoPreview: Bool? = nil
+    public var captureExperiments: [CaptureExperiment]? = nil
 }
 
 public struct CameraControlResult: Codable, Sendable {

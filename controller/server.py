@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe", "captureExperiment"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -113,6 +113,13 @@ def validate_request(request):
     if wb is not None and (not isinstance(wb, dict) or set(wb) != {"red", "green", "blue"} or
                            not all(number(value, 1, 64) for value in wb.values())):
         raise Invalid("Invalid white balance gains")
+    if 'captureExperiment' in request:
+        if (request['captureExperiment'] not in ('ios-raw-no-preview','ios-raw-bracket-pair','ios-raw-prepared','ios-bayer-only') or
+                request['format'] != 'bayerRaw' or request['quality'] != 'speed' or
+                request.get('operation') == 'applyControls' or request.get('includePreview') is not False or
+                any(key in request for key in ('averaging','captureScheduling','focusProbe')) or
+                any(request.get(key) is None for key in ('exposureSeconds','iso','focusPosition','whiteBalance'))):
+            raise Invalid('Invalid fully manual iOS capture experiment')
     if 'focusProbe' in request:
         probe=request['focusProbe']
         if (not isinstance(probe,dict) or set(probe)!={'position','standardFocus'} or

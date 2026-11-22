@@ -29,11 +29,13 @@
       "type": ["object", "null"], "additionalProperties": false, "required": ["red", "green", "blue"],
       "properties": {"red": {"type": "number", "minimum": 1, "maximum": 64}, "green": {"type": "number", "minimum": 1, "maximum": 64}, "blue": {"type": "number", "minimum": 1, "maximum": 64}}
     },
+    "captureExperiment": {"enum":["ios-raw-no-preview","ios-raw-bracket-pair","ios-raw-prepared","ios-bayer-only"]},
     "includePreview": {"type": "boolean"},
     "settleMilliseconds": {"type": "integer", "minimum": 0, "maximum": 10000},
     "context": {"type": "object", "maxProperties": 16, "propertyNames": {"maxLength": 64}, "additionalProperties": {"type": "string", "maxLength": 256}}
   },
   "allOf": [
+    {"if":{"required":["captureExperiment"]},"then":{"required":["exposureSeconds","iso","focusPosition","whiteBalance","includePreview"],"not":{"anyOf":[{"required":["averaging"]},{"required":["captureScheduling"]},{"required":["focusProbe"]}]},"properties":{"operation":{"enum":[null,"capture"]},"format":{"const":"bayerRaw"},"quality":{"const":"speed"},"includePreview":{"const":false},"exposureSeconds":{"type":"number"},"iso":{"type":"number"},"focusPosition":{"type":"number"},"whiteBalance":{"type":"object"}}}},
     {"if":{"required":["focusProbe"]},"then":{"required":["exposureSeconds","iso","focusPosition","whiteBalance","captureScheduling"],"not":{"anyOf":[{"required":["streaming"]},{"required":["averaging"]}]},"properties":{"operation":{"const":"capture"},"format":{"const":"bayerRaw"},"frameCount":{"const":2},"exposureSeconds":{"type":"number","maximum":2},"iso":{"type":"number"},"focusPosition":{"type":"number"},"whiteBalance":{"type":"object"},"settleMilliseconds":{"minimum":750},"captureScheduling":{"enum":["samsung-vendor-preview","samsung-vendor-still"]}}}},
     {"if":{"required":["captureScheduling"],"properties":{"captureScheduling":{"enum":["samsung-vendor-preview","raw-jpeg-still","samsung-vendor-still"]}}},"then":{"not":{"required":["averaging"]}}},
     {"if":{"required":["streaming"]},"then":{"not":{"required":["averaging"]},"properties":{"operation":{"enum":[null,"capture"]}}}},
