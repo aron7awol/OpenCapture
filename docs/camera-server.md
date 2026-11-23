@@ -258,6 +258,33 @@ An unreadable ID has an error instead of inferred capabilities. No camera is
 opened or configured. These are declarations, not verified still results:
 `rawExposureLockTested: false` means this endpoint performs no physical test.
 
+Android 0.4.26/build 34 includes `rawResolutionDiagnostics` on each of those
+camera entries. This is read-only and does not enable larger captures. It lists
+`rawSizes` and separately advertised `highResolutionRawSizes` from the normal
+stream map. On API 31+ it also queries `maximumResolutionRawSizes`,
+`maximumResolutionHighResolutionRawSizes`, and `maximumResolutionJpegSizes`
+from the maximum-resolution stream map, regardless of OpenCapture's current
+capture-size limits. JPEG availability does not establish RAW availability.
+`ultraHighResolutionSensor`, `remosaicReprocessing`, and
+`sensorPixelModeRequestKey`/`sensorPixelModeResultKey` record advertised support.
+`pixelArraySize` and `maximumResolutionPixelArraySize` are [width, height];
+the corresponding `activeArraySize` and `preCorrectionActiveArraySize` fields
+(also with the `maximumResolution` prefix) are [left, top, right, bottom].
+`colorFilterArrangement` is the Android enum. `binningFactor` is the reported
+[width, height] group under one color filter, not a measured sensitivity gain;
+missing binning metadata does not prove the sensor is unbinned.
+
+`androidApiLevel` distinguishes older OS versions where API 31 fields cannot be
+queried. Null means unavailable/unreported or a failed read, not proof of no
+support; an empty list means the API returned an empty list. The two
+`streamConfigurationMapAvailable` fields distinguish missing maps. Per-field
+exceptions appear as exception class names in `queryErrors`, preserving all
+other fields. `source:camera2Characteristics` and `captureTested:false` explicitly
+distinguish advertised modes from verified captures. Share the JSON shown by
+`http://<phone-address>:8767/oc/` (which reads `/oc/v1/info`); no display or capture
+session is needed. Existing info consumers, heartbeats and capture requests
+are unchanged.
+
 Android 0.4.5/build 13 and iOS 0.4.4 also report
 `batteryPercent` (integer 0..100) and `batteryCharging` (boolean; full while
 connected counts as charging). Null or absent means the OS reading is unknown,

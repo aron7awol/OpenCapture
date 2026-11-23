@@ -62,7 +62,10 @@ class CameraServerSessionTest {
         val address = "127.0.0.1"
         var reads = 0
         val server = CameraServer(address, session, { JSONObject().put("protocolVersion", 1) },
-            { error("unexpected lens change") }, { reads++; JSONObject().put("schemaVersion", 1) },
+            { error("unexpected lens change") }, { reads++; JSONObject().put("schemaVersion", 1)
+                .put("cameras", org.json.JSONArray().put(JSONObject().put("cameraID", "0")
+                    .put("rawResolutionDiagnostics", JSONObject().put("captureTested", false)
+                        .put("maximumResolutionRawSizes", org.json.JSONArray(listOf("16320x12240")))))) },
             { JSONObject().put("mode", PersistentDiagnostics.MODE) }, { null })
         fun get(path: String, headers: Map<String,String>): fi.iki.elonen.NanoHTTPD.Response {
             val type = fi.iki.elonen.NanoHTTPD.IHTTPSession::class.java
@@ -94,7 +97,12 @@ class CameraServerSessionTest {
             assertEquals(0, reads)
             val response = get("/oc/v1/info", headers)
             assertEquals(200, response.status.requestStatus)
-            assertEquals(1, JSONObject(response.data.bufferedReader().readText()).getJSONObject("camera2Diagnostics").getInt("schemaVersion"))
+            val diagnostics = JSONObject(response.data.bufferedReader().readText()).getJSONObject("camera2Diagnostics")
+            assertEquals(1, diagnostics.getInt("schemaVersion"))
+            val resolution = diagnostics.getJSONArray("cameras").getJSONObject(0).getJSONObject("rawResolutionDiagnostics")
+            assertFalse(resolution.getBoolean("captureTested"))
+            assertEquals(org.json.JSONArray(listOf("16320x12240")).toString(),
+                resolution.getJSONArray("maximumResolutionRawSizes").toString())
             assertEquals(1, reads)
         } finally { session.close() }
     }
