@@ -13,11 +13,13 @@ private struct CameraServerInfo: Encodable {
     let session: Session
     let batteryPercent: Int?
     let batteryCharging: Bool?
+    let motion: MotionSnapshot
     struct Session: Encodable { let connected: Bool; let job: CameraJobState?; var cameraReady: Bool = true }
 }
 
 @MainActor final class AppModel: NSObject, ObservableObject, NetServiceDelegate {
     let camera = CameraService()
+    private let motion = MotionMonitor()
     @Published private(set) var status = "Opening camera"
     @Published private(set) var cameraName = "OpenCapture"
     @Published private(set) var enabled = true
@@ -58,6 +60,7 @@ private struct CameraServerInfo: Encodable {
     }
 
     func foreground() async {
+        motion.start()
         foregrounded = true
         sceneActive = true; updateScreenBrightness()
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -100,10 +103,12 @@ private struct CameraServerInfo: Encodable {
         }
     }
     func inactive() {
+        motion.stop()
         sceneActive = false; updateScreenBrightness()
         UIApplication.shared.isIdleTimerDisabled = false
     }
     func background() {
+        motion.stop("app_backgrounded")
         sceneActive = false; foregrounded = false; beginShutdown()
     }
     func toggle() async {
@@ -176,7 +181,8 @@ private struct CameraServerInfo: Encodable {
         }
         return CameraServerInfo(deviceID: deviceID, name: UIDevice.current.model, capabilities: capabilities,
             cameras: CameraService.cameras, session: .init(connected: transfers?.owner != nil, job: transfers?.latest,
-                cameraReady: transfers?.cameraReady ?? false), batteryPercent: batteryPercent, batteryCharging: batteryCharging)
+                cameraReady: transfers?.cameraReady ?? false), batteryPercent: batteryPercent, batteryCharging: batteryCharging,
+            motion: motion.snapshot())
     }
     private func object(_ data: Data, keys: Set<String>) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == keys else {
