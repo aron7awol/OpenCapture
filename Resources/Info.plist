@@ -10,6 +10,7 @@
   <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>NSCameraUsageDescription</key><string>Show the camera preview and capture photos requested by your computer.</string>
+  <key>NSMotionUsageDescription</key><string>Detect phone movement and report interruptions so your computer can refresh camera alignment.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Make this camera available to computers on your trusted Wi-Fi network while OpenCapture is open.</string>
   <key>NSBonjourServices</key><array><string>_oc-camera._tcp</string></array>
   <key>NSAppTransportSecurity</key><dict>
