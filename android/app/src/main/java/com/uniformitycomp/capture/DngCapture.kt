@@ -76,6 +76,7 @@ internal class DngCapture(
     private val previousExposureState: DngVerifiedState? = null,
     private val diagnosticEvent: ((String, Map<String, Any>) -> Unit)? = null,
     private val configureRequest: ((CaptureRequest.Builder) -> Unit)? = null,
+    private val configureStillRequest: ((CaptureRequest.Builder) -> Unit)? = null,
     private val compatibilityReadback: ((TotalCaptureResult) -> Map<String, Any>)? = null,
     private val prepareFocus: ((TotalCaptureResult?, Float) -> Unit)? = null,
     private val configureFocus: ((CaptureRequest.Builder, Float) -> Unit)? = null,
@@ -102,6 +103,7 @@ internal class DngCapture(
 
     private fun newRequest(template: Int) = camera.createCaptureRequest(template).also {
         configureRequest?.invoke(it)
+        if (template == CameraDevice.TEMPLATE_STILL_CAPTURE) configureStillRequest?.invoke(it)
     }
 
     private fun applyManual(builder: CaptureRequest.Builder, value: DngLockedSettings) {

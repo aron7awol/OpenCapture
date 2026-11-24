@@ -121,6 +121,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         val c = selectedCharacteristics()
         val jpeg = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.JPEG)
         val result = mutableListOf<String>()
+        if (SamsungCamera2Compatibility.available()) result.add("samsung-camera2")
         if (!jpeg.isNullOrEmpty()) result.add("raw-jpeg-still")
         if (SamsungCaptureCompatibility.available()) {
             result.add("samsung-vendor-preview")
@@ -137,6 +138,8 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                             shortPreviewExposure: Boolean = false,
                             queueAhead: Boolean = false,
                             vendorCamera: Boolean = false,
+                            samsungCamera2: Boolean = false,
+                            camera2ShootingMode: Boolean = false,
                             separateStill: Boolean = false,
                             focusProbe: org.json.JSONObject? = null,
                             omitFrameDurationOverride: Boolean = false,
@@ -149,8 +152,10 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         check(reader.width == size.width && reader.height == size.height) { "RAW stream changed" }
         val surface = requireNotNull(previewSurface) { "Start the aiming preview first" }
         val configured = requireNotNull(previewSession) { "Preview session is not ready" }
-        val experimental = vendorCamera || separateStill
-        require(vendorCamera || (!omitFrameDurationOverride && !useDriverShadingDefaults))
+        val experimental = vendorCamera || separateStill || samsungCamera2
+        require(!samsungCamera2 || (!vendorCamera && !separateStill && SamsungCamera2Compatibility.available()))
+        require(!camera2ShootingMode || samsungCamera2)
+        require(vendorCamera || samsungCamera2 || (!omitFrameDurationOverride && !useDriverShadingDefaults))
         require(!vendorCamera || SamsungCaptureCompatibility.available()) {
             "Samsung vendor controls are unavailable on this camera/firmware"
         }
@@ -158,6 +163,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
         require(focusProbe == null || (vendorCamera && count == 2 && maxAttempts == 2 && !overlap && !queueAhead))
         val vendor = if (vendorCamera) SamsungCaptureCompatibility(events, selectedCharacteristics(),
             if (focusProbe == null) vendorFocusSeed else null, focusProbe) else null
+        val camera2 = if (samsungCamera2) SamsungCamera2Compatibility(events, camera2ShootingMode) else null
         var jpegReader: ImageReader? = null
         var vendorAttempted = false
         var captureError: Exception? = null
@@ -170,6 +176,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             .put("repeatingPreviewDuringStill", keepPreviewRunning).put("queueAhead", queueAhead)
                 .put("exposureNs", settings.exposureNs).put("iso", settings.iso).put("frames", count)
                 .put("omitFrameDurationOverride", omitFrameDurationOverride)
+                .put("samsungCamera2", samsungCamera2).put("camera2ShootingMode", camera2ShootingMode)
                 .put("useDriverShadingDefaults", useDriverShadingDefaults))
         var succeeded = false
         try {
@@ -199,7 +206,9 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                 omitFrameDurationOverride = omitFrameDurationOverride, useDriverShadingDefaults = useDriverShadingDefaults,
                 existingSession = configured, previousLocked = dngPreviewControls,
                 configureRequest = vendor?.let { compatibility -> { builder -> compatibility.request(builder) } },
-                compatibilityReadback = vendor?.let { compatibility -> { result -> compatibility.readback(result) } },
+                configureStillRequest = camera2?.let { compatibility -> { builder -> compatibility.requestStill(builder) } },
+                compatibilityReadback = camera2?.let { compatibility -> { result -> compatibility.readback(result) } }
+                    ?: vendor?.let { compatibility -> { result -> compatibility.readback(result) } },
                 prepareFocus = vendor?.let { compatibility -> { result, target -> compatibility.prepareFocus(result, target) } },
                 configureFocus = vendor?.let { compatibility -> { builder, target -> compatibility.applyFocus(builder, target) } },
                 retryFocus = vendor?.takeIf { focusProbe == null }?.let { compatibility -> { result, target -> compatibility.retryFocus(result, target) } },

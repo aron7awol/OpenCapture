@@ -1,8 +1,16 @@
 # OpenCapture Protocol 1
 
-Opt-in iOS capture experiments and the portable benchmark procedure are specified
-in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
-physical-device verification is pending.
+## Samsung Camera2 Experiment (Android 0.4.29)
+
+`samsung-camera2` is advertised on Samsung Android devices independently of the
+legacy framework helper. It uses standard focus, sequential original RAW in the
+preview-capable session, no repeating preview during stills, and no helper or
+vendor focus activation. `omitFrameDurationOverride` and `useDriverShadingDefaults`
+are independently supported in this mode. Optional boolean `camera2ShootingMode`
+(default false, only valid in this mode) requests shooting mode 5 on still
+requests only. Exposure/ISO/focus/WB readback checks remain mandatory. No phone
+averaging or focusProbe. This is an interoperability experiment, not proven
+equivalence to another app or physically verified S25 support.
 
 ## Optional Samsung Request Overrides
 

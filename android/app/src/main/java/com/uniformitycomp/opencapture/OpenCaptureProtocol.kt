@@ -9,8 +9,9 @@ import java.util.UUID
 
 object OpenCaptureProtocol {
     const val EXPERIMENTAL_EXPOSURE_SECONDS = 30.0
-    val experimentalScheduling = setOf("samsung-vendor-preview", "raw-jpeg-still", "samsung-vendor-still")
-    val samsungCaptureOptions = setOf("omitFrameDurationOverride", "useDriverShadingDefaults")
+    val experimentalScheduling = setOf("samsung-vendor-preview", "raw-jpeg-still", "samsung-vendor-still", "samsung-camera2")
+    val samsungCaptureOptions = setOf("omitFrameDurationOverride", "useDriverShadingDefaults", "camera2ShootingMode")
+    internal fun samsungCamera2(value: JSONObject) = value.optString("captureScheduling", "") == "samsung-camera2"
 
     internal fun vendorCamera(value: JSONObject) = value.optString("captureScheduling", "") in
         setOf("samsung-vendor-preview", "samsung-vendor-still")
@@ -91,7 +92,8 @@ object OpenCaptureProtocol {
         require(operation != "applyControls" || frames == 1)
         for (key in samsungCaptureOptions) if (value.has(key)) {
             require(value.get(key) is Boolean) { "$key must be boolean" }
-            require(!value.getBoolean(key) || vendorCamera(value)) { "$key requires Samsung vendor capture mode" }
+            require(!value.getBoolean(key) || if (key == "camera2ShootingMode") samsungCamera2(value)
+                else vendorCamera(value) || samsungCamera2(value)) { "$key requires a compatible Samsung capture mode" }
         }
         averaging(value)
         focusProbe(value)

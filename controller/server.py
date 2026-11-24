@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe", "captureExperiment", "omitFrameDurationOverride", "useDriverShadingDefaults"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe", "omitFrameDurationOverride", "useDriverShadingDefaults", "camera2ShootingMode"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -97,11 +97,13 @@ def validate_request(request):
         raise Invalid("Invalid settling interval")
     if 'includePreview' in request and type(request['includePreview']) is not bool:
         raise Invalid('includePreview must be boolean')
-    experimental = ('samsung-vendor-preview', 'raw-jpeg-still', 'samsung-vendor-still')
-    for key in ('omitFrameDurationOverride','useDriverShadingDefaults'):
+    experimental = ('samsung-vendor-preview', 'raw-jpeg-still', 'samsung-vendor-still', 'samsung-camera2')
+    for key in ('omitFrameDurationOverride','useDriverShadingDefaults','camera2ShootingMode'):
         if key in request and (type(request[key]) is not bool or
-                (request[key] and (request.get('captureScheduling') not in ('samsung-vendor-preview','samsung-vendor-still') or request['format']!='bayerRaw'))):
+                (request[key] and (request.get('captureScheduling') not in ('samsung-vendor-preview','samsung-vendor-still','samsung-camera2') or request['format']!='bayerRaw'))):
             raise Invalid('Invalid Samsung request option: '+key)
+    if request.get('camera2ShootingMode') and request.get('captureScheduling') != 'samsung-camera2':
+        raise Invalid('Shooting mode 5 option requires Samsung Camera2')
     if 'captureScheduling' in request and request['captureScheduling'] not in ('sequential', 'sequential-preview', 'sequential-short-preview', 'queued-preview') + experimental:
         raise Invalid('Unknown capture scheduling')
     if request.get('captureScheduling') in experimental and 'averaging' in request:
@@ -117,13 +119,6 @@ def validate_request(request):
     if wb is not None and (not isinstance(wb, dict) or set(wb) != {"red", "green", "blue"} or
                            not all(number(value, 1, 64) for value in wb.values())):
         raise Invalid("Invalid white balance gains")
-    if 'captureExperiment' in request:
-        if (request['captureExperiment'] not in ('ios-raw-no-preview','ios-raw-bracket-pair','ios-raw-prepared') or
-                request['format'] != 'bayerRaw' or request['quality'] != 'speed' or
-                request.get('operation') == 'applyControls' or request.get('includePreview') is not False or
-                any(key in request for key in ('averaging','captureScheduling','focusProbe','omitFrameDurationOverride','useDriverShadingDefaults')) or
-                any(request.get(key) is None for key in ('exposureSeconds','iso','focusPosition','whiteBalance'))):
-            raise Invalid('Invalid fully manual iOS capture experiment')
     if 'focusProbe' in request:
         probe=request['focusProbe']
         if (not isinstance(probe,dict) or set(probe)!={'position','standardFocus'} or
@@ -491,9 +486,7 @@ class State:
                 raise Invalid('Camera does not support requested capture scheduling',409)
             if 'focusProbe' in request and 'samsung-position-images-v1' not in (self.capabilities or {}).get('focusProbeModes',[]):
                 raise Invalid('Update OpenCapture: focus image diagnostics unavailable',409)
-            if 'captureExperiment' in request and request['captureExperiment'] not in (self.capabilities or {}).get('captureExperiments', []):
-                raise Invalid('Camera does not advertise this iOS capture experiment',409)
-            for key in ('omitFrameDurationOverride','useDriverShadingDefaults'):
+            for key in ('omitFrameDurationOverride','useDriverShadingDefaults','camera2ShootingMode'):
                 if request.get(key) and key not in (self.capabilities or {}).get('samsungCaptureOptions',[]):
                     raise Invalid('Update OpenCapture: Samsung request option unavailable',409)
             if request["id"] in self.jobs:

@@ -29,8 +29,9 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("captureSchedulingModes", JSONArray(listOf("sequential", "sequential-preview", "sequential-short-preview", "queued-preview") +
                 camera.experimentalSchedulingModes()))
             .put("captureStreamingModes", JSONArray(if (usable && selected != null) listOf("originals-v1") else emptyList<String>()))
-            .put("samsungCaptureOptions", JSONArray(if (usable && SamsungCaptureCompatibility.available())
-                OpenCaptureProtocol.samsungCaptureOptions.toList() else emptyList<String>()))
+            .put("samsungCaptureOptions", JSONArray(if (usable && SamsungCamera2Compatibility.available())
+                OpenCaptureProtocol.samsungCaptureOptions.toList() else if (usable && SamsungCaptureCompatibility.available())
+                OpenCaptureProtocol.samsungCaptureOptions.filter { it != "camera2ShootingMode" } else emptyList<String>()))
             .put("name", "${Build.MANUFACTURER} ${Build.MODEL} / camera ${camera.cameraID()}")
             .put("formats", JSONArray(if (usable && selected != null) listOf("bayerRaw") else emptyList<String>()))
             .put("frameAveragingModes", JSONArray(if (usable && selected != null && selected.width.toLong()*selected.height <= 13_000_000)
@@ -218,6 +219,8 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 overlap = OpenCaptureProtocol.overlap(request, selection != null, stream != null),
                 keepPreviewRunning = OpenCaptureProtocol.keepPreviewRunning(request),
                 vendorCamera = OpenCaptureProtocol.vendorCamera(request),
+                samsungCamera2 = OpenCaptureProtocol.samsungCamera2(request),
+                camera2ShootingMode = request.optBoolean("camera2ShootingMode", false),
                 separateStill = OpenCaptureProtocol.separateStill(request),
                 focusProbe = focusProbe,
                 omitFrameDurationOverride = request.optBoolean("omitFrameDurationOverride", false),
