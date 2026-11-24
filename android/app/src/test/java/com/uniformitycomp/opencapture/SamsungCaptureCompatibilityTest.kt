@@ -16,18 +16,15 @@ class SamsungCaptureCompatibilityTest {
                 listOf("omit-standard", "vendor-512"), writes)
         }
     }
-    @Test fun s20ProbeRequiresHardwareAndHelperNotAnAdvertisedShootingModeKey() {
-        // S20 API 33 reports both shooting-mode key lists absent, but loads the helper.
-        // Key advertisement intentionally is not an input to experimental eligibility.
-        assertTrue(SamsungCaptureCompatibility.eligible(33, "samsung", "exynos990", true))
-        assertTrue(SamsungCaptureCompatibility.eligible(29, "SAMSUNG", "S5E990", true))
+    @Test fun helperAllowsExperimentalModesWithoutDeviceIdentityOrAdvertisedKeys() {
+        // Manufacturer, chipset and key advertisement are deliberately not eligibility inputs.
+        for (api in listOf(29, 33, 35, 37))
+            assertTrue(SamsungCaptureCompatibility.eligible(api, true))
     }
 
     @Test fun unsupportedPlatformsAndUnavailableHelperRemainExcluded() {
-        assertFalse(SamsungCaptureCompatibility.eligible(28, "samsung", "exynos990", true))
-        assertFalse(SamsungCaptureCompatibility.eligible(33, "google", "exynos990", true))
-        assertFalse(SamsungCaptureCompatibility.eligible(33, "samsung", "qcom", true))
-        assertFalse(SamsungCaptureCompatibility.eligible(33, "samsung", "", true))
-        assertFalse(SamsungCaptureCompatibility.eligible(33, "samsung", "exynos990", false))
+        assertFalse(SamsungCaptureCompatibility.eligible(28, true))
+        for (api in listOf(28, 29, 33, 35, 37))
+            assertFalse(SamsungCaptureCompatibility.eligible(api, false))
     }
 }

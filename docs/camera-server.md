@@ -35,8 +35,10 @@ retaining sequential RAW and repeating preview. The second switches from
 verified preview setup to a separate RAW + JPEG still-only session. The third
 combines both. Companion JPEGs are drained, not retained or used as measurements.
 
-Vendor modes require Samsung Exynos/s5e, Android 10+, a resolvable on-device
-framework helper. Android 0.4.20/build 28 no longer requires shooting-mode key
+Vendor modes require Android 10+ and a resolvable on-device framework helper.
+Eligibility does not filter manufacturer, model or chipset. This permits opt-in
+experiments on newer phones; it does not certify their capture or vendor-focus
+support. Android 0.4.20/build 28 no longer requires shooting-mode key
 advertisement for these opt-in probes; `/oc/` still reports it, and the same
 eligibility evidence is included in job diagnostics. Framework calls, builder
 setting failures and RAW failures remain distinguishable. A successful builder
