@@ -4,6 +4,20 @@ Opt-in iOS capture experiments and the portable benchmark procedure are specifie
 in [iOS capture benchmarks](ios-capture-benchmarks.md). These change no defaults;
 physical-device verification is pending.
 
+## Motion Continuity (Development)
+
+Info and state optionally include `motion`: `schemaVersion:1`, `instanceID`,
+`continuityID`, `movementCount` (nonnegative integer), `supported` and `monitoring`
+(booleans), plus `reason`. These describe foreground accelerometer/gyro monitoring,
+not camera or network sessions. Explicit disconnect, idle expiry and network
+rebinding do not reset monitoring. Detected motion increments the counter;
+inactivity/backgrounding or a sensor-delivery gap changes continuity. Process
+restart changes instance ID. A controller must compare all three identity/counter
+fields and require active monitoring when supported; "stationary now" cannot
+prove no earlier movement. Absence means an older app, not proof of no movement.
+These heuristics do not replace image-based alignment checks. No background
+monitoring or location collection is performed.
+
 ### Samsung Vendor Focus Feedback
 
 Android 0.4.21/build 29 adds bounded integer-position focus feedback to both

@@ -65,6 +65,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     @Volatile private var resumed = false
     private var enabled = true
     private val recovery = CameraRecovery()
+    private val motion by lazy { MotionMonitor(this) }
     @Volatile private var previewBytes: ByteArray? = null
     private val displayManager by lazy { getSystemService(DISPLAY_SERVICE) as DisplayManager }
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -227,7 +228,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
                 ?.filterIsInstance<Inet4Address>()?.firstOrNull { CameraServer.privateIPv4(it.hostAddress ?: "") }?.hostAddress
         }
     }
-    private fun info(): JSONObject = JSONObject().put("protocolVersion", 1).put("role", "camera")
+    private fun info(): JSONObject = JSONObject().put("protocolVersion", 1).put("role", "camera").put("motion", motion.snapshot())
         .put("cameraPreviewReady", camera.previewReady && camera.lastPreviewResult != null)
         .put("diagnosticModes", JSONArray().put(PersistentDiagnostics.MODE))
         .put("deviceID", deviceID).put("name", android.os.Build.MODEL).put("capabilities", capture.capabilities())
@@ -296,6 +297,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onStart() { super.onStart(); displayManager.registerDisplayListener(displayListener, ui) }
     override fun onResume() {
         super.onResume(); resumed = true; keepAwake()
+        motion.start()
         brightnessVisible = true; updateScreenBrightness()
         recovery.resetAttempts()
         logLifecycle("resume")
@@ -303,6 +305,7 @@ class OpenCaptureActivity : Activity(), TextureView.SurfaceTextureListener {
         ui.removeCallbacks(tick); ui.post(tick)
     }
     override fun onPause() {
+        motion.stop()
         brightnessVisible = false; updateScreenBrightness()
         super.onPause()
     }
