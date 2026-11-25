@@ -46,6 +46,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
             .put("rawLensShadingApplied", c.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED) ?: JSONObject.NULL)
             .put("rawShadingPolicy", "camera2-dng-gain-map-v1")
             .put("lensShadingMapRequested", DngCapture.lensShadingMode(c) != null)
+            .put("diagnosticShadingModes", JSONArray(if (usable && selected != null) DngCapture.diagnosticShadingModes(c) else emptyList<String>()))
             .put("osVersion", "Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}")
             .put("appVersion", BuildConfig.VERSION_NAME).put("appBuild", BuildConfig.VERSION_CODE.toString())
             .put("deviceID", deviceId).put("operations", JSONArray(if (usable) listOf("capture", "applyControls") else emptyList<String>()))
@@ -99,6 +100,10 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
         }
         camera.events.record("preview_wait_ended", camera.runtimeEvidence())
         val cap = OpenCaptureProtocol.captureCapabilities(capabilities(), request)
+        val diagnosticShading = OpenCaptureProtocol.diagnosticShading(request)
+        require(diagnosticShading == null || (0 until cap.getJSONArray("diagnosticShadingModes").length()).any {
+            cap.getJSONArray("diagnosticShadingModes").getString(it) == diagnosticShading
+        }) { "Diagnostic shading mode unavailable on this camera" }
         for (key in OpenCaptureProtocol.samsungCaptureOptions) require(!request.optBoolean(key, false) ||
             (0 until cap.getJSONArray("samsungCaptureOptions").length()).any {
                 cap.getJSONArray("samsungCaptureOptions").getString(it) == key
@@ -225,6 +230,7 @@ class OpenCaptureCamera(private val camera: CameraController, private val device
                 focusProbe = focusProbe,
                 omitFrameDurationOverride = request.optBoolean("omitFrameDurationOverride", false),
                 useDriverShadingDefaults = request.optBoolean("useDriverShadingDefaults", false),
+                diagnosticShadingMode = diagnosticShading,
                 shortPreviewExposure = OpenCaptureProtocol.shortPreviewExposure(request),
                 queueAhead = OpenCaptureProtocol.queueAhead(request),
                 tryReserveNext = stream?.let { { it.tryNext() } }) { frame ->

@@ -1,5 +1,25 @@
 # OpenCapture Protocol 1
 
+## Android Shading Comparison (Development)
+
+Selected Android cameras can advertise `diagnosticShadingModes`, a subset of
+`default`, `high-quality`, `fast`, `off`. Capability requires RAW/manual capture,
+SHADING_MODE control and lens-shading-map reporting ON. iOS does not advertise
+this extension. `diagnosticShadingMode` is an optional request string, accepted
+by both capture and applyControls only with `sequential-preview` or
+`sequential-short-preview`. No phone averaging, streaming, focusProbe or active
+Samsung overrides. Unsupported modes fail explicitly.
+
+Default leaves the template's SHADING_MODE untouched; the other values request
+Camera2 2, 1, 0 respectively. All four request
+STATISTICS_LENS_SHADING_MAP_MODE ON independently. This differs from the existing
+Samsung `useDriverShadingDefaults` option, which omits both fields. Original DNG
+pixels remain untouched, including when OFF produces an identity or absent map.
+Actual modes and gains remain in native sidecars; advertisement is not proof
+that a driver honors the request. Diagnostic captures require fresh manual
+readback and do not leave verified-still cache entries for normal jobs.
+Locked optical commands are retained. No normal capture default changes.
+
 ## Samsung Camera2 Experiment (Android 0.4.29)
 
 `samsung-camera2` is advertised on Samsung Android devices independently of the

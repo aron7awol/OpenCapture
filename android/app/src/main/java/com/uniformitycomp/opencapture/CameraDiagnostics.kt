@@ -20,7 +20,7 @@ class CameraDiagnostics(private val persist: ((JSONObject) -> Unit)? = null,
         startedSequence = sequence + 1
         request = JSONObject().put("cameraID", cameraId)
         for (key in listOf("id", "operation", "frameCount", "exposureSeconds", "iso", "focusPosition", "captureScheduling",
-            "omitFrameDurationOverride", "useDriverShadingDefaults", "camera2ShootingMode"))
+            "omitFrameDurationOverride", "useDriverShadingDefaults", "camera2ShootingMode", "diagnosticShadingMode"))
             if (value.has(key)) request.put(key, value.get(key))
         record("operation_started")
     }

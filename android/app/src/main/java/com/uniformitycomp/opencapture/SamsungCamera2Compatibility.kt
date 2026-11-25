@@ -8,10 +8,13 @@ import android.os.Build
 import org.json.JSONObject
 
 /** Camera2-only experiment: no framework helper or vendor focus commands. */
+@android.annotation.TargetApi(29)
 internal class SamsungCamera2Compatibility(private val events: CameraDiagnostics,
     private val shootingMode5: Boolean) {
     companion object {
-        fun available() = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+        internal fun eligible(manufacturer: String, api: Int) =
+            api >= 29 && manufacturer.equals("samsung", ignoreCase = true)
+        fun available() = eligible(Build.MANUFACTURER, Build.VERSION.SDK_INT)
         private const val KEY = "samsung.android.control.shootingMode"
     }
 

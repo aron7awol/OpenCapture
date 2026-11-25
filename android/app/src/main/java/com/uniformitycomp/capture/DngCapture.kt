@@ -69,6 +69,7 @@ internal class DngCapture(
     private val reportLensShading: Boolean = false,
     private val omitFrameDurationOverride: Boolean = false,
     private val useDriverShadingDefaults: Boolean = false,
+    private val diagnosticShadingMode: String? = null,
     private val existingSession: CameraCaptureSession? = null,
     private val previousLocked: DngLockedSettings? = null,
     private val previousVerified: DngVerifiedState? = null,
@@ -107,7 +108,7 @@ internal class DngCapture(
     }
 
     private fun applyManual(builder: CaptureRequest.Builder, value: DngLockedSettings) {
-        applyLocked(builder, value, characteristics, reportLensShading, omitFrameDurationOverride, useDriverShadingDefaults)
+        applyLocked(builder, value, characteristics, reportLensShading, omitFrameDurationOverride, useDriverShadingDefaults, diagnosticShadingMode)
         configureFocus?.invoke(builder, value.focusDiopters)
     }
 
@@ -372,7 +373,7 @@ internal class DngCapture(
                     else -> CaptureRequest.CONTROL_AF_MODE_OFF
                 }
                 auto.set(CaptureRequest.CONTROL_AF_MODE, autoFocusMode)
-                applySupportedProcessing(auto, characteristics, reportLensShading, useDriverShadingDefaults)
+                applySupportedProcessing(auto, characteristics, reportLensShading, useDriverShadingDefaults, diagnosticShadingMode)
                 // A fully specified job never meters a new exposure on the next display pattern.
                 settings.exposureNs?.let {
                     auto.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
@@ -1039,7 +1040,7 @@ internal class DngCapture(
 
         fun applyLocked(builder: CaptureRequest.Builder, value: DngLockedSettings, c: CameraCharacteristics,
                         reportLensShading: Boolean = false, omitFrameDurationOverride: Boolean = false,
-                        useDriverShadingDefaults: Boolean = false) {
+                        useDriverShadingDefaults: Boolean = false, diagnosticShadingMode: String? = null) {
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
             applyExposure(builder, value.exposureNs, c, omitFrameDurationOverride)
@@ -1050,7 +1051,7 @@ internal class DngCapture(
             builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
             builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, value.gains)
             builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, value.transform)
-            applySupportedProcessing(builder, c, reportLensShading, useDriverShadingDefaults)
+            applySupportedProcessing(builder, c, reportLensShading, useDriverShadingDefaults, diagnosticShadingMode)
             value.crop?.let { builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(it)) }
             value.opticalStabilization?.let { builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, it) }
             value.videoStabilization?.let { builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it) }
@@ -1074,8 +1075,18 @@ internal class DngCapture(
             return listOf(CaptureRequest.SHADING_MODE_HIGH_QUALITY, CaptureRequest.SHADING_MODE_FAST).firstOrNull { it in modes }
         }
 
+        fun diagnosticShadingModes(c: CameraCharacteristics): List<String> {
+            if (!c.availableCaptureRequestKeys.contains(CaptureRequest.SHADING_MODE) ||
+                !c.availableCaptureRequestKeys.contains(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE) ||
+                c.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)?.contains(1) != true)
+                return emptyList()
+            val modes = c.get(CameraCharacteristics.SHADING_AVAILABLE_MODES) ?: intArrayOf()
+            return listOf("default") + listOf("high-quality" to 2, "fast" to 1, "off" to 0)
+                .filter { it.second in modes }.map { it.first }
+        }
+
         private fun applySupportedProcessing(builder: CaptureRequest.Builder, c: CameraCharacteristics, reportLensShading: Boolean,
-                                             useDriverShadingDefaults: Boolean = false) {
+                                             useDriverShadingDefaults: Boolean = false, diagnosticShadingMode: String? = null) {
             fun mode(key: CaptureRequest.Key<Int>, available: CameraCharacteristics.Key<IntArray>, wanted: Int) {
                 if (c.availableCaptureRequestKeys.contains(key) && c.get(available)?.contains(wanted) == true) builder.set(key, wanted)
             }
@@ -1083,7 +1094,12 @@ internal class DngCapture(
             mode(CaptureRequest.HOT_PIXEL_MODE, CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES, CaptureRequest.HOT_PIXEL_MODE_OFF)
             mode(CaptureRequest.EDGE_MODE, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES, CaptureRequest.EDGE_MODE_OFF)
             val shading = if (reportLensShading) lensShadingMode(c) else null
-            if (!useDriverShadingDefaults)
+            if (diagnosticShadingMode != null) {
+                require(reportLensShading && !useDriverShadingDefaults && diagnosticShadingMode in diagnosticShadingModes(c))
+                // Default deliberately leaves the template value untouched. Reporting stays ON independently.
+                if (diagnosticShadingMode != "default") builder.set(CaptureRequest.SHADING_MODE,
+                    when (diagnosticShadingMode) { "high-quality" -> 2; "fast" -> 1; else -> 0 })
+            } else if (!useDriverShadingDefaults)
                 mode(CaptureRequest.SHADING_MODE, CameraCharacteristics.SHADING_AVAILABLE_MODES, shading ?: CaptureRequest.SHADING_MODE_OFF)
             mode(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES, CaptureRequest.DISTORTION_CORRECTION_MODE_OFF)
             mode(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
@@ -1092,7 +1108,9 @@ internal class DngCapture(
             // reports the remaining RAW correction, including on devices that
             // already apply some shading. DngCreator embeds it; never bake it
             // into original samples here. Legacy callers retain the old policy.
-            if (!useDriverShadingDefaults)
+            if (diagnosticShadingMode != null)
+                builder.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+            else if (!useDriverShadingDefaults)
                 mode(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES,
                     if (shading != null) CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON else CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_OFF)
         }

@@ -22,6 +22,7 @@ object OpenCaptureProtocol {
         JSONObject(capabilities.toString()).apply {
             // Result provenance describes this job, not the default request policy.
             if (request.optBoolean("useDriverShadingDefaults", false)) put("lensShadingMapRequested", false)
+            if (request.has("diagnosticShadingMode")) put("lensShadingMapRequested", true)
         }
 
     internal fun acceptsExposure(exposureNs: Long?, minimumNs: Long, reportedMaximumNs: Long): Boolean =
@@ -31,7 +32,17 @@ object OpenCaptureProtocol {
     val jobId = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     val fileName = Regex("frame-[0-9]{4}\\.(dng|json)|average\\.f32|average-clips\\.u8")
     private val required = setOf("protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context")
-    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling", "focusProbe") + samsungCaptureOptions
+    private val optional = setOf("operation", "exposureSeconds", "iso", "focusPosition", "whiteBalance", "averaging", "streaming", "captureScheduling", "focusProbe", "diagnosticShadingMode") + samsungCaptureOptions
+
+    internal fun diagnosticShading(value: JSONObject): String? {
+        if (!value.has("diagnosticShadingMode")) return null
+        val mode = value.get("diagnosticShadingMode")
+        require(mode in setOf("default", "high-quality", "fast", "off")) { "Unknown diagnostic shading mode" }
+        require(value.optString("captureScheduling", "") in setOf("sequential-preview", "sequential-short-preview") &&
+            !value.has("averaging") && !value.has("streaming") && !value.has("focusProbe") &&
+            samsungCaptureOptions.none { value.optBoolean(it, false) }) { "Shading diagnostics require sequential original frames without Samsung overrides" }
+        return mode as String
+    }
 
     internal fun focusProbe(value: JSONObject): JSONObject? {
         if (!value.has("focusProbe")) return null
@@ -96,6 +107,7 @@ object OpenCaptureProtocol {
                 else vendorCamera(value) || samsungCamera2(value)) { "$key requires a compatible Samsung capture mode" }
         }
         averaging(value)
+        diagnosticShading(value)
         focusProbe(value)
         if (value.has("streaming")) {
             val stream=value.getJSONObject("streaming")

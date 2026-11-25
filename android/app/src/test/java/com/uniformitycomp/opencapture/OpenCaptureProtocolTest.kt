@@ -6,6 +6,30 @@ import org.junit.Test
 import java.nio.file.Files
 
 class OpenCaptureProtocolTest {
+    @Test fun shadingComparisonKeepsReportingIndependentAndRequiresOriginals() {
+        for (mode in listOf("default", "high-quality", "fast", "off")) {
+            val r = request().put("diagnosticShadingMode", mode).put("captureScheduling", "sequential-short-preview")
+            OpenCaptureProtocol.request(r)
+            assertEquals(mode, OpenCaptureProtocol.diagnosticShading(r))
+            assertTrue(OpenCaptureProtocol.captureCapabilities(JSONObject().put("lensShadingMapRequested", false), r)
+                .getBoolean("lensShadingMapRequested"))
+            OpenCaptureProtocol.request(r.put("operation", "applyControls").put("frameCount", 1))
+        }
+        for (mode in listOf("auto", 2, true, JSONObject.NULL)) rejected {
+            OpenCaptureProtocol.request(request().put("diagnosticShadingMode", mode).put("captureScheduling", "sequential-preview"))
+        }
+        for (key in listOf("streaming", "averaging", "focusProbe")) rejected {
+            OpenCaptureProtocol.request(request().put("diagnosticShadingMode", "default")
+                .put("captureScheduling", "sequential-preview").put(key, JSONObject()))
+        }
+        rejected { OpenCaptureProtocol.request(request().put("diagnosticShadingMode", "off")) }
+    }
+    @Test fun camera2CompatibilityRequiresSupportedVendorKeyApi() {
+        assertFalse(SamsungCamera2Compatibility.eligible("samsung", 28))
+        assertTrue(SamsungCamera2Compatibility.eligible("samsung", 29))
+        assertTrue(SamsungCamera2Compatibility.eligible("SAMSUNG", 37))
+        assertFalse(SamsungCamera2Compatibility.eligible("Google", 37))
+    }
     @Test fun captureCapabilitiesDescribeActualShadingRequestWithoutChangingAdvertisement() {
         val caps = JSONObject().put("lensShadingMapRequested",true).put("rawShadingPolicy","camera2-dng-gain-map-v1")
         assertTrue(OpenCaptureProtocol.captureCapabilities(caps,request()).getBoolean("lensShadingMapRequested"))
@@ -15,9 +39,9 @@ class OpenCaptureProtocolTest {
         assertEquals("camera2-dng-gain-map-v1",result.getString("rawShadingPolicy"))
         assertTrue(caps.getBoolean("lensShadingMapRequested"))
     }
-    @Test fun samsungRequestOptionsAreIndependentAndVendorOnly() {
+    @Test fun samsungRequestOptionsAreIndependentAndModeGated() {
         for (frame in listOf(false,true)) for (shading in listOf(false,true)) {
-            for (mode in listOf("samsung-vendor-preview","samsung-vendor-still")) {
+            for (mode in listOf("samsung-vendor-preview","samsung-vendor-still","samsung-camera2")) {
                 val r = request().put("captureScheduling",mode).put("omitFrameDurationOverride",frame)
                     .put("useDriverShadingDefaults",shading)
                 OpenCaptureProtocol.request(r)
@@ -29,6 +53,25 @@ class OpenCaptureProtocolTest {
             rejected { OpenCaptureProtocol.request(request().put("captureScheduling","raw-jpeg-still").put(option,true)) }
             rejected { OpenCaptureProtocol.request(request().put("captureScheduling","samsung-vendor-still").put(option,1)) }
         }
+    }
+    @Test fun camera2OptionsKeepStandardFocusAndSequentialOriginals() {
+        for (frame in listOf(false,true)) for (shading in listOf(false,true)) for (shooting in listOf(false,true)) {
+            val r = request().put("captureScheduling","samsung-camera2")
+                .put("omitFrameDurationOverride",frame).put("useDriverShadingDefaults",shading)
+                .put("camera2ShootingMode",shooting)
+            OpenCaptureProtocol.request(r)
+            assertTrue(OpenCaptureProtocol.samsungCamera2(r))
+            assertFalse(OpenCaptureProtocol.vendorCamera(r))
+            assertFalse(OpenCaptureProtocol.separateStill(r))
+            assertFalse(OpenCaptureProtocol.keepPreviewRunning(r))
+            assertFalse(OpenCaptureProtocol.overlap(r,false,true))
+            assertFalse(OpenCaptureProtocol.queueAhead(r))
+            OpenCaptureProtocol.request(r.put("operation","applyControls").put("frameCount",1))
+        }
+        for (mode in listOf("samsung-vendor-preview","samsung-vendor-still","raw-jpeg-still","sequential"))
+            rejected { OpenCaptureProtocol.request(request().put("captureScheduling",mode).put("camera2ShootingMode",true)) }
+        rejected { OpenCaptureProtocol.request(request().put("captureScheduling","samsung-camera2")
+            .put("focusProbe",JSONObject().put("position",.5).put("standardFocus","omit"))) }
     }
     @Test fun focusProbeIsExplicitBoundedOriginalCaptureOnly() {
         fun probe() = request().put("frameCount", 2).put("captureScheduling", "samsung-vendor-preview")
@@ -52,8 +95,8 @@ class OpenCaptureProtocolTest {
             assertFalse(OpenCaptureProtocol.queueAhead(r))
             assertFalse(OpenCaptureProtocol.shortPreviewExposure(r))
             assertEquals(mode == "samsung-vendor-preview", OpenCaptureProtocol.keepPreviewRunning(r))
-            assertEquals(mode != "raw-jpeg-still", OpenCaptureProtocol.vendorCamera(r))
-            assertEquals(mode != "samsung-vendor-preview", OpenCaptureProtocol.separateStill(r))
+            assertEquals(mode in listOf("samsung-vendor-preview","samsung-vendor-still"), OpenCaptureProtocol.vendorCamera(r))
+            assertEquals(mode in listOf("raw-jpeg-still","samsung-vendor-still"), OpenCaptureProtocol.separateStill(r))
             OpenCaptureProtocol.request(r.put("operation", "applyControls").put("frameCount", 1))
             r.put("operation", "capture").put("averaging", JSONObject().put("mode", BayerAverage.MODE)
                 .put("emptyFramePolicy", "illuminated").put("keepOriginals", false))

@@ -64,7 +64,7 @@ def parse_json(data):
 
 def validate_request(request):
     required = {"protocolVersion", "id", "format", "quality", "frameCount", "settleMilliseconds", "context"}
-    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe", "omitFrameDurationOverride", "useDriverShadingDefaults", "camera2ShootingMode"}
+    optional = {"exposureSeconds", "iso", "focusPosition", "whiteBalance", "operation", "averaging", "streaming", "includePreview", "captureScheduling", "focusProbe", "omitFrameDurationOverride", "useDriverShadingDefaults", "camera2ShootingMode", "diagnosticShadingMode"}
     if not isinstance(request, dict) or not required <= request.keys() or request.keys() - required - optional:
         raise Invalid("Missing or unknown request fields")
     if type(request["protocolVersion"]) is not int or request["protocolVersion"] != VERSION:
@@ -108,6 +108,13 @@ def validate_request(request):
         raise Invalid('Unknown capture scheduling')
     if request.get('captureScheduling') in experimental and 'averaging' in request:
         raise Invalid('Experimental capture scheduling requires originals, not phone averaging')
+    if 'diagnosticShadingMode' in request:
+        if (request['diagnosticShadingMode'] not in ('default', 'high-quality', 'fast', 'off') or
+                request['format'] != 'bayerRaw' or request.get('captureScheduling') not in
+                ('sequential-preview', 'sequential-short-preview') or
+                any(k in request for k in ('averaging', 'streaming', 'focusProbe')) or
+                any(request.get(k) for k in ('omitFrameDurationOverride', 'useDriverShadingDefaults', 'camera2ShootingMode'))):
+            raise Invalid('Invalid diagnostic shading request')
     exposure, iso = request.get("exposureSeconds"), request.get("iso")
     if (exposure is None) != (iso is None):
         raise Invalid("Manual exposure requires shutter time and ISO")
@@ -347,11 +354,11 @@ def manifest_files(manifest):
     return result
 
 
-def atomic_json(path, value):
+def atomic_json(path, value, *, indent=2):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     delays = (.01, .02, .04, .08, .16, .32, .5, .5)
     try:
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        temporary.write_text(json.dumps(value, indent=indent, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
         for attempt in range(len(delays) + 1):
             try:
                 os.replace(temporary, path)
@@ -484,6 +491,9 @@ class State:
                 raise Invalid('Camera does not support original streaming',409)
             if 'captureScheduling' in request and request['captureScheduling'] not in (self.capabilities or {}).get('captureSchedulingModes', []):
                 raise Invalid('Camera does not support requested capture scheduling',409)
+            if ('diagnosticShadingMode' in request and request['diagnosticShadingMode'] not in
+                    (self.capabilities or {}).get('diagnosticShadingModes', [])):
+                raise Invalid('Update OpenCapture: diagnostic shading control unavailable', 409)
             if 'focusProbe' in request and 'samsung-position-images-v1' not in (self.capabilities or {}).get('focusProbeModes',[]):
                 raise Invalid('Update OpenCapture: focus image diagnostics unavailable',409)
             for key in ('omitFrameDurationOverride','useDriverShadingDefaults','camera2ShootingMode'):

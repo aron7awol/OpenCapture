@@ -43,9 +43,22 @@ def average_manifest():
 
 
 class ContractTests(unittest.TestCase):
+    def test_diagnostic_shading_contract(self):
+        modes = ['default', 'high-quality', 'fast', 'off']
+        schema = json.loads((ROOT/'protocol/request.schema.json').read_text())
+        self.assertEqual(schema['properties']['diagnosticShadingMode']['enum'], modes)
+        for mode in modes:
+            for schedule in ('sequential-preview', 'sequential-short-preview'):
+                value = dict(request(), diagnosticShadingMode=mode, captureScheduling=schedule)
+                server.validate_request(value)
+                for override in (dict(diagnosticShadingMode='auto'), dict(captureScheduling='queued-preview'),
+                                 dict(useDriverShadingDefaults=True), dict(averaging={}), dict(streaming={})):
+                    with self.assertRaises(server.Invalid):
+                        server.validate_request(dict(value, **override))
+
     def test_samsung_request_options(self):
         for name in ('omitFrameDurationOverride','useDriverShadingDefaults'):
-            for mode in ('samsung-vendor-preview','samsung-vendor-still'):
+            for mode in ('samsung-vendor-preview','samsung-vendor-still','samsung-camera2'):
                 for operation in ('capture','applyControls'):
                     server.validate_request(dict(request(),captureScheduling=mode,operation=operation,**{name:True}))
             for value in (1,'true',None):
@@ -54,6 +67,20 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(server.Invalid):server.validate_request(dict(request(),**{name:True}))
         server.validate_request(dict(request(),captureScheduling='samsung-vendor-still',
                                      omitFrameDurationOverride=True,useDriverShadingDefaults=True))
+
+    def test_camera2_shooting_mode_is_independent_and_not_a_vendor_focus_probe(self):
+        for frame in (False,True):
+            for shading in (False,True):
+                for shooting in (False,True):
+                    for operation in ('capture','applyControls'):
+                        server.validate_request(dict(request(),captureScheduling='samsung-camera2',operation=operation,
+                            omitFrameDurationOverride=frame,useDriverShadingDefaults=shading,camera2ShootingMode=shooting))
+        for mode in ('samsung-vendor-preview','samsung-vendor-still','raw-jpeg-still','sequential'):
+            with self.assertRaises(server.Invalid):
+                server.validate_request(dict(request(),captureScheduling=mode,camera2ShootingMode=True))
+        for invalid in (None,1,'true'):
+            with self.assertRaises(server.Invalid):
+                server.validate_request(dict(request(),captureScheduling='samsung-camera2',camera2ShootingMode=invalid))
 
     def test_focus_probe_requires_bounded_originals_and_explicit_controls(self):
         value=dict(request(),frameCount=2,settleMilliseconds=1000,captureScheduling='samsung-vendor-preview',
@@ -70,13 +97,13 @@ class ContractTests(unittest.TestCase):
 
     def test_sequential_scheduling_is_explicit(self):
         schema=json.loads((ROOT/'protocol/request.schema.json').read_text())
-        self.assertEqual(schema['properties']['captureScheduling'],{'enum':['sequential','sequential-preview','sequential-short-preview','queued-preview','samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still']})
+        self.assertEqual(schema['properties']['captureScheduling'],{'enum':['sequential','sequential-preview','sequential-short-preview','queued-preview','samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still','samsung-camera2']})
         self.assertNotIn('captureScheduling',schema['required'])
         server.validate_request(dict(request(),captureScheduling='sequential'))
         server.validate_request(dict(request(),captureScheduling='sequential-preview'))
         server.validate_request(dict(request(),captureScheduling='sequential-short-preview'))
         server.validate_request(dict(request(),captureScheduling='queued-preview'))
-        for mode in ('samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still'):
+        for mode in ('samsung-vendor-preview','raw-jpeg-still','samsung-vendor-still','samsung-camera2'):
             for operation in ('capture','applyControls'):
                 server.validate_request(dict(request(),captureScheduling=mode,operation=operation))
             with self.assertRaises(server.Invalid):

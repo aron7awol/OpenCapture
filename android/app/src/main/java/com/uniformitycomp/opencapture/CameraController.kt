@@ -144,6 +144,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                             focusProbe: org.json.JSONObject? = null,
                             omitFrameDurationOverride: Boolean = false,
                             useDriverShadingDefaults: Boolean = false,
+                            diagnosticShadingMode: String? = null,
                             onFrame: (DngFrame) -> Unit): DngSequence {
         val camera = requireNotNull(cameraDevice) { "Camera is not open" }
         val connectionLost = onConnectionLost
@@ -204,6 +205,7 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             }
             val sequence = DngCapture(camera, reader, surface, selectedCharacteristics(), resultHandler, cancel, reportLensShading = true,
                 omitFrameDurationOverride = omitFrameDurationOverride, useDriverShadingDefaults = useDriverShadingDefaults,
+                diagnosticShadingMode = diagnosticShadingMode,
                 existingSession = configured, previousLocked = dngPreviewControls,
                 configureRequest = vendor?.let { compatibility -> { builder -> compatibility.request(builder) } },
                 configureStillRequest = camera2?.let { compatibility -> { builder -> compatibility.requestStill(builder) } },
@@ -223,8 +225,8 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
                         events.record("preview_detached_for_still", runtimeEvidence())
                     }
                 },
-                previousVerified = ticket.reused, setupFallbackReason = ticket.reason,
-                previousExposureState = ticket.exposureSource,
+                previousVerified = if (diagnosticShadingMode == null) ticket.reused else null, setupFallbackReason = ticket.reason,
+                previousExposureState = if (diagnosticShadingMode == null) ticket.exposureSource else null,
                 diagnosticEvent = { event, details -> events.record(event, org.json.JSONObject(details),
                     event == "still_capture_failed" || event == "still_sequence_aborted" ||
                         event == "capture_setup_failure" ||
@@ -259,6 +261,8 @@ class CameraController(private val context: Context, val events: CameraDiagnosti
             val restoreError = if (vendorAttempted && cameraDevice === camera)
                 runCatching { vendor!!.configure(camera, false) }.exceptionOrNull() else null
             if (experimental) invalidateManualState("experimental_capture_ended")
+            // Keep locked optical commands, but never reuse verification from a different shading policy.
+            if (diagnosticShadingMode != null) manualState.invalidate("shading_diagnostic_ended")
             synchronized(this) {
                 if (activeCaptureCancel === cancel) { activeCaptureCancel = null; activeCaptureCleanup = null }
             }
